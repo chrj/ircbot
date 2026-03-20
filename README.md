@@ -115,14 +115,36 @@ Placed on an `impl` block.  The macro generates:
 - `YourBot::new(nick, server, channels)` — connects to the server, identifies, and joins the given channels.
 - `YourBot::main_loop(self)` — runs the event loop until the connection closes.
 
+```rust
+// Generated signatures (simplified):
+impl YourBot {
+    pub async fn new(
+        nick: impl Into<String>,
+        server: impl AsRef<str>,
+        channels: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>>;
+
+    pub async fn main_loop(self)
+        -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+```
+
+Channel names in `channels` are automatically prefixed with `#` if they do not already start with a channel sigil (`#`, `&`, `+`, `!`).
+
 #### `#[command("name")]`
 
-Fires when a user sends `!name` (case-insensitive) in any channel or as a private message.
+Fires when a user sends `!name` (case-insensitive) in any channel or as a private message.  The text that follows `!name` on the same line is available as the first `String` parameter.
 
 ```rust
 #[command("ping")]
 async fn ping(&self, ctx: Context) -> Result {
     ctx.reply("Pong!").await
+}
+
+// The rest of the line after `!echo` is captured as `text`.
+#[command("echo")]
+async fn echo(&self, ctx: Context, text: String) -> Result {
+    ctx.say(text).await
 }
 ```
 
@@ -145,6 +167,58 @@ The general-purpose trigger attribute.  Accepts the following named keys:
 | `target = "#channel"` | Optional channel filter (for any trigger type) |
 | `regex = "…"` | Optional regex on the message text; capture groups become `String` args |
 
+Exactly one of `command`, `message`, or `event` must be present. `target` and `regex` are optional modifiers. When multiple keys are given `message` takes precedence over `command`, which takes precedence over `event`.
+
+**`message`** — glob pattern on PRIVMSG text.  Each `*` captures the corresponding portion of the text as a `String` parameter:
+
+```rust
+// Fires on any PRIVMSG that looks like "you are <something>".
+// The captured text is available as `praise`.
+#[on(message = "you are *")]
+async fn praise_me(&self, ctx: Context, praise: String) -> Result {
+    ctx.say(format!("Indeed, I am {}!", praise)).await
+}
+```
+
+**`event`** — any raw IRC command.  Use this for protocol-level events:
+
+```rust
+// Fires whenever any user joins any channel.
+#[on(event = "JOIN")]
+async fn on_join(&self, ctx: Context, user: User) -> Result {
+    ctx.say(format!("Welcome, {}!", user.nick)).await
+}
+```
+
+**`event` + `target`** — restrict to a specific channel:
+
+```rust
+// Fires only when someone joins #rust.
+#[on(event = "JOIN", target = "#rust")]
+async fn welcome_rust(&self, ctx: Context, user: User) -> Result {
+    ctx.say(format!("Welcome to #rust, {}!", user.nick)).await
+}
+```
+
+**`event` + `regex`** — filter by a regex applied to the message text.  Capture groups become `String` parameters in the order they appear:
+
+```rust
+// Fires on PRIVMSG lines that match `!op <nick> <reason>`.
+#[on(event = "PRIVMSG", regex = r"^!op (\S+) (.+)$")]
+async fn op_request(&self, ctx: Context, target_nick: String, reason: String) -> Result {
+    ctx.say(format!("Granting op to {} (reason: {})", target_nick, reason)).await
+}
+```
+
+**`command`** — command-style shorthand inside `#[on]`, useful when you also need `target`:
+
+```rust
+#[on(command = "dance", target = "#general")]
+async fn dance(&self, ctx: Context) -> Result {
+    ctx.action("dances!").await
+}
+```
+
 ---
 
 ## Handler signatures
@@ -163,9 +237,41 @@ async fn handler(&self, ctx: Context, user: User) -> Result
 async fn handler(&self, ctx: Context, message: String) -> Result
 ```
 
+### Multiple capture groups
+
+When a `regex` (or a `message` glob with multiple `*`) produces more than one
+capture, each extra `String` parameter receives the next capture in order:
+
+```rust
+// regex with two capture groups → two String parameters
+#[on(event = "PRIVMSG", regex = r"^!kick (\S+) (.*)$")]
+async fn kick(&self, ctx: Context, target_nick: String, reason: String) -> Result {
+    ctx.say(format!("Kicking {} ({})", target_nick, reason)).await
+}
+```
+
+If `captures` is empty the first `String` parameter falls back to the full
+message text (`ctx.message_text()`).
+
 ---
 
-## Context methods
+## Context
+
+`Context` is passed to every handler and provides both metadata about the
+incoming message and helper methods for sending replies.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx.target` | `String` | Channel or nick the message was directed to |
+| `ctx.is_channel` | `bool` | `true` when `target` is a channel, `false` for private messages |
+| `ctx.sender` | `Option<User>` | The user who sent the message |
+| `ctx.bot_nick` | `String` | The bot's own IRC nick (useful for self-detection) |
+| `ctx.captures` | `Vec<String>` | Regex or glob capture groups from the matched trigger |
+| `ctx.raw` | `IrcMessage` | The underlying parsed IRC message |
+
+### Methods
 
 | Method | Behaviour |
 |--------|-----------|
@@ -173,8 +279,16 @@ async fn handler(&self, ctx: Context, message: String) -> Result
 | `ctx.say(msg)` | Send `msg` to the current channel or query target, without a nick prefix. |
 | `ctx.action(msg)` | Send a CTCP ACTION (`/me msg`) to the current target. |
 | `ctx.message_text()` | The raw trailing text of the underlying IRC message. |
-| `ctx.sender` | `Option<User>` — the user who sent the message. |
-| `ctx.captures` | `Vec<String>` — regex or glob capture groups from the trigger. |
+
+## User
+
+`User` represents the nick!user@host prefix on an IRC message.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `user.nick` | `String` | IRC nickname |
+| `user.user` | `String` | IRC username (ident) |
+| `user.host` | `String` | Hostname or IP |
 
 ---
 
