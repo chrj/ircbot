@@ -1,0 +1,3 @@
+[workspace]
+members = ["rustbot2", "rustbot2-macros"]
+resolver = "2"
