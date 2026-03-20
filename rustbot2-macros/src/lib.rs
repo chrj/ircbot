@@ -35,6 +35,13 @@ impl syn::parse::Parse for CommandArgs {
 
 // ─── #[bot] ──────────────────────────────────────────────────────────────────
 
+/// Derive-like attribute that turns an `impl` block into a runnable IRC bot.
+///
+/// # Panics
+///
+/// Panics at compile time if the annotated `impl` block does not use a simple
+/// (non-generic, non-path) type name, e.g. `impl MyBot { … }`.
+#[allow(clippy::too_many_lines)]
 #[proc_macro_attribute]
 pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemImpl);
@@ -99,7 +106,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             let args: CommandArgs = syn::parse2(ml.tokens.clone())
                                 .unwrap_or(CommandArgs { name: String::new(), target: None });
                             let name = &args.name;
-                            let target_ts = opt_str_ts(&args.target);
+                            let target_ts = opt_str_ts(args.target.as_deref());
                             trigger_tokens = Some(quote! {
                                 rustbot2::Trigger::Command {
                                     name: #name.to_string(),
@@ -126,7 +133,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                                         let k = nv
                                             .path
                                             .get_ident()
-                                            .map(|i| i.to_string())
+                                            .map(ToString::to_string)
                                             .unwrap_or_default();
                                         if let Expr::Lit(ExprLit {
                                             lit: Lit::Str(s), ..
@@ -146,7 +153,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                                 }
                             }
 
-                            let target_ts = opt_str_ts(&target);
+                            let target_ts = opt_str_ts(target.as_deref());
                             if let Some(msg_pat) = message {
                                 trigger_tokens = Some(quote! {
                                     rustbot2::Trigger::Message {
@@ -162,7 +169,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                                     }
                                 });
                             } else if let Some(ev) = event {
-                                let regex_ts = opt_str_ts(&regex);
+                                let regex_ts = opt_str_ts(regex.as_deref());
                                 trigger_tokens = Some(quote! {
                                     rustbot2::Trigger::Event {
                                         event: #ev.to_string(),
@@ -237,10 +244,11 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-fn opt_str_ts(s: &Option<String>) -> TokenStream2 {
-    match s {
-        Some(v) => quote! { Some(#v.to_string()) },
-        None => quote! { None },
+fn opt_str_ts(s: Option<&str>) -> TokenStream2 {
+    if let Some(v) = s {
+        quote! { Some(#v.to_string()) }
+    } else {
+        quote! { None }
     }
 }
 

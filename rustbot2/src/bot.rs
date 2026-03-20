@@ -17,6 +17,11 @@ const CMD_PREFIX: char = '!';
 
 // ─── public entry-point ──────────────────────────────────────────────────────
 
+/// Handles IRC messages, dispatching to registered handlers.
+///
+/// # Errors
+///
+/// Returns an error if reading from the connection fails.
 pub async fn run_bot_internal<T: Send + Sync + 'static>(
     bot: Arc<T>,
     state: BotState,
@@ -54,14 +59,14 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         if let Some(msg) = IrcMessage::parse(&line) {
             match msg.command.as_str() {
                 "PING" => {
-                    let srv = msg.params.first().map(|s| s.as_str()).unwrap_or("");
-                    let _ = write_tx.send(format!("PONG :{}\r\n", srv));
+                    let srv = msg.params.first().map_or("", String::as_str);
+                    let _ = write_tx.send(format!("PONG :{srv}\r\n"));
                 }
                 "001" => {
                     if !joined {
                         joined = true;
                         for ch in &channels {
-                            let _ = write_tx.send(format!("JOIN {}\r\n", ch));
+                            let _ = write_tx.send(format!("JOIN {ch}\r\n"));
                         }
                     }
                 }
@@ -79,6 +84,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
 // ─── trigger matching ────────────────────────────────────────────────────────
 
 /// Returns `Some(captures)` if `msg` matches `trigger`, `None` otherwise.
+#[must_use]
 pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, _bot_nick: &str) -> Option<Vec<String>> {
     match trigger {
         Trigger::Command { name, target } => {
@@ -95,8 +101,7 @@ pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, _bot_nick: &str) -> Op
             let text = text.strip_prefix(CMD_PREFIX)?;
             let (cmd, rest) = text
                 .split_once(' ')
-                .map(|(c, r)| (c, r.trim()))
-                .unwrap_or((text, ""));
+                .map_or((text, ""), |(c, r)| (c, r.trim()));
             if !cmd.eq_ignore_ascii_case(name) {
                 return None;
             }
@@ -150,6 +155,7 @@ pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, _bot_nick: &str) -> Op
 
 /// Match `text` against a glob `pattern` where `*` is a capturing wildcard.
 /// Returns `Some(captures)` on success, `None` on mismatch.
+#[must_use]
 pub fn glob_match(pattern: &str, text: &str) -> Option<Vec<String>> {
     // Convert glob to a capturing regex.
     let re_str = glob_to_regex(pattern);
@@ -207,7 +213,7 @@ async fn dispatch<T: Send + Sync + 'static>(
             let bot_clone = Arc::clone(bot);
             let fut = (entry.handler)(bot_clone, ctx);
             if let Err(e) = fut.await {
-                eprintln!("[rustbot2] handler error: {}", e);
+                eprintln!("[rustbot2] handler error: {e}");
             }
         }
     }
