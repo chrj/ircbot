@@ -11,8 +11,7 @@ fn parse_ping() {
 
 #[test]
 fn parse_privmsg_channel() {
-    let msg =
-        IrcMessage::parse(":alice!a@host PRIVMSG #general :Hello, world!").unwrap();
+    let msg = IrcMessage::parse(":alice!a@host PRIVMSG #general :Hello, world!").unwrap();
     assert_eq!(msg.command, "PRIVMSG");
     assert_eq!(msg.prefix, Some("alice!a@host".to_string()));
     assert_eq!(msg.params, vec!["#general", "Hello, world!"]);
@@ -38,8 +37,7 @@ fn parse_join() {
 
 #[test]
 fn parse_numeric() {
-    let msg =
-        IrcMessage::parse(":irc.server.net 001 mynick :Welcome to the network!").unwrap();
+    let msg = IrcMessage::parse(":irc.server.net 001 mynick :Welcome to the network!").unwrap();
     assert_eq!(msg.command, "001");
     assert_eq!(msg.params[0], "mynick");
     assert_eq!(msg.trailing(), Some("Welcome to the network!"));

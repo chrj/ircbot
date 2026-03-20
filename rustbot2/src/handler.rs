@@ -8,8 +8,7 @@ use crate::context::Context;
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 /// The type-erased handler function stored in [`HandlerEntry`].
-pub type HandlerFn<T> =
-    Box<dyn Fn(Arc<T>, Context) -> BoxFuture<crate::Result> + Send + Sync>;
+pub type HandlerFn<T> = Box<dyn Fn(Arc<T>, Context) -> BoxFuture<crate::Result> + Send + Sync>;
 
 /// What causes a handler to fire.
 #[derive(Debug, Clone)]
