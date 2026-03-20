@@ -79,7 +79,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
 // ─── trigger matching ────────────────────────────────────────────────────────
 
 /// Returns `Some(captures)` if `msg` matches `trigger`, `None` otherwise.
-pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, _bot_nick: &str) -> Option<Vec<String>> {
+pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, bot_nick: &str) -> Option<Vec<String>> {
     match trigger {
         Trigger::Command { name, target } => {
             if msg.command != "PRIVMSG" {
@@ -142,6 +142,33 @@ pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, _bot_nick: &str) -> Op
             } else {
                 Some(vec![])
             }
+        }
+
+        Trigger::Mention { target } => {
+            if msg.command != "PRIVMSG" {
+                return None;
+            }
+            if let Some(t) = target {
+                if msg.target() != Some(t.as_str()) {
+                    return None;
+                }
+            }
+            let text = msg.trailing()?;
+            let lower = text.to_ascii_lowercase();
+            let nick_lower = bot_nick.to_ascii_lowercase();
+            // Accept "<nick>: " or "<nick>, " address prefixes.
+            // IRC nicks are restricted to ASCII characters (RFC 2812), so
+            // `prefix.len()` (bytes) equals its character count and slicing
+            // `text` at that offset is always on a valid UTF-8 boundary.
+            let rest = [": ", ", "].iter().find_map(|sep| {
+                let prefix = format!("{}{}", nick_lower, sep);
+                if lower.starts_with(prefix.as_str()) {
+                    Some(text[prefix.len()..].trim().to_string())
+                } else {
+                    None
+                }
+            })?;
+            Some(if rest.is_empty() { vec![] } else { vec![rest] })
         }
     }
 }

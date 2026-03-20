@@ -93,4 +93,43 @@ impl Context {
     pub fn message_text(&self) -> &str {
         self.raw.trailing().unwrap_or("")
     }
+
+    /// Send an IRC NOTICE to the channel / private target.
+    ///
+    /// NOTICEs are typically displayed without triggering audible alerts and
+    /// must never be replied to automatically (by convention), making them
+    /// suitable for bot status messages or one-shot notifications.
+    pub async fn notice(&self, msg: impl std::fmt::Display) -> crate::Result {
+        let msg = sanitize(&msg.to_string());
+        let target = if self.is_channel {
+            self.target.clone()
+        } else {
+            self.sender
+                .as_ref()
+                .map(|u| u.nick.clone())
+                .unwrap_or_else(|| self.target.clone())
+        };
+        self.tx
+            .send(format!("NOTICE {} :{}\r\n", target, msg))
+            .map_err(|e| Box::new(e) as crate::BoxError)?;
+        Ok(())
+    }
+
+    /// Send a private message directly to the sender, regardless of whether
+    /// the original message arrived in a channel or a query window.
+    ///
+    /// Useful for sending sensitive or verbose information out of a public
+    /// channel without flooding it.
+    pub async fn whisper(&self, msg: impl std::fmt::Display) -> crate::Result {
+        let msg = sanitize(&msg.to_string());
+        let to = self
+            .sender
+            .as_ref()
+            .map(|u| u.nick.as_str())
+            .unwrap_or(self.target.as_str());
+        self.tx
+            .send(format!("PRIVMSG {} :{}\r\n", to, msg))
+            .map_err(|e| Box::new(e) as crate::BoxError)?;
+        Ok(())
+    }
 }

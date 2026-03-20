@@ -25,6 +25,24 @@ impl MyBot {
             Ok(())
         }
     }
+
+    /// Fires when someone addresses the bot by name, e.g. "rustbot: hello".
+    #[on(mention)]
+    async fn on_mention(&self, ctx: Context, text: String) -> Result {
+        ctx.reply(format!("You said: {}", text)).await
+    }
+
+    /// Same as above but only in a specific channel.
+    #[on(mention, target = "#rust")]
+    async fn on_mention_rust(&self, ctx: Context) -> Result {
+        ctx.notice("I heard you!").await
+    }
+
+    /// Send a private message to the sender no matter where they wrote from.
+    #[command("secret")]
+    async fn secret(&self, ctx: Context) -> Result {
+        ctx.whisper("This is just between us.").await
+    }
 }
 
 #[tokio::main]

@@ -30,6 +30,12 @@ pub enum Trigger {
         target: Option<String>,
         regex: Option<String>,
     },
+    /// Fires when a PRIVMSG addresses the bot by name at the start of the
+    /// message (e.g. `"botname: hello"` or `"botname, ping"`).
+    /// The text following the address prefix is provided as a capture.
+    Mention {
+        target: Option<String>,
+    },
 }
 
 /// Associates a [`Trigger`] with a handler function for a bot of type `T`.
