@@ -192,3 +192,69 @@ fn event_trigger_regex_no_match() {
     let msg = privmsg("#chan", "Goodbye, world!");
     assert!(check_trigger(&trigger, &msg, "bot").is_none());
 }
+
+// ─── check_trigger: Mention ──────────────────────────────────────────────────
+
+#[test]
+fn mention_trigger_colon_separator() {
+    let trigger = Trigger::Mention { target: None };
+    let msg = privmsg("#chan", "rustbot: hello there");
+    let caps = check_trigger(&trigger, &msg, "rustbot").unwrap();
+    assert_eq!(caps, vec!["hello there"]);
+}
+
+#[test]
+fn mention_trigger_comma_separator() {
+    let trigger = Trigger::Mention { target: None };
+    let msg = privmsg("#chan", "rustbot, what time is it?");
+    let caps = check_trigger(&trigger, &msg, "rustbot").unwrap();
+    assert_eq!(caps, vec!["what time is it?"]);
+}
+
+#[test]
+fn mention_trigger_case_insensitive_nick() {
+    let trigger = Trigger::Mention { target: None };
+    assert!(check_trigger(&trigger, &privmsg("#chan", "RUSTBOT: hi"), "rustbot").is_some());
+    assert!(check_trigger(&trigger, &privmsg("#chan", "RustBot: hi"), "rustbot").is_some());
+}
+
+#[test]
+fn mention_trigger_wrong_nick() {
+    let trigger = Trigger::Mention { target: None };
+    let msg = privmsg("#chan", "otherbot: hello");
+    assert!(check_trigger(&trigger, &msg, "rustbot").is_none());
+}
+
+#[test]
+fn mention_trigger_no_separator() {
+    // "rustbot hello" without a separator should NOT match.
+    let trigger = Trigger::Mention { target: None };
+    let msg = privmsg("#chan", "rustbot hello");
+    assert!(check_trigger(&trigger, &msg, "rustbot").is_none());
+}
+
+#[test]
+fn mention_trigger_ignores_non_privmsg() {
+    let trigger = Trigger::Mention { target: None };
+    let msg = IrcMessage::parse(":nick!u@h JOIN #chan").unwrap();
+    assert!(check_trigger(&trigger, &msg, "rustbot").is_none());
+}
+
+#[test]
+fn mention_trigger_target_filter() {
+    let trigger = Trigger::Mention {
+        target: Some("#rust".to_string()),
+    };
+    assert!(check_trigger(&trigger, &privmsg("#rust", "rustbot: hi"), "rustbot").is_some());
+    assert!(check_trigger(&trigger, &privmsg("#other", "rustbot: hi"), "rustbot").is_none());
+}
+
+#[test]
+fn mention_trigger_empty_rest() {
+    // "rustbot: " — only whitespace after the separator: after trimming the
+    // remainder is empty, so the captures vector should be empty too.
+    let trigger = Trigger::Mention { target: None };
+    let msg = privmsg("#chan", "rustbot: ");
+    let caps = check_trigger(&trigger, &msg, "rustbot").unwrap();
+    assert!(caps.is_empty());
+}

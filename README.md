@@ -45,6 +45,18 @@ impl MyBot {
     async fn dance(&self, ctx: Context) -> Result {
         ctx.action("Dancing!").await
     }
+
+    /// Respond when the bot is addressed by name in any channel.
+    #[on(mention)]
+    async fn on_mention(&self, ctx: Context, text: String) -> Result {
+        ctx.reply(format!("You said: {}", text)).await
+    }
+
+    /// Send a private message directly to the caller, regardless of channel.
+    #[command("secret")]
+    async fn secret(&self, ctx: Context) -> Result {
+        ctx.whisper("This is just between us.").await
+    }
 }
 
 #[tokio::main]
@@ -63,8 +75,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ## Features
 
 - **Proc-macro API** — annotate handler methods with `#[command]` or `#[on]` and let the `#[bot]` macro wire everything up.
-- **Flexible triggers** — commands (`!ping`), glob message patterns (`"you are *"`), raw IRC events (`JOIN`, `PRIVMSG`, …) with optional target-channel and regex filters.
-- **Context helpers** — `ctx.reply()`, `ctx.say()`, and `ctx.action()` cover the most common reply patterns.
+- **Flexible triggers** — commands (`!ping`), glob message patterns (`"you are *"`), raw IRC events (`JOIN`, `PRIVMSG`, …), and bot-mention detection (`"botname: …"`), all with optional target-channel and regex filters.
+- **Context helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, and `ctx.whisper()` cover the most common reply patterns.
 - **Async / non-blocking** — built on Tokio; every handler is an `async fn`.
 - **Automatic PING/PONG** — the framework handles keepalives transparently.
 - **Concurrent write loop** — outgoing messages are serialised through an in-process channel so handlers can send replies without blocking each other.
@@ -164,10 +176,11 @@ The general-purpose trigger attribute.  Accepts the following named keys:
 | `command = "name"` | Same as `#[command("name")]` |
 | `message = "pattern"` | Glob pattern on PRIVMSG text; `*` is a capturing wildcard |
 | `event = "IRC_CMD"` | Any IRC command (e.g. `"JOIN"`, `"PRIVMSG"`, `"PART"`) |
+| `mention` | Fires when a PRIVMSG addresses the bot by name (`"botname: …"` or `"botname, …"`) |
 | `target = "#channel"` | Optional channel filter (for any trigger type) |
 | `regex = "…"` | Optional regex on the message text; capture groups become `String` args |
 
-Exactly one of `command`, `message`, or `event` must be present. `target` and `regex` are optional modifiers. When multiple keys are given `message` takes precedence over `command`, which takes precedence over `event`.
+Exactly one of `command`, `message`, `event`, or `mention` must be present. `target` and `regex` are optional modifiers. Trigger precedence when multiple keys are given: `message` > `command` > `event` > `mention`.
 
 **`message`** — glob pattern on PRIVMSG text.  Each `*` captures the corresponding portion of the text as a `String` parameter:
 
@@ -216,6 +229,22 @@ async fn op_request(&self, ctx: Context, target_nick: String, reason: String) ->
 #[on(command = "dance", target = "#general")]
 async fn dance(&self, ctx: Context) -> Result {
     ctx.action("dances!").await
+}
+```
+
+**`mention`** — fires when a PRIVMSG directly addresses the bot by name (`"botname: …"` or `"botname, …"`).  The text that follows the prefix is passed as the first `String` parameter:
+
+```rust
+// Fires when a user writes "mybot: hello there" in a channel.
+#[on(mention)]
+async fn on_mention(&self, ctx: Context, text: String) -> Result {
+    ctx.reply(format!("You said: {}", text)).await
+}
+
+// Restrict to a specific channel.
+#[on(mention, target = "#rust")]
+async fn on_mention_rust(&self, ctx: Context) -> Result {
+    ctx.notice("I heard you!").await
 }
 ```
 
@@ -278,6 +307,8 @@ incoming message and helper methods for sending replies.
 | `ctx.reply(msg)` | In a channel: `<target> nick, msg`. In a query: `<nick> msg`. |
 | `ctx.say(msg)` | Send `msg` to the current channel or query target, without a nick prefix. |
 | `ctx.action(msg)` | Send a CTCP ACTION (`/me msg`) to the current target. |
+| `ctx.notice(msg)` | Send a `NOTICE` to the current target. NOTICEs must never be replied to automatically (by convention), making them suitable for status messages and one-shot notifications. |
+| `ctx.whisper(msg)` | Send a private message directly to the sender's nick, regardless of whether the original message arrived in a channel or a query. |
 | `ctx.message_text()` | The raw trailing text of the underlying IRC message. |
 
 ## User
@@ -309,7 +340,7 @@ by editing the `main` function.
 cargo test
 ```
 
-31 tests covering IRC parsing and all trigger types.
+39 tests covering IRC parsing and all trigger types.
 
 ---
 

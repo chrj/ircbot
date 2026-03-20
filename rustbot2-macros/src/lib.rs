@@ -132,34 +132,44 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             let mut command_on: Option<String> = None;
                             let mut target: Option<String> = None;
                             let mut regex: Option<String> = None;
+                            let mut mention = false;
 
                             if let Ok(metas) = metas_result {
                                 for meta in metas {
-                                    if let Meta::NameValue(nv) = meta {
-                                        let k = nv
-                                            .path
-                                            .get_ident()
-                                            .map(ToString::to_string)
-                                            .unwrap_or_default();
-                                        if let Expr::Lit(ExprLit {
-                                            lit: Lit::Str(s), ..
-                                        }) = &nv.value
-                                        {
-                                            let v = s.value();
-                                            match k.as_str() {
-                                                "event" => event = Some(v),
-                                                "message" => message = Some(v),
-                                                "command" => command_on = Some(v),
-                                                "target" => target = Some(v),
-                                                "regex" => regex = Some(v),
-                                                _ => {}
+                                    match &meta {
+                                        Meta::Path(p) if p.is_ident("mention") => {
+                                            mention = true;
+                                        }
+                                        Meta::NameValue(nv) => {
+                                            let k = nv
+                                                .path
+                                                .get_ident()
+                                                .map(ToString::to_string)
+                                                .unwrap_or_default();
+                                            if let Expr::Lit(ExprLit {
+                                                lit: Lit::Str(s), ..
+                                            }) = &nv.value
+                                            {
+                                                let v = s.value();
+                                                match k.as_str() {
+                                                    "event" => event = Some(v),
+                                                    "message" => message = Some(v),
+                                                    "command" => command_on = Some(v),
+                                                    "target" => target = Some(v),
+                                                    "regex" => regex = Some(v),
+                                                    _ => {}
+                                                }
                                             }
                                         }
+                                        _ => {}
                                     }
                                 }
                             }
 
                             let target_ts = opt_str_ts(target.as_deref());
+                            // Precedence: message > command > event > mention.
+                            // Only the first matching key wins; combining multiple
+                            // trigger types in one `#[on(...)]` is not supported.
                             if let Some(msg_pat) = message {
                                 trigger_tokens = Some(quote! {
                                     rustbot2::Trigger::Message {
@@ -181,6 +191,12 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                                         event: #ev.to_string(),
                                         target: #target_ts,
                                         regex: #regex_ts,
+                                    }
+                                });
+                            } else if mention {
+                                trigger_tokens = Some(quote! {
+                                    rustbot2::Trigger::Mention {
+                                        target: #target_ts,
                                     }
                                 });
                             }

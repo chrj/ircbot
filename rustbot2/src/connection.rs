@@ -16,7 +16,11 @@ impl BotState {
     /// Normalise a channel name: if it doesn't start with a recognised IRC
     /// channel prefix (`#`, `&`, `+`, `!`) a `#` is prepended automatically.
     fn normalise_channel(ch: String) -> String {
-        if is_channel_name(&ch) { ch } else { format!("#{ch}") }
+        if is_channel_name(&ch) {
+            ch
+        } else {
+            format!("#{ch}")
+        }
     }
 
     /// Connect to an IRC server, send NICK/USER, and return a `BotState` ready to run.
