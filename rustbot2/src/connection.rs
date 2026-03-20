@@ -50,6 +50,11 @@ impl BotState {
         // Recover the inner write half from the BufWriter.
         let write_half = writer.into_inner();
 
-        Ok(BotState { nick, channels, reader, write_half })
+        Ok(BotState {
+            nick,
+            channels,
+            reader,
+            write_half,
+        })
     }
 }

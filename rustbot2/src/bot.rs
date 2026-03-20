@@ -27,7 +27,12 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     state: BotState,
     handlers: Vec<HandlerEntry<T>>,
 ) -> Result<(), BoxError> {
-    let BotState { nick, channels, reader, write_half } = state;
+    let BotState {
+        nick,
+        channels,
+        reader,
+        write_half,
+    } = state;
 
     // Create the mpsc write channel.
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<String>();
@@ -125,7 +130,11 @@ pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, _bot_nick: &str) -> Op
             glob_match(pattern, text)
         }
 
-        Trigger::Event { event, target, regex } => {
+        Trigger::Event {
+            event,
+            target,
+            regex,
+        } => {
             if !msg.command.eq_ignore_ascii_case(event) {
                 return None;
             }

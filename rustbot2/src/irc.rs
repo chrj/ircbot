@@ -61,7 +61,11 @@ impl IrcMessage {
             };
         }
 
-        Some(IrcMessage { prefix, command, params })
+        Some(IrcMessage {
+            prefix,
+            command,
+            params,
+        })
     }
 
     /// Extracts the nick portion of the prefix (everything before `!`).
