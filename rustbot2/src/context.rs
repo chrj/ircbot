@@ -25,9 +25,15 @@ pub struct Context {
     pub captures: Vec<String>,
 }
 
+/// Strip characters that could be used for IRC message injection.
+fn sanitize(s: &str) -> String {
+    s.chars().filter(|&c| c != '\r' && c != '\n').collect()
+}
+
 impl Context {
     /// Reply to the sender.  In a channel, prefixes the nick; in a query, PMs back.
     pub async fn reply(&self, msg: impl std::fmt::Display) -> crate::Result {
+        let msg = sanitize(&msg.to_string());
         let raw = if self.is_channel {
             let prefix = self
                 .sender
@@ -51,6 +57,7 @@ impl Context {
 
     /// Send a message to the channel / private target without a nick prefix.
     pub async fn say(&self, msg: impl std::fmt::Display) -> crate::Result {
+        let msg = sanitize(&msg.to_string());
         let target = if self.is_channel {
             self.target.clone()
         } else {
@@ -67,6 +74,7 @@ impl Context {
 
     /// Send a `/me` action.
     pub async fn action(&self, msg: impl std::fmt::Display) -> crate::Result {
+        let msg = sanitize(&msg.to_string());
         let target = if self.is_channel {
             self.target.clone()
         } else {

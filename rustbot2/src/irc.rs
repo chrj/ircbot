@@ -1,3 +1,9 @@
+/// Returns `true` if `name` starts with an IRC channel prefix character
+/// (`#`, `&`, `+`, `!`).
+pub fn is_channel_name(name: &str) -> bool {
+    matches!(name.chars().next(), Some('#') | Some('&') | Some('+') | Some('!'))
+}
+
 /// A parsed IRC message.
 #[derive(Debug, Clone)]
 pub struct IrcMessage {

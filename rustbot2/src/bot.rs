@@ -8,7 +8,7 @@ use crate::{
     connection::BotState,
     context::Context,
     handler::{HandlerEntry, Trigger},
-    irc::IrcMessage,
+    irc::{is_channel_name, IrcMessage},
     BoxError,
 };
 
@@ -191,7 +191,7 @@ async fn dispatch<T: Send + Sync + 'static>(
 ) {
     let sender = msg.parse_user();
     let target = msg.target().unwrap_or("").to_string();
-    let is_channel = target.starts_with('#') || target.starts_with('&');
+    let is_channel = is_channel_name(&target);
 
     for entry in handlers.as_slice() {
         if let Some(captures) = check_trigger(&entry.trigger, msg, bot_nick) {
