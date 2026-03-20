@@ -18,7 +18,7 @@ pub struct IrcMessage {
 impl IrcMessage {
     /// Parse a single IRC line.  Returns `None` on empty / malformed input.
     pub fn parse(line: &str) -> Option<Self> {
-        let line = line.trim_end_matches(|c: char| c == '\r' || c == '\n');
+        let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             return None;
         }
