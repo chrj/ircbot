@@ -29,7 +29,10 @@ impl syn::parse::Parse for CommandArgs {
                 target = Some(val.value());
             }
         }
-        Ok(CommandArgs { name: name.value(), target })
+        Ok(CommandArgs {
+            name: name.value(),
+            target,
+        })
     }
 }
 
@@ -96,8 +99,11 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 match ident.to_string().as_str() {
                     "command" => {
                         if let Meta::List(ml) = &attr.meta {
-                            let args: CommandArgs = syn::parse2(ml.tokens.clone())
-                                .unwrap_or(CommandArgs { name: String::new(), target: None });
+                            let args: CommandArgs =
+                                syn::parse2(ml.tokens.clone()).unwrap_or(CommandArgs {
+                                    name: String::new(),
+                                    target: None,
+                                });
                             let name = &args.name;
                             let target_ts = opt_str_ts(&args.target);
                             trigger_tokens = Some(quote! {

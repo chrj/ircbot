@@ -1,7 +1,10 @@
 /// Returns `true` if `name` starts with an IRC channel prefix character
 /// (`#`, `&`, `+`, `!`).
 pub fn is_channel_name(name: &str) -> bool {
-    matches!(name.chars().next(), Some('#') | Some('&') | Some('+') | Some('!'))
+    matches!(
+        name.chars().next(),
+        Some('#') | Some('&') | Some('+') | Some('!')
+    )
 }
 
 /// A parsed IRC message.
@@ -59,7 +62,11 @@ impl IrcMessage {
             };
         }
 
-        Some(IrcMessage { prefix, command, params })
+        Some(IrcMessage {
+            prefix,
+            command,
+            params,
+        })
     }
 
     /// Extracts the nick portion of the prefix (everything before `!`).
