@@ -4,23 +4,23 @@ use rustbot2::{bot, Context, Result};
 impl MyBot {
     #[command("ping")]
     async fn ping(&self, ctx: Context) -> Result {
-        ctx.reply("pong!").await
+        ctx.reply("pong!")
     }
 
     #[command("echo")]
     async fn echo(&self, ctx: Context, text: String) -> Result {
-        ctx.say(text).await
+        ctx.say(text)
     }
 
     #[on(message = "hello *")]
     async fn greet(&self, ctx: Context, who: String) -> Result {
-        ctx.say(format!("Hello, {}!", who)).await
+        ctx.say(format!("Hello, {who}!"))
     }
 
     #[on(event = "JOIN", target = "#rust")]
     async fn welcome(&self, ctx: Context) -> Result {
         if let Some(user) = &ctx.sender {
-            ctx.say(format!("Welcome to #rust, {}!", user.nick)).await
+            ctx.say(format!("Welcome to #rust, {}!", user.nick))
         } else {
             Ok(())
         }
@@ -29,7 +29,7 @@ impl MyBot {
     /// Fires when someone addresses the bot by name, e.g. "rustbot: hello".
     #[on(mention)]
     async fn on_mention(&self, ctx: Context, text: String) -> Result {
-        ctx.reply(format!("You said: {}", text)).await
+        ctx.reply(format!("You said: {}", text))
     }
 
     /// Same as above but only in a specific channel.
