@@ -54,7 +54,10 @@ fn privmsg(target: &str, text: &str) -> IrcMessage {
 
 #[test]
 fn command_trigger_basic() {
-    let trigger = Trigger::Command { name: "ping".to_string(), target: None };
+    let trigger = Trigger::Command {
+        name: "ping".to_string(),
+        target: None,
+    };
     let msg = privmsg("#chan", "!ping");
     let caps = check_trigger(&trigger, &msg, "bot").unwrap();
     assert!(caps.is_empty());
@@ -62,7 +65,10 @@ fn command_trigger_basic() {
 
 #[test]
 fn command_trigger_with_args() {
-    let trigger = Trigger::Command { name: "echo".to_string(), target: None };
+    let trigger = Trigger::Command {
+        name: "echo".to_string(),
+        target: None,
+    };
     let msg = privmsg("#chan", "!echo hello world");
     let caps = check_trigger(&trigger, &msg, "bot").unwrap();
     assert_eq!(caps, vec!["hello world"]);
@@ -70,7 +76,10 @@ fn command_trigger_with_args() {
 
 #[test]
 fn command_trigger_wrong_name() {
-    let trigger = Trigger::Command { name: "ping".to_string(), target: None };
+    let trigger = Trigger::Command {
+        name: "ping".to_string(),
+        target: None,
+    };
     let msg = privmsg("#chan", "!pong");
     assert!(check_trigger(&trigger, &msg, "bot").is_none());
 }
@@ -87,14 +96,20 @@ fn command_trigger_target_match() {
 
 #[test]
 fn command_trigger_case_insensitive_name() {
-    let trigger = Trigger::Command { name: "Ping".to_string(), target: None };
+    let trigger = Trigger::Command {
+        name: "Ping".to_string(),
+        target: None,
+    };
     assert!(check_trigger(&trigger, &privmsg("#chan", "!ping"), "bot").is_some());
     assert!(check_trigger(&trigger, &privmsg("#chan", "!PING"), "bot").is_some());
 }
 
 #[test]
 fn command_trigger_ignores_non_privmsg() {
-    let trigger = Trigger::Command { name: "ping".to_string(), target: None };
+    let trigger = Trigger::Command {
+        name: "ping".to_string(),
+        target: None,
+    };
     let msg = IrcMessage::parse(":nick!u@h JOIN #chan").unwrap();
     assert!(check_trigger(&trigger, &msg, "bot").is_none());
 }
@@ -103,14 +118,20 @@ fn command_trigger_ignores_non_privmsg() {
 
 #[test]
 fn message_trigger_exact() {
-    let trigger = Trigger::Message { pattern: "hello".to_string(), target: None };
+    let trigger = Trigger::Message {
+        pattern: "hello".to_string(),
+        target: None,
+    };
     assert!(check_trigger(&trigger, &privmsg("#chan", "hello"), "bot").is_some());
     assert!(check_trigger(&trigger, &privmsg("#chan", "hello world"), "bot").is_none());
 }
 
 #[test]
 fn message_trigger_wildcard() {
-    let trigger = Trigger::Message { pattern: "hello *".to_string(), target: None };
+    let trigger = Trigger::Message {
+        pattern: "hello *".to_string(),
+        target: None,
+    };
     let caps = check_trigger(&trigger, &privmsg("#chan", "hello alice"), "bot").unwrap();
     assert_eq!(caps, vec!["alice"]);
 }
@@ -221,13 +242,11 @@ fn mention_trigger_ignores_non_privmsg() {
 
 #[test]
 fn mention_trigger_target_filter() {
-    let trigger = Trigger::Mention { target: Some("#rust".to_string()) };
-    assert!(
-        check_trigger(&trigger, &privmsg("#rust", "rustbot: hi"), "rustbot").is_some()
-    );
-    assert!(
-        check_trigger(&trigger, &privmsg("#other", "rustbot: hi"), "rustbot").is_none()
-    );
+    let trigger = Trigger::Mention {
+        target: Some("#rust".to_string()),
+    };
+    assert!(check_trigger(&trigger, &privmsg("#rust", "rustbot: hi"), "rustbot").is_some());
+    assert!(check_trigger(&trigger, &privmsg("#other", "rustbot: hi"), "rustbot").is_none());
 }
 
 #[test]
