@@ -16,11 +16,7 @@ impl BotState {
     /// Normalise a channel name: if it doesn't start with a recognised IRC
     /// channel prefix (`#`, `&`, `+`, `!`) a `#` is prepended automatically.
     fn normalise_channel(ch: String) -> String {
-        if is_channel_name(&ch) {
-            ch
-        } else {
-            format!("#{}", ch)
-        }
+        if is_channel_name(&ch) { ch } else { format!("#{ch}") }
     }
 
     /// Connect to an IRC server, send NICK/USER, and return a `BotState` ready to run.
@@ -28,6 +24,10 @@ impl BotState {
     /// Channel names that do not already start with a channel prefix character
     /// (`#`, `&`, `+`, `!`) will automatically be prefixed with `#`, so both
     /// `"general"` and `"#general"` are accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TCP connection or initial handshake fails.
     pub async fn connect(
         nick: String,
         server: &str,
@@ -40,10 +40,10 @@ impl BotState {
         let mut writer = BufWriter::new(write_half);
 
         writer
-            .write_all(format!("NICK {}\r\n", nick).as_bytes())
+            .write_all(format!("NICK {nick}\r\n").as_bytes())
             .await?;
         writer
-            .write_all(format!("USER {} 0 * :{}\r\n", nick, nick).as_bytes())
+            .write_all(format!("USER {nick} 0 * :{nick}\r\n").as_bytes())
             .await?;
         writer.flush().await?;
 

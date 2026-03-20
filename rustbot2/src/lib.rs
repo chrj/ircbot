@@ -24,7 +24,7 @@ pub enum BotError {
 impl std::fmt::Display for BotError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BotError::MissingContext(ctx) => write!(f, "missing context: {}", ctx),
+            BotError::MissingContext(ctx) => write!(f, "missing context: {ctx}"),
         }
     }
 }
@@ -37,6 +37,9 @@ pub mod internal {
 
     use crate::{BotState, BoxError, HandlerEntry};
 
+    /// # Errors
+    ///
+    /// Returns an error if the bot connection fails.
     pub async fn run_bot<T: Send + Sync + 'static>(
         bot: Arc<T>,
         state: BotState,

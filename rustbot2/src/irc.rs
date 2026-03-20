@@ -1,10 +1,8 @@
 /// Returns `true` if `name` starts with an IRC channel prefix character
 /// (`#`, `&`, `+`, `!`).
+#[must_use]
 pub fn is_channel_name(name: &str) -> bool {
-    matches!(
-        name.chars().next(),
-        Some('#') | Some('&') | Some('+') | Some('!')
-    )
+    matches!(name.chars().next(), Some('#' | '&' | '+' | '!'))
 }
 
 /// A parsed IRC message.
@@ -20,8 +18,9 @@ pub struct IrcMessage {
 
 impl IrcMessage {
     /// Parse a single IRC line.  Returns `None` on empty / malformed input.
+    #[must_use]
     pub fn parse(line: &str) -> Option<Self> {
-        let line = line.trim_end_matches(|c: char| c == '\r' || c == '\n');
+        let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             return None;
         }
@@ -70,6 +69,7 @@ impl IrcMessage {
     }
 
     /// Extracts the nick portion of the prefix (everything before `!`).
+    #[must_use]
     pub fn nick(&self) -> Option<&str> {
         let prefix = self.prefix.as_deref()?;
         Some(prefix.split('!').next().unwrap_or(prefix))
@@ -86,6 +86,7 @@ impl IrcMessage {
     }
 
     /// Parse the prefix into a [`crate::context::User`].
+    #[must_use]
     pub fn parse_user(&self) -> Option<crate::context::User> {
         let prefix = self.prefix.as_deref()?;
         let (nick_part, rest) = prefix.split_once('!')?;

@@ -32,7 +32,11 @@ fn sanitize(s: &str) -> String {
 
 impl Context {
     /// Reply to the sender.  In a channel, prefixes the nick; in a query, PMs back.
-    pub async fn reply(&self, msg: impl std::fmt::Display) -> crate::Result {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write channel is closed.
+    pub fn reply(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
         let raw = if self.is_channel {
             let prefix = self
@@ -40,14 +44,13 @@ impl Context {
                 .as_ref()
                 .map(|u| format!("{}, ", u.nick))
                 .unwrap_or_default();
-            format!("PRIVMSG {} :{}{}\r\n", self.target, prefix, msg)
+            format!("PRIVMSG {} :{prefix}{msg}\r\n", self.target)
         } else {
             let to = self
                 .sender
                 .as_ref()
-                .map(|u| u.nick.as_str())
-                .unwrap_or(self.target.as_str());
-            format!("PRIVMSG {} :{}\r\n", to, msg)
+                .map_or(self.target.as_str(), |u| u.nick.as_str());
+            format!("PRIVMSG {to} :{msg}\r\n")
         };
         self.tx
             .send(raw)
@@ -56,40 +59,47 @@ impl Context {
     }
 
     /// Send a message to the channel / private target without a nick prefix.
-    pub async fn say(&self, msg: impl std::fmt::Display) -> crate::Result {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write channel is closed.
+    pub fn say(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
         let target = if self.is_channel {
             self.target.clone()
         } else {
             self.sender
                 .as_ref()
-                .map(|u| u.nick.clone())
-                .unwrap_or_else(|| self.target.clone())
+                .map_or_else(|| self.target.clone(), |u| u.nick.clone())
         };
         self.tx
-            .send(format!("PRIVMSG {} :{}\r\n", target, msg))
+            .send(format!("PRIVMSG {target} :{msg}\r\n"))
             .map_err(|e| Box::new(e) as crate::BoxError)?;
         Ok(())
     }
 
     /// Send a `/me` action.
-    pub async fn action(&self, msg: impl std::fmt::Display) -> crate::Result {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write channel is closed.
+    pub fn action(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
         let target = if self.is_channel {
             self.target.clone()
         } else {
             self.sender
                 .as_ref()
-                .map(|u| u.nick.clone())
-                .unwrap_or_else(|| self.target.clone())
+                .map_or_else(|| self.target.clone(), |u| u.nick.clone())
         };
         self.tx
-            .send(format!("PRIVMSG {} :\x01ACTION {}\x01\r\n", target, msg))
+            .send(format!("PRIVMSG {target} :\x01ACTION {msg}\x01\r\n"))
             .map_err(|e| Box::new(e) as crate::BoxError)?;
         Ok(())
     }
 
     /// The trailing text of the underlying IRC message.
+    #[must_use]
     pub fn message_text(&self) -> &str {
         self.raw.trailing().unwrap_or("")
     }
