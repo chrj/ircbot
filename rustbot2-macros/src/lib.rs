@@ -1,0 +1,309 @@
+use proc_macro::TokenStream;
+use proc_macro2::{Span, TokenStream as TokenStream2};
+use quote::quote;
+use syn::{
+    parse_macro_input, Expr, ExprLit, FnArg, Ident, ImplItem, ItemImpl, Lit, Meta, Pat, Type,
+};
+
+// ─── Custom parsers ──────────────────────────────────────────────────────────
+
+/// Parses `#[command("name")]` or `#[command("name", target = "...")]`
+struct CommandArgs {
+    name: String,
+    target: Option<String>,
+}
+
+impl syn::parse::Parse for CommandArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let name: syn::LitStr = input.parse()?;
+        let mut target = None;
+        while input.peek(syn::Token![,]) {
+            let _: syn::Token![,] = input.parse()?;
+            if input.is_empty() {
+                break;
+            }
+            let key: Ident = input.parse()?;
+            let _: syn::Token![=] = input.parse()?;
+            let val: syn::LitStr = input.parse()?;
+            if key == "target" {
+                target = Some(val.value());
+            }
+        }
+        Ok(CommandArgs { name: name.value(), target })
+    }
+}
+
+// ─── #[bot] ──────────────────────────────────────────────────────────────────
+
+#[proc_macro_attribute]
+pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemImpl);
+
+    let self_ty = &input.self_ty;
+    let struct_name = match self_ty.as_ref() {
+        Type::Path(tp) => tp
+            .path
+            .get_ident()
+            .cloned()
+            .expect("#[bot] expects a simple struct name"),
+        _ => panic!("#[bot] expects a simple struct name"),
+    };
+
+    let mut handler_entries: Vec<TokenStream2> = Vec::new();
+    let mut cleaned_methods: Vec<TokenStream2> = Vec::new();
+
+    for item in &input.items {
+        if let ImplItem::Fn(method) = item {
+            let method_name = &method.sig.ident;
+
+            // Extra args beyond &self and ctx
+            let extra_args: Vec<(String, String)> = method
+                .sig
+                .inputs
+                .iter()
+                .skip(2)
+                .filter_map(|arg| {
+                    if let FnArg::Typed(pt) = arg {
+                        let name = match pt.pat.as_ref() {
+                            Pat::Ident(pi) => pi.ident.to_string(),
+                            _ => "arg".to_string(),
+                        };
+                        let ty = match pt.ty.as_ref() {
+                            Type::Path(tp) => tp
+                                .path
+                                .segments
+                                .last()
+                                .map(|s| s.ident.to_string())
+                                .unwrap_or_default(),
+                            _ => "Unknown".to_string(),
+                        };
+                        Some((name, ty))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let mut trigger_tokens: Option<TokenStream2> = None;
+            let mut cleaned_attrs: Vec<syn::Attribute> = Vec::new();
+
+            for attr in &method.attrs {
+                let Some(ident) = attr.path().get_ident() else {
+                    cleaned_attrs.push(attr.clone());
+                    continue;
+                };
+
+                match ident.to_string().as_str() {
+                    "command" => {
+                        if let Meta::List(ml) = &attr.meta {
+                            let args: CommandArgs = syn::parse2(ml.tokens.clone())
+                                .unwrap_or(CommandArgs { name: String::new(), target: None });
+                            let name = &args.name;
+                            let target_ts = opt_str_ts(&args.target);
+                            trigger_tokens = Some(quote! {
+                                rustbot2::Trigger::Command {
+                                    name: #name.to_string(),
+                                    target: #target_ts,
+                                }
+                            });
+                        }
+                    }
+                    "on" => {
+                        if let Meta::List(ml) = &attr.meta {
+                            let metas_result = ml.parse_args_with(
+                                syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
+                            );
+
+                            let mut event: Option<String> = None;
+                            let mut message: Option<String> = None;
+                            let mut command_on: Option<String> = None;
+                            let mut target: Option<String> = None;
+                            let mut regex: Option<String> = None;
+
+                            if let Ok(metas) = metas_result {
+                                for meta in metas {
+                                    if let Meta::NameValue(nv) = meta {
+                                        let k = nv
+                                            .path
+                                            .get_ident()
+                                            .map(|i| i.to_string())
+                                            .unwrap_or_default();
+                                        if let Expr::Lit(ExprLit {
+                                            lit: Lit::Str(s), ..
+                                        }) = &nv.value
+                                        {
+                                            let v = s.value();
+                                            match k.as_str() {
+                                                "event" => event = Some(v),
+                                                "message" => message = Some(v),
+                                                "command" => command_on = Some(v),
+                                                "target" => target = Some(v),
+                                                "regex" => regex = Some(v),
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            let target_ts = opt_str_ts(&target);
+                            if let Some(msg_pat) = message {
+                                trigger_tokens = Some(quote! {
+                                    rustbot2::Trigger::Message {
+                                        pattern: #msg_pat.to_string(),
+                                        target: #target_ts,
+                                    }
+                                });
+                            } else if let Some(cmd) = command_on {
+                                trigger_tokens = Some(quote! {
+                                    rustbot2::Trigger::Command {
+                                        name: #cmd.to_string(),
+                                        target: #target_ts,
+                                    }
+                                });
+                            } else if let Some(ev) = event {
+                                let regex_ts = opt_str_ts(&regex);
+                                trigger_tokens = Some(quote! {
+                                    rustbot2::Trigger::Event {
+                                        event: #ev.to_string(),
+                                        target: #target_ts,
+                                        regex: #regex_ts,
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    _ => {
+                        cleaned_attrs.push(attr.clone());
+                    }
+                }
+            }
+
+            if let Some(trigger) = trigger_tokens {
+                let wrapper = build_wrapper(method_name, &extra_args);
+                handler_entries.push(quote! {
+                    rustbot2::HandlerEntry {
+                        trigger: #trigger,
+                        handler: std::boxed::Box::new(#wrapper),
+                    }
+                });
+
+                let mut cleaned = method.clone();
+                cleaned.attrs = cleaned_attrs;
+                cleaned_methods.push(quote! { #cleaned });
+            } else {
+                cleaned_methods.push(quote! { #method });
+            }
+        } else {
+            let it = item;
+            cleaned_methods.push(quote! { #it });
+        }
+    }
+
+    quote! {
+        pub struct #struct_name {
+            __state: std::option::Option<rustbot2::BotState>,
+        }
+
+        impl #struct_name {
+            pub async fn new(
+                nick: impl Into<String>,
+                server: impl AsRef<str>,
+                channels: impl IntoIterator<Item = impl Into<String>>,
+            ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+                let state = rustbot2::BotState::connect(
+                    nick.into(),
+                    server.as_ref(),
+                    channels.into_iter().map(|c| c.into()).collect(),
+                ).await?;
+                Ok(#struct_name { __state: Some(state) })
+            }
+
+            pub async fn main_loop(mut self) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                let state = self.__state.take().expect("bot already started");
+                let bot_arc = std::sync::Arc::new(self);
+                rustbot2::internal::run_bot(bot_arc, state, Self::__handlers()).await
+            }
+
+            fn __handlers() -> Vec<rustbot2::HandlerEntry<#struct_name>> {
+                vec![ #(#handler_entries),* ]
+            }
+
+            #(#cleaned_methods)*
+        }
+    }
+    .into()
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+fn opt_str_ts(s: &Option<String>) -> TokenStream2 {
+    match s {
+        Some(v) => quote! { Some(#v.to_string()) },
+        None => quote! { None },
+    }
+}
+
+fn build_wrapper(method_name: &Ident, extra_args: &[(String, String)]) -> TokenStream2 {
+    if extra_args.is_empty() {
+        return quote! {
+            |bot: std::sync::Arc<_>, ctx: rustbot2::Context| -> rustbot2::BoxFuture<rustbot2::Result> {
+                std::boxed::Box::pin(async move { bot.#method_name(ctx).await })
+            }
+        };
+    }
+
+    let mut extractions: Vec<TokenStream2> = Vec::new();
+    let mut call_args: Vec<TokenStream2> = Vec::new();
+    let mut str_idx = 0usize;
+
+    for (name, ty) in extra_args {
+        let ident = Ident::new(name, Span::call_site());
+        call_args.push(quote! { #ident });
+        match ty.as_str() {
+            "User" => {
+                extractions.push(quote! {
+                    let #ident = ctx.sender.clone().unwrap_or_default();
+                });
+            }
+            "String" => {
+                let idx = str_idx;
+                str_idx += 1;
+                extractions.push(quote! {
+                    let #ident: String = if !ctx.captures.is_empty() {
+                        ctx.captures.get(#idx).cloned().unwrap_or_default()
+                    } else {
+                        ctx.message_text().to_string()
+                    };
+                });
+            }
+            _ => {
+                let ty_ident = Ident::new(ty, Span::call_site());
+                extractions.push(quote! {
+                    let #ident: #ty_ident = Default::default();
+                });
+            }
+        }
+    }
+
+    quote! {
+        |bot: std::sync::Arc<_>, ctx: rustbot2::Context| -> rustbot2::BoxFuture<rustbot2::Result> {
+            std::boxed::Box::pin(async move {
+                #(#extractions)*
+                bot.#method_name(ctx, #(#call_args),*).await
+            })
+        }
+    }
+}
+
+// ─── #[command] / #[on] as standalone no-ops ─────────────────────────────────
+
+#[proc_macro_attribute]
+pub fn command(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn on(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
