@@ -1,11 +1,22 @@
+use std::time::Duration;
+
 use crate::irc::is_channel_name;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
+
+/// Default interval between client-initiated keepalive pings.
+pub const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+/// Default time to wait for a pong before treating the connection as dead.
+pub const DEFAULT_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Holds the established connection to an IRC server plus join-on-connect metadata.
 pub struct BotState {
     pub nick: String,
     pub channels: Vec<String>,
+    /// Server address used when reconnecting (e.g. `"irc.example.net:6667"`).
+    pub server: String,
+    pub(crate) keepalive_interval: Duration,
+    pub(crate) keepalive_timeout: Duration,
     pub(crate) reader: tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
     /// The raw write half; `run_bot_internal` wraps this in a buffered writer and a
     /// dedicated write-loop task.
@@ -57,8 +68,23 @@ impl BotState {
         Ok(BotState {
             nick,
             channels,
+            server: server.to_string(),
+            keepalive_interval: DEFAULT_KEEPALIVE_INTERVAL,
+            keepalive_timeout: DEFAULT_KEEPALIVE_TIMEOUT,
             reader,
             write_half,
         })
+    }
+
+    /// Override the keepalive ping interval and pong timeout.
+    ///
+    /// By default the bot sends a `PING` every 30 seconds and waits 10 seconds
+    /// for the corresponding `PONG` before treating the connection as dead and
+    /// triggering a reconnect.  Call this method (before starting the bot) to
+    /// use different values.
+    pub fn with_keepalive(mut self, interval: Duration, timeout: Duration) -> Self {
+        self.keepalive_interval = interval;
+        self.keepalive_timeout = timeout;
+        self
     }
 }
