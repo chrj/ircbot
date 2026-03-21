@@ -1,6 +1,11 @@
 use crate::irc::IrcMessage;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// IRC mandates that no message line (including the trailing `\r\n`) may
+/// exceed 512 bytes.  We budget 2 bytes for `\r\n`, leaving 510 bytes for
+/// the command text itself.
+const MAX_IRC_LINE: usize = 510;
+
 /// A user on IRC (nick!user@host).
 #[derive(Debug, Clone, Default)]
 pub struct User {
@@ -32,35 +37,101 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
+/// Split `text` into one or more complete IRC lines of the form
+/// `"{header}{chunk}{suffix}\r\n"` where each line is at most 512 bytes.
+///
+/// When a split is necessary the function prefers to break at the last ASCII
+/// space within the available window (word-wrapping); if no space exists the
+/// text is hard-split at the byte limit, taking care to stay on a valid UTF-8
+/// character boundary.
+///
+/// Returns at least one entry even when `text` is empty.
+pub fn make_messages(header: &str, text: &str, suffix: &str) -> Vec<String> {
+    // bytes available for `text` inside each line
+    let overhead = header.len() + suffix.len() + 2; // +2 for \r\n
+    let available = MAX_IRC_LINE.saturating_sub(overhead);
+
+    if text.is_empty() || available == 0 {
+        return vec![format!("{header}{suffix}\r\n")];
+    }
+    if text.len() <= available {
+        return vec![format!("{header}{text}{suffix}\r\n")];
+    }
+
+    let mut messages = Vec::new();
+    let mut remaining = text;
+
+    while !remaining.is_empty() {
+        if remaining.len() <= available {
+            messages.push(format!("{header}{remaining}{suffix}\r\n"));
+            break;
+        }
+
+        // Find the largest valid UTF-8 boundary that fits.
+        let mut end = available;
+        while end > 0 && !remaining.is_char_boundary(end) {
+            end -= 1;
+        }
+
+        // Prefer breaking at a space; fall back to the hard limit.
+        let split_at = remaining[..end]
+            .rfind(' ')
+            .filter(|&p| p > 0)
+            .unwrap_or(end.max(1));
+
+        messages.push(format!("{header}{}{suffix}\r\n", &remaining[..split_at]));
+        remaining = remaining[split_at..].trim_start_matches(' ');
+    }
+
+    messages
+}
+
+/// Send one or more (split) messages through `tx`.
+fn send_chunked(
+    tx: &UnboundedSender<String>,
+    header: &str,
+    text: &str,
+    suffix: &str,
+) -> crate::Result {
+    for line in make_messages(header, text, suffix) {
+        tx.send(line).map_err(|e| Box::new(e) as crate::BoxError)?;
+    }
+    Ok(())
+}
+
 impl Context {
     /// Reply to the sender.  In a channel, prefixes the nick; in a query, PMs back.
+    ///
+    /// If the formatted message would exceed the IRC 512-byte line limit it is
+    /// automatically split across multiple messages.
     ///
     /// # Errors
     ///
     /// Returns an error if the write channel is closed.
     pub fn reply(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
-        let raw = if self.is_channel {
+        if self.is_channel {
             let prefix = self
                 .sender
                 .as_ref()
                 .map(|u| format!("{}, ", u.nick))
                 .unwrap_or_default();
-            format!("PRIVMSG {} :{prefix}{msg}\r\n", self.target)
+            let header = format!("PRIVMSG {} :{prefix}", self.target);
+            send_chunked(&self.tx, &header, &msg, "")
         } else {
             let to = self
                 .sender
                 .as_ref()
                 .map_or(self.target.as_str(), |u| u.nick.as_str());
-            format!("PRIVMSG {to} :{msg}\r\n")
-        };
-        self.tx
-            .send(raw)
-            .map_err(|e| Box::new(e) as crate::BoxError)?;
-        Ok(())
+            let header = format!("PRIVMSG {to} :");
+            send_chunked(&self.tx, &header, &msg, "")
+        }
     }
 
     /// Send a message to the channel / private target without a nick prefix.
+    ///
+    /// If the formatted message would exceed the IRC 512-byte line limit it is
+    /// automatically split across multiple messages.
     ///
     /// # Errors
     ///
@@ -74,13 +145,14 @@ impl Context {
                 .as_ref()
                 .map_or_else(|| self.target.clone(), |u| u.nick.clone())
         };
-        self.tx
-            .send(format!("PRIVMSG {target} :{msg}\r\n"))
-            .map_err(|e| Box::new(e) as crate::BoxError)?;
-        Ok(())
+        let header = format!("PRIVMSG {target} :");
+        send_chunked(&self.tx, &header, &msg, "")
     }
 
     /// Send a `/me` action.
+    ///
+    /// If the formatted message would exceed the IRC 512-byte line limit it is
+    /// automatically split across multiple messages.
     ///
     /// # Errors
     ///
@@ -94,10 +166,9 @@ impl Context {
                 .as_ref()
                 .map_or_else(|| self.target.clone(), |u| u.nick.clone())
         };
-        self.tx
-            .send(format!("PRIVMSG {target} :\x01ACTION {msg}\x01\r\n"))
-            .map_err(|e| Box::new(e) as crate::BoxError)?;
-        Ok(())
+        // CTCP ACTION: header is "PRIVMSG target :\x01ACTION ", suffix is "\x01"
+        let header = format!("PRIVMSG {target} :\x01ACTION ");
+        send_chunked(&self.tx, &header, &msg, "\x01")
     }
 
     /// The trailing text of the underlying IRC message.
@@ -111,6 +182,9 @@ impl Context {
     /// NOTICEs are typically displayed without triggering audible alerts and
     /// must never be replied to automatically (by convention), making them
     /// suitable for bot status messages or one-shot notifications.
+    ///
+    /// If the formatted message would exceed the IRC 512-byte line limit it is
+    /// automatically split across multiple messages.
     pub async fn notice(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
         let target = if self.is_channel {
@@ -121,10 +195,8 @@ impl Context {
                 .map(|u| u.nick.clone())
                 .unwrap_or_else(|| self.target.clone())
         };
-        self.tx
-            .send(format!("NOTICE {} :{}\r\n", target, msg))
-            .map_err(|e| Box::new(e) as crate::BoxError)?;
-        Ok(())
+        let header = format!("NOTICE {target} :");
+        send_chunked(&self.tx, &header, &msg, "")
     }
 
     /// Send a private message directly to the sender, regardless of whether
@@ -132,6 +204,9 @@ impl Context {
     ///
     /// Useful for sending sensitive or verbose information out of a public
     /// channel without flooding it.
+    ///
+    /// If the formatted message would exceed the IRC 512-byte line limit it is
+    /// automatically split across multiple messages.
     pub async fn whisper(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
         let to = self
@@ -139,9 +214,7 @@ impl Context {
             .as_ref()
             .map(|u| u.nick.as_str())
             .unwrap_or(self.target.as_str());
-        self.tx
-            .send(format!("PRIVMSG {} :{}\r\n", to, msg))
-            .map_err(|e| Box::new(e) as crate::BoxError)?;
-        Ok(())
+        let header = format!("PRIVMSG {to} :");
+        send_chunked(&self.tx, &header, &msg, "")
     }
 }
