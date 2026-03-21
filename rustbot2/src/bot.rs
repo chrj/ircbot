@@ -21,6 +21,14 @@ const CMD_PREFIX: char = '!';
 /// The token sent in our client-initiated keepalive `PING`.
 const KEEPALIVE_TOKEN: &str = "rustbot2-keepalive";
 
+/// A shareable, atomically-swappable set of handler entries.
+///
+/// The outer [`Arc`] allows the handle to be cloned cheaply.  The [`RwLock`]
+/// serialises writes.  The inner [`Arc`] lets a reader snapshot the current
+/// handler list with a single cheap `Arc::clone` — no lock is held across
+/// `.await` points.
+pub type HandlerSet<T> = Arc<RwLock<Arc<Vec<HandlerEntry<T>>>>>;
+
 // ─── public entry-point ──────────────────────────────────────────────────────
 
 /// Handles IRC messages, dispatching to registered handlers.
@@ -29,13 +37,17 @@ const KEEPALIVE_TOKEN: &str = "rustbot2-keepalive";
 /// the caller can reconnect) if the corresponding `PONG` is not received within
 /// the configured timeout.
 ///
+/// The `handlers` are read from a shared [`HandlerSet`] on every incoming
+/// message, so they can be swapped atomically at any point without
+/// disconnecting from IRC.
+///
 /// # Errors
 ///
 /// Returns an error if reading from the connection fails.
 pub async fn run_bot_internal<T: Send + Sync + 'static>(
     bot: Arc<T>,
     state: BotState,
-    handlers: Arc<Vec<HandlerEntry<T>>>,
+    handlers: HandlerSet<T>,
 ) -> Result<(), BoxError> {
     let BotState {
         nick,
@@ -47,6 +59,8 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         flood_rate,
         reader,
         write_half,
+        #[cfg(unix)]
+            raw_fd: _,
     } = state;
 
     // Create the mpsc write channel.
@@ -359,12 +373,9 @@ fn glob_to_regex(pattern: &str) -> String {
 
 // ─── dispatch ────────────────────────────────────────────────────────────────
 
-/// Handle a `PRIVMSG`.  CTCP requests (`PING`, `VERSION`) are answered
-/// automatically; all other messages (including `ACTION` and unknown CTCP
-/// commands) are forwarded to the registered user handlers.
 async fn handle_privmsg<T: Send + Sync + 'static>(
     bot: &Arc<T>,
-    handlers: &Arc<Vec<HandlerEntry<T>>>,
+    handlers: &HandlerSet<T>,
     msg: &IrcMessage,
     bot_nick: &str,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
@@ -404,16 +415,23 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
 
 async fn dispatch<T: Send + Sync + 'static>(
     bot: &Arc<T>,
-    handlers: &Arc<Vec<HandlerEntry<T>>>,
+    handlers: &HandlerSet<T>,
     msg: &IrcMessage,
     bot_nick: &str,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
+    // Snapshot the current handler list under a brief read-lock, then release
+    // immediately — no lock is held across any `.await` point.
+    let current: Arc<Vec<HandlerEntry<T>>> = {
+        let guard = handlers.read().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(&*guard)
+    };
+
     let sender = msg.parse_user();
     let target = msg.target().unwrap_or("").to_string();
     let is_channel = is_channel_name(&target);
 
-    for entry in handlers.as_slice() {
+    for entry in current.iter() {
         if let Some(captures) = check_trigger(&entry.trigger, msg, bot_nick) {
             let ctx = Context {
                 tx: tx.clone(),

@@ -2,8 +2,10 @@ pub mod bot;
 pub mod connection;
 pub mod context;
 pub mod handler;
+pub mod hot_reload;
 pub mod irc;
 
+pub use bot::HandlerSet;
 pub use connection::{
     BotState, DEFAULT_FLOOD_BURST, DEFAULT_FLOOD_RATE, DEFAULT_KEEPALIVE_INTERVAL,
     DEFAULT_KEEPALIVE_TIMEOUT,
@@ -35,24 +37,64 @@ impl std::fmt::Display for BotError {
 
 impl std::error::Error for BotError {}
 
+// ─── ReloadHandle ─────────────────────────────────────────────────────────────
+
+/// A handle for replacing the bot's handler list at runtime without
+/// disconnecting from IRC.
+///
+/// Obtain one via [`internal::make_handler_set`] + [`ReloadHandle::new`] when
+/// using the lower-level API, or use the generated `main_loop()` which wires
+/// up `SIGHUP` automatically.
+///
+/// `ReloadHandle` is `Clone` — clones share the same underlying [`HandlerSet`].
+pub struct ReloadHandle<T> {
+    handlers: HandlerSet<T>,
+}
+
+impl<T> ReloadHandle<T> {
+    /// Create a [`ReloadHandle`] from a [`HandlerSet`].
+    pub fn new(handlers: HandlerSet<T>) -> Self {
+        ReloadHandle { handlers }
+    }
+
+    /// Atomically replace the running bot's handler list.
+    ///
+    /// Takes effect on the next incoming IRC message; the connection is not
+    /// interrupted.
+    pub fn reload(&self, new_handlers: Vec<HandlerEntry<T>>) {
+        if let Ok(mut guard) = self.handlers.write() {
+            *guard = std::sync::Arc::new(new_handlers);
+        }
+    }
+}
+
+impl<T> Clone for ReloadHandle<T> {
+    fn clone(&self) -> Self {
+        ReloadHandle {
+            handlers: std::sync::Arc::clone(&self.handlers),
+        }
+    }
+}
+
 /// Internal helpers used by the generated `main_loop` code.
 pub mod internal {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
-    use crate::{BotState, BoxError, HandlerEntry};
+    use crate::{bot::HandlerSet, BotState, BoxError, HandlerEntry};
 
     /// Delay between successive reconnection attempts.
     const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
+    /// Wrap a `Vec<HandlerEntry<T>>` in a [`HandlerSet`].
+    ///
+    /// Convenience used by generated `main_loop` code and tests.
+    #[must_use]
+    pub fn make_handler_set<T>(handlers: Vec<HandlerEntry<T>>) -> HandlerSet<T> {
+        Arc::new(RwLock::new(Arc::new(handlers)))
+    }
+
     /// Run the bot, reconnecting automatically whenever the connection is lost.
-    ///
-    /// The bot sends a periodic `PING` to verify liveness; if no matching
-    /// `PONG` arrives within the configured timeout the connection is dropped
-    /// and a reconnect is attempted after [`RECONNECT_DELAY`].
-    ///
-    /// This function only returns with an `Err` when a reconnection attempt
-    /// itself fails (e.g. the server is permanently unreachable).
     ///
     /// # Errors
     ///
@@ -62,6 +104,9 @@ pub mod internal {
         state: BotState,
         handlers: Vec<HandlerEntry<T>>,
     ) -> std::result::Result<(), BoxError> {
+        // Wrap handlers in a HandlerSet so they can be hot-swapped at runtime.
+        let handlers = make_handler_set(handlers);
+
         // Preserve reconnection parameters before `state` is consumed.
         let server = state.server.clone();
         let nick = state.nick.clone();
@@ -71,9 +116,6 @@ pub mod internal {
         let flood_burst = state.flood_burst;
         let flood_rate = state.flood_rate;
 
-        // Wrap handlers in an Arc so they can be shared across reconnects
-        // without requiring `Clone` on `HandlerEntry`.
-        let handlers = Arc::new(handlers);
         let mut current_state = state;
 
         loop {

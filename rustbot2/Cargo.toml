@@ -18,3 +18,6 @@ irc = { version = "1", default-features = false }
 
 [[example]]
 name = "basic_bot"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

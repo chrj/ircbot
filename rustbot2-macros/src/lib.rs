@@ -235,11 +235,24 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         impl #struct_name {
+            /// Connect to an IRC server and return a bot ready to run.
+            ///
+            /// On Unix, if this process was started by `exec_reload` the live
+            /// TCP connection is inherited from the parent binary and no new
+            /// connection is made.  The `nick`, `server`, and `channels`
+            /// arguments are used only when no inherited connection is present.
             pub async fn new(
                 nick: impl Into<String>,
                 server: impl AsRef<str>,
                 channels: impl IntoIterator<Item = impl Into<String>>,
             ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+                // On Unix, check for an inherited fd from a hot-reload exec.
+                #[cfg(unix)]
+                if let Some(state) = rustbot2::BotState::try_inherit_from_env()? {
+                    eprintln!("[rustbot2] hot-reload: resumed on inherited connection");
+                    return Ok(#struct_name { __state: Some(state) });
+                }
+
                 let state = rustbot2::BotState::connect(
                     nick.into(),
                     server.as_ref(),
@@ -248,10 +261,58 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 Ok(#struct_name { __state: Some(state) })
             }
 
+            /// Run the bot's main event loop.
+            ///
+            /// On Unix, listens for `SIGHUP`.  When received, the current
+            /// process execs the bot binary at the same path, passing the live
+            /// TCP socket fd to the new process so the IRC connection is never
+            /// interrupted.  If the exec fails the bot continues running.
             pub async fn main_loop(mut self) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let state = self.__state.take().expect("bot already started");
+
+                #[cfg(unix)]
+                let (raw_fd, reload_nick, reload_server, reload_channels,
+                     reload_ka_interval_ms, reload_ka_timeout_ms) = (
+                    state.raw_fd,
+                    state.nick.clone(),
+                    state.server.clone(),
+                    state.channels.clone(),
+                    state.keepalive_interval().as_millis() as u64,
+                    state.keepalive_timeout().as_millis() as u64,
+                );
+
                 let bot_arc = std::sync::Arc::new(self);
-                rustbot2::internal::run_bot(bot_arc, state, Self::__handlers()).await
+
+                // Install a SIGHUP listener that execs the new binary with the
+                // live fd inherited — zero-disconnect binary hot-reload.
+                #[cfg(unix)]
+                {
+                    tokio::spawn(async move {
+                        use tokio::signal::unix::{signal, SignalKind};
+                        match signal(SignalKind::hangup()) {
+                            Ok(mut stream) => {
+                                while stream.recv().await.is_some() {
+                                    eprintln!("[rustbot2] SIGHUP — hot-reload: exec new binary");
+                                    let err = rustbot2::hot_reload::exec_reload(
+                                        raw_fd,
+                                        &reload_nick,
+                                        &reload_server,
+                                        &reload_channels,
+                                        reload_ka_interval_ms,
+                                        reload_ka_timeout_ms,
+                                    );
+                                    // exec_reload only returns on failure.
+                                    eprintln!("[rustbot2] hot-reload exec failed: {err}");
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[rustbot2] failed to install SIGHUP handler: {e}");
+                            }
+                        }
+                    });
+                }
+
+                rustbot2::internal::run_bot(bot_arc, state, #struct_name::__handlers()).await
             }
 
             fn __handlers() -> Vec<rustbot2::HandlerEntry<#struct_name>> {

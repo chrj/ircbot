@@ -32,6 +32,10 @@ pub struct BotState {
     /// The raw write half; `run_bot_internal` wraps this in a buffered writer and a
     /// dedicated write-loop task.
     pub(crate) write_half: tokio::net::tcp::OwnedWriteHalf,
+    /// The raw file descriptor of the underlying TCP socket.
+    /// Used by the hot-reload path to pass the live connection to a new binary.
+    #[cfg(unix)]
+    pub raw_fd: std::os::unix::io::RawFd,
 }
 
 impl BotState {
@@ -61,6 +65,13 @@ impl BotState {
     ) -> Result<BotState, Box<dyn std::error::Error + Send + Sync>> {
         let channels: Vec<String> = channels.into_iter().map(Self::normalise_channel).collect();
         let stream = TcpStream::connect(server).await?;
+
+        #[cfg(unix)]
+        let raw_fd = {
+            use std::os::unix::io::AsRawFd;
+            stream.as_raw_fd()
+        };
+
         let (read_half, write_half) = stream.into_split();
         let reader = tokio::io::BufReader::new(read_half);
         let mut writer = BufWriter::new(write_half);
@@ -86,7 +97,87 @@ impl BotState {
             flood_rate: DEFAULT_FLOOD_RATE,
             reader,
             write_half,
+            #[cfg(unix)]
+            raw_fd,
         })
+    }
+
+    /// Attempt to reconstruct a [`BotState`] from an inherited TCP file descriptor.
+    ///
+    /// When the bot is reloaded via [`crate::hot_reload::exec_reload`] the new
+    /// binary inherits the live TCP socket.  This method reads the metadata
+    /// from the environment variables written by `exec_reload` and wraps the
+    /// raw fd in a Tokio `TcpStream` — no new TCP connection is made, so the
+    /// IRC session is never interrupted.
+    ///
+    /// Returns `None` if the expected environment variables are absent (i.e.
+    /// this is a fresh start, not a reload).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the env vars are malformed or if the fd cannot be
+    /// converted to a `TcpStream`.
+    #[cfg(unix)]
+    pub fn try_inherit_from_env(
+    ) -> Result<Option<BotState>, Box<dyn std::error::Error + Send + Sync>> {
+        use std::os::unix::io::{FromRawFd, RawFd};
+
+        use crate::hot_reload::{
+            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_SERVER,
+        };
+
+        let fd_str = match std::env::var(ENV_FD) {
+            Ok(v) => v,
+            Err(_) => return Ok(None), // normal startup
+        };
+
+        let raw_fd: RawFd = fd_str.parse()?;
+        let nick = std::env::var(ENV_NICK)?;
+        let server = std::env::var(ENV_SERVER)?;
+        let channels_raw = std::env::var(ENV_CHANNELS)?;
+        let ka_interval_ms: u64 = std::env::var(ENV_KA_INTERVAL)?.parse()?;
+        let ka_timeout_ms: u64 = std::env::var(ENV_KA_TIMEOUT)?.parse()?;
+
+        // Clear the env vars so they are not accidentally inherited by any
+        // child processes the bot might spawn.
+        for var in &[
+            ENV_FD,
+            ENV_NICK,
+            ENV_SERVER,
+            ENV_CHANNELS,
+            ENV_KA_INTERVAL,
+            ENV_KA_TIMEOUT,
+        ] {
+            std::env::remove_var(var);
+        }
+
+        let channels: Vec<String> = if channels_raw.is_empty() {
+            vec![]
+        } else {
+            channels_raw.split(',').map(str::to_string).collect()
+        };
+
+        // Reconstruct the TcpStream from the raw fd.  Safety: the fd was
+        // inherited from the parent process and is still valid.
+        let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
+        std_stream.set_nonblocking(true)?;
+        let stream = TcpStream::from_std(std_stream)?;
+
+        let (read_half, write_half) = stream.into_split();
+        let reader = tokio::io::BufReader::new(read_half);
+
+        Ok(Some(BotState {
+            nick,
+            channels,
+            server,
+            keepalive_interval: Duration::from_millis(ka_interval_ms),
+            keepalive_timeout: Duration::from_millis(ka_timeout_ms),
+            flood_burst: DEFAULT_FLOOD_BURST,
+            flood_rate: DEFAULT_FLOOD_RATE,
+            reader,
+            write_half,
+            raw_fd,
+        }))
     }
 
     /// Override the keepalive ping interval and pong timeout.
@@ -101,17 +192,24 @@ impl BotState {
         self
     }
 
-    /// Override the outgoing-message flood-control parameters.
+    /// Override the flood-control token-bucket settings.
     ///
-    /// The write loop uses a token-bucket algorithm:
-    /// * Up to `burst` messages are sent immediately (the initial token supply).
-    /// * After the burst is exhausted, one token is added every `rate` and a
-    ///   message can only be sent when at least one token is available.
-    ///
-    /// Defaults: burst = 4, rate = 500 ms (≈ 2 messages/second steady-state).
+    /// `burst` is the number of messages that may be sent immediately before
+    /// rate-limiting kicks in.  `rate` is the minimum interval between messages
+    /// once the burst budget is exhausted.
     pub fn with_flood_control(mut self, burst: usize, rate: Duration) -> Self {
         self.flood_burst = burst;
         self.flood_rate = rate;
         self
+    }
+
+    /// Returns the configured keepalive interval.
+    pub fn keepalive_interval(&self) -> Duration {
+        self.keepalive_interval
+    }
+
+    /// Returns the configured keepalive timeout.
+    pub fn keepalive_timeout(&self) -> Duration {
+        self.keepalive_timeout
     }
 }
