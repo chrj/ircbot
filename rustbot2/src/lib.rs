@@ -71,12 +71,9 @@ pub mod internal {
         let mut current_state = state;
 
         loop {
-            if let Err(e) = crate::bot::run_bot_internal(
-                Arc::clone(&bot),
-                current_state,
-                Arc::clone(&handlers),
-            )
-            .await
+            if let Err(e) =
+                crate::bot::run_bot_internal(Arc::clone(&bot), current_state, Arc::clone(&handlers))
+                    .await
             {
                 eprintln!("[rustbot2] connection error: {e}");
             } else {
