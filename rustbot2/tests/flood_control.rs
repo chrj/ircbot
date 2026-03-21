@@ -130,6 +130,31 @@ fn test_make_messages_utf8_boundary() {
     }
 }
 
+/// When overhead ≥ 510 the available byte count saturates to 0; the function
+/// must still return exactly one line (containing no text body).
+#[test]
+fn test_make_messages_zero_available_bytes() {
+    // overhead = header.len() + suffix.len() + 2 (\r\n)
+    // header = 509 bytes, suffix = 1 byte → overhead = 512 → available = 0.
+    let header = "X".repeat(509);
+    let suffix = "S";
+    let lines = make_messages(&header, "some text", suffix);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0], format!("{header}{suffix}\r\n"));
+}
+
+/// Text whose byte length equals exactly `available` must fit in a single line.
+#[test]
+fn test_make_messages_exact_fit() {
+    let header = "PRIVMSG #chan :";
+    let overhead = header.len() + 2; // suffix is empty, +2 for \r\n
+    let available = 510 - overhead; // = 495
+    let text = "a".repeat(available);
+    let lines = make_messages(header, &text, "");
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0], format!("{header}{text}\r\n"));
+}
+
 // ─── rate-limiting integration test ──────────────────────────────────────────
 
 /// Verify that the write task's flood control delays messages when the burst
