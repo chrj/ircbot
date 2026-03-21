@@ -160,6 +160,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                         }
                                     }
                                 }
+                                dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
                             }
                             _ => {
                                 dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
