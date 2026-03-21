@@ -1,4 +1,5 @@
 use rustbot2::irc::IrcMessage;
+use rustbot2::CtcpMessage;
 
 #[test]
 fn parse_ping() {
@@ -83,4 +84,55 @@ fn parse_empty_returns_none() {
 fn command_is_uppercase() {
     let msg = IrcMessage::parse("ping :server").unwrap();
     assert_eq!(msg.command, "PING");
+}
+
+// ─── CTCP parsing ─────────────────────────────────────────────────────────────
+
+#[test]
+fn ctcp_parse_version() {
+    let ctcp = CtcpMessage::parse("\x01VERSION\x01").unwrap();
+    assert_eq!(ctcp.command, "VERSION");
+    assert_eq!(ctcp.arg, "");
+}
+
+#[test]
+fn ctcp_parse_ping_with_token() {
+    let ctcp = CtcpMessage::parse("\x01PING 1234567890\x01").unwrap();
+    assert_eq!(ctcp.command, "PING");
+    assert_eq!(ctcp.arg, "1234567890");
+}
+
+#[test]
+fn ctcp_parse_action() {
+    let ctcp = CtcpMessage::parse("\x01ACTION waves hello\x01").unwrap();
+    assert_eq!(ctcp.command, "ACTION");
+    assert_eq!(ctcp.arg, "waves hello");
+}
+
+#[test]
+fn ctcp_parse_no_closing_delimiter() {
+    // Some clients omit the trailing \x01.
+    let ctcp = CtcpMessage::parse("\x01PING 42").unwrap();
+    assert_eq!(ctcp.command, "PING");
+    assert_eq!(ctcp.arg, "42");
+}
+
+#[test]
+fn ctcp_parse_command_is_uppercase() {
+    let ctcp = CtcpMessage::parse("\x01version\x01").unwrap();
+    assert_eq!(ctcp.command, "VERSION");
+}
+
+#[test]
+fn ctcp_parse_non_ctcp_returns_none() {
+    assert!(CtcpMessage::parse("Hello, world!").is_none());
+    assert!(CtcpMessage::parse("").is_none());
+}
+
+#[test]
+fn ctcp_embedded_in_privmsg() {
+    let msg =
+        IrcMessage::parse(":alice!a@host PRIVMSG mybot :\x01VERSION\x01").unwrap();
+    let ctcp = CtcpMessage::parse(msg.trailing().unwrap()).unwrap();
+    assert_eq!(ctcp.command, "VERSION");
 }

@@ -7,6 +7,7 @@ pub mod irc;
 pub use connection::BotState;
 pub use context::{Context, User};
 pub use handler::{BoxFuture, HandlerEntry, HandlerFn, Trigger};
+pub use irc::CtcpMessage;
 pub use rustbot2_macros::{bot, command, on};
 
 /// The standard error type used throughout the crate.
