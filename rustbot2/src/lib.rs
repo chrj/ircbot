@@ -6,9 +6,13 @@ pub mod hot_reload;
 pub mod irc;
 
 pub use bot::HandlerSet;
-pub use connection::BotState;
-pub use context::{Context, User};
+pub use connection::{
+    BotState, DEFAULT_FLOOD_BURST, DEFAULT_FLOOD_RATE, DEFAULT_KEEPALIVE_INTERVAL,
+    DEFAULT_KEEPALIVE_TIMEOUT,
+};
+pub use context::{make_messages, Context, User};
 pub use handler::{BoxFuture, HandlerEntry, HandlerFn, Trigger};
+pub use irc::CtcpMessage;
 pub use rustbot2_macros::{bot, command, on};
 
 /// The standard error type used throughout the crate.
@@ -109,6 +113,8 @@ pub mod internal {
         let channels = state.channels.clone();
         let keepalive_interval = state.keepalive_interval;
         let keepalive_timeout = state.keepalive_timeout;
+        let flood_burst = state.flood_burst;
+        let flood_rate = state.flood_rate;
 
         let mut current_state = state;
 
@@ -132,6 +138,8 @@ pub mod internal {
                 Ok(mut new_state) => {
                     new_state.keepalive_interval = keepalive_interval;
                     new_state.keepalive_timeout = keepalive_timeout;
+                    new_state.flood_burst = flood_burst;
+                    new_state.flood_rate = flood_rate;
                     current_state = new_state;
                 }
                 Err(e) => {

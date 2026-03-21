@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
+use std::time::Duration;
 
 use regex::Regex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufWriter};
@@ -54,6 +55,8 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         server: _,
         keepalive_interval,
         keepalive_timeout,
+        flood_burst,
+        flood_rate,
         reader,
         write_half,
         #[cfg(unix)]
@@ -63,10 +66,36 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     // Create the mpsc write channel.
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<String>();
 
-    // Spawn the write loop — drains the channel into the TCP write half.
+    // Spawn the write loop — drains the channel into the TCP write half,
+    // enforcing a token-bucket flood-control policy so that the bot cannot
+    // send messages faster than the server allows.
     let write_task = tokio::spawn(async move {
         let mut writer = BufWriter::new(write_half);
+
+        // Token-bucket state.
+        let max_tokens = flood_burst as f64;
+        let mut tokens = max_tokens;
+        // How fast tokens regenerate: one token per `flood_rate`.
+        let token_rate = 1.0 / flood_rate.as_secs_f64(); // tokens per second
+        let mut last_refill = tokio::time::Instant::now();
+
         while let Some(msg) = write_rx.recv().await {
+            // Refill tokens based on time elapsed since the last send.
+            let now = tokio::time::Instant::now();
+            let elapsed = (now - last_refill).as_secs_f64();
+            tokens = (tokens + elapsed * token_rate).min(max_tokens);
+            last_refill = now;
+
+            // If the bucket is empty, wait until a token becomes available.
+            if tokens < 1.0 {
+                let wait = Duration::from_secs_f64((1.0 - tokens) / token_rate);
+                tokio::time::sleep(wait).await;
+                tokens = 0.0;
+                last_refill = tokio::time::Instant::now();
+            } else {
+                tokens -= 1.0;
+            }
+
             if writer.write_all(msg.as_bytes()).await.is_err() {
                 break;
             }
