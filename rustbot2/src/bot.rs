@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use regex::Regex;
@@ -16,9 +17,16 @@ use crate::{
 /// Command prefix recognised by the bot (e.g. `!ping`).
 const CMD_PREFIX: char = '!';
 
+/// The token sent in our client-initiated keepalive `PING`.
+const KEEPALIVE_TOKEN: &str = "rustbot2-keepalive";
+
 // ─── public entry-point ──────────────────────────────────────────────────────
 
 /// Handles IRC messages, dispatching to registered handlers.
+///
+/// Sends a periodic `PING` to the server and breaks out of the read loop (so
+/// the caller can reconnect) if the corresponding `PONG` is not received within
+/// the configured timeout.
 ///
 /// # Errors
 ///
@@ -26,11 +34,14 @@ const CMD_PREFIX: char = '!';
 pub async fn run_bot_internal<T: Send + Sync + 'static>(
     bot: Arc<T>,
     state: BotState,
-    handlers: Vec<HandlerEntry<T>>,
+    handlers: Arc<Vec<HandlerEntry<T>>>,
 ) -> Result<(), BoxError> {
     let BotState {
         nick,
         channels,
+        server: _,
+        keepalive_interval,
+        keepalive_timeout,
         reader,
         write_half,
     } = state;
@@ -51,46 +62,98 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         }
     });
 
-    let handlers = Arc::new(handlers);
+    // Keepalive: set to `true` on startup (no ping pending) and whenever we
+    // receive a matching PONG.  The keepalive task resets it to `false` before
+    // each PING, then checks it again after the timeout.
+    let pong_received = Arc::new(AtomicBool::new(true));
+    let pong_received_keepalive = Arc::clone(&pong_received);
+    let keepalive_write_tx = write_tx.clone();
+    let (keepalive_fail_tx, keepalive_fail_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let keepalive_task = tokio::spawn(async move {
+        let mut fail_tx = Some(keepalive_fail_tx);
+        loop {
+            tokio::time::sleep(keepalive_interval).await;
+            pong_received_keepalive.store(false, Ordering::Relaxed);
+            if keepalive_write_tx
+                .send(format!("PING {KEEPALIVE_TOKEN}\r\n"))
+                .is_err()
+            {
+                break;
+            }
+            tokio::time::sleep(keepalive_timeout).await;
+            if !pong_received_keepalive.load(Ordering::Relaxed) {
+                eprintln!("[rustbot2] keepalive timeout — reconnecting");
+                if let Some(tx) = fail_tx.take() {
+                    let _ = tx.send(());
+                }
+                break;
+            }
+        }
+    });
+
     let bot_nick = nick.clone();
     let mut joined = false;
     let mut lines = reader.lines();
+    let mut keepalive_fail_rx = keepalive_fail_rx;
 
-    while let Some(line) = lines.next_line().await? {
-        let line = line.trim_end_matches('\r').to_string();
-        if line.is_empty() {
-            continue;
-        }
-
-        if let Some(msg) = IrcMessage::parse(&line) {
-            match msg.command.as_str() {
-                "PING" => {
-                    let srv = msg.params.first().map_or("", String::as_str);
-                    if let Err(e) = write_tx.send(format!("PONG :{srv}\r\n")) {
-                        eprintln!("[rustbot2] failed to send PONG: {e}");
+    // Run the read loop; collect any IO error so we can clean up first.
+    let loop_result: Result<(), BoxError> = async {
+        loop {
+            tokio::select! {
+                result = lines.next_line() => {
+                    let Some(line) = result? else { break; };
+                    let line = line.trim_end_matches('\r').to_string();
+                    if line.is_empty() {
+                        continue;
                     }
-                }
-                "001" => {
-                    if !joined {
-                        joined = true;
-                        for ch in &channels {
-                            if let Err(e) = write_tx.send(format!("JOIN {ch}\r\n")) {
-                                eprintln!("[rustbot2] failed to send JOIN {ch}: {e}");
+
+                    if let Some(msg) = IrcMessage::parse(&line) {
+                        match msg.command.as_str() {
+                            "PING" => {
+                                let srv = msg.params.first().map_or("", String::as_str);
+                                if let Err(e) = write_tx.send(format!("PONG :{srv}\r\n")) {
+                                    eprintln!("[rustbot2] failed to send PONG: {e}");
+                                }
+                            }
+                            "PONG" => {
+                                // Acknowledge our own keepalive ping.
+                                if msg.trailing() == Some(KEEPALIVE_TOKEN) {
+                                    pong_received.store(true, Ordering::Relaxed);
+                                }
+                            }
+                            "001" => {
+                                if !joined {
+                                    joined = true;
+                                    for ch in &channels {
+                                        if let Err(e) = write_tx.send(format!("JOIN {ch}\r\n")) {
+                                            eprintln!("[rustbot2] failed to send JOIN {ch}: {e}");
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
                             }
                         }
                     }
                 }
-                _ => {
-                    dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
+                _ = &mut keepalive_fail_rx => {
+                    // Keepalive timed out — exit so the caller can reconnect.
+                    break;
                 }
             }
         }
+        Ok(())
     }
+    .await;
 
-    // Close the write channel so the write task drains any pending messages and exits.
+    // Always clean up the keepalive and write tasks before returning.
+    keepalive_task.abort();
     drop(write_tx);
     let _ = write_task.await;
-    Ok(())
+
+    loop_result
 }
 
 // ─── trigger matching ────────────────────────────────────────────────────────
