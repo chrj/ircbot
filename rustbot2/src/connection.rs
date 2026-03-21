@@ -21,8 +21,8 @@ pub struct BotState {
     pub channels: Vec<String>,
     /// Server address used when reconnecting (e.g. `"irc.example.net:6667"`).
     pub server: String,
-    pub keepalive_interval: Duration,
-    pub keepalive_timeout: Duration,
+    pub(crate) keepalive_interval: Duration,
+    pub(crate) keepalive_timeout: Duration,
     /// Token-bucket burst: how many messages may be sent immediately before
     /// rate-limiting kicks in.
     pub(crate) flood_burst: usize,
@@ -201,5 +201,15 @@ impl BotState {
         self.flood_burst = burst;
         self.flood_rate = rate;
         self
+    }
+
+    /// Returns the configured keepalive interval.
+    pub fn keepalive_interval(&self) -> Duration {
+        self.keepalive_interval
+    }
+
+    /// Returns the configured keepalive timeout.
+    pub fn keepalive_timeout(&self) -> Duration {
+        self.keepalive_timeout
     }
 }

@@ -277,8 +277,8 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     state.nick.clone(),
                     state.server.clone(),
                     state.channels.clone(),
-                    state.keepalive_interval.as_millis() as u64,
-                    state.keepalive_timeout.as_millis() as u64,
+                    state.keepalive_interval().as_millis() as u64,
+                    state.keepalive_timeout().as_millis() as u64,
                 );
 
                 let bot_arc = std::sync::Arc::new(self);
