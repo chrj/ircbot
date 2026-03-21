@@ -80,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Async / non-blocking** — built on Tokio; every handler is an `async fn`.
 - **Active keepalive** — the bot sends a periodic `PING` to the server (default every 30 s) and reconnects automatically if no `PONG` arrives within the timeout (default 10 s).  Interval and timeout are configurable via `BotState::with_keepalive()`.
 - **Automatic reconnection** — on TCP drop or keepalive timeout the bot re-dials and re-joins all configured channels, preserving all handler registrations.
+- **Hot reload** — replace the running bot binary without dropping the IRC connection.  On Unix, sending `SIGHUP` execs the new binary with the live TCP socket inherited; no reconnect, no missed messages. See [Hot reload](#hot-reload).
 - **Concurrent write loop** — outgoing messages are serialised through an in-process channel so handlers can send replies without blocking each other.
 - **Output sanitization** — `\r`, `\n`, and `\0` are stripped from every outgoing message, preventing IRC injection attacks.
 
@@ -127,8 +128,8 @@ tokio    = { version = "1", features = ["full"] }
 Placed on an `impl` block.  The macro generates:
 
 - A `struct` definition for the named type with internal connection state.
-- `YourBot::new(nick, server, channels)` — connects to the server, identifies, and joins the given channels.
-- `YourBot::main_loop(self)` — runs the event loop until the connection closes, reconnecting automatically on TCP drops or keepalive timeouts.
+- `YourBot::new(nick, server, channels)` — connects to the server, identifies, and joins the given channels.  On Unix, if this process was started via `SIGHUP` hot-reload, the live TCP socket is inherited from the previous binary instead.
+- `YourBot::main_loop(self)` — runs the event loop, reconnecting automatically on TCP drops or keepalive timeouts.  On Unix, also listens for `SIGHUP` and performs a zero-disconnect binary exec-reload.
 
 ```rust
 // Generated signatures (simplified):
@@ -272,14 +273,69 @@ The bot actively monitors its connection by sending a `PING rustbot2-keepalive` 
 ```rust
 use std::sync::Arc;
 use std::time::Duration;
-use rustbot2::{BotState, HandlerEntry, internal};
+use rustbot2::{BotState, internal};
 
 let state = BotState::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
     .await?
     .with_keepalive(Duration::from_secs(60), Duration::from_secs(15));
 
-let handlers: Vec<HandlerEntry<()>> = vec![/* your HandlerEntry values */];
+let handlers = internal::make_handler_set(vec![/* your HandlerEntry values */]);
 internal::run_bot(Arc::new(()), state, handlers).await?;
+```
+
+---
+
+## Hot reload
+
+Hot reload lets you replace the running bot **binary** without ever dropping the IRC connection — no reconnect, no missed messages, no re-authentication.
+
+### How it works
+
+On Unix, a TCP socket is just a file descriptor.  When a process calls `exec()` the new process image inherits every file descriptor that does **not** have `FD_CLOEXEC` set.  The hot-reload path exploits this:
+
+1. **`SIGHUP` received** — `main_loop()` catches the signal.
+2. **FD prepared** — `FD_CLOEXEC` is cleared on the live TCP socket so it survives `exec`.
+3. **State encoded** — the fd number, nick, server, channels, and keepalive settings are written into environment variables.
+4. **`exec` called** — the current process image is replaced with the new binary at the same path.  The PID is unchanged; the TCP connection is never closed.
+5. **New binary starts** — `new()` detects the env vars, calls `BotState::try_inherit_from_env()`, and wraps the inherited fd in a Tokio `TcpStream`.  No `NICK`/`USER`/`JOIN` is sent; the IRC session continues seamlessly.
+
+### Using SIGHUP (zero configuration)
+
+When using the `#[bot]` macro, `main_loop()` installs the SIGHUP handler automatically.  The full workflow is:
+
+```sh
+# 1. Build the updated binary.
+cargo build --release
+
+# 2. Send SIGHUP to the running bot.
+kill -HUP $(pidof my_bot)
+
+# 3. The old process execs the new binary.
+#    The IRC connection is never interrupted.
+```
+
+### Lower-level API
+
+For programmatic control call `hot_reload::exec_reload` directly — for example from an IRC admin command:
+
+```rust
+use rustbot2::hot_reload::exec_reload;
+
+// Inside a handler:
+#[command("reload")]
+async fn do_reload(&self, ctx: Context) -> Result {
+    ctx.say("Reloading…")?;
+    // exec_reload only returns if exec itself failed.
+    let err = exec_reload(
+        ctx.raw_fd,          // inherited TCP socket fd
+        &ctx.bot_nick,
+        "irc.libera.chat:6667",
+        &["#rust".to_string()],
+        30_000,              // keepalive interval ms
+        10_000,              // keepalive timeout ms
+    );
+    ctx.say(format!("Reload failed: {err}"))
+}
 ```
 
 ---

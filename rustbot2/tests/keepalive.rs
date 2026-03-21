@@ -54,7 +54,7 @@ async fn test_reconnects_after_tcp_disconnect() {
         .expect("failed to connect to mock server");
 
     let bot = Arc::new(());
-    let bot_task = tokio::spawn(rustbot2::internal::run_bot(bot, state, vec![]));
+    let bot_task = tokio::spawn(rustbot2::internal::run_bot(bot, state, rustbot2::internal::make_handler_set(vec![])));
 
     // The reconnect loop waits RECONNECT_DELAY (5 s) before dialling again;
     // allow up to 10 s total.
@@ -122,7 +122,7 @@ async fn test_keepalive_timeout_triggers_reconnect() {
         .with_keepalive(Duration::from_secs(1), Duration::from_secs(1));
 
     let bot = Arc::new(());
-    let bot_task = tokio::spawn(rustbot2::internal::run_bot(bot, state, vec![]));
+    let bot_task = tokio::spawn(rustbot2::internal::run_bot(bot, state, rustbot2::internal::make_handler_set(vec![])));
 
     // 1 s interval + 1 s timeout + 5 s reconnect delay = ~7 s; allow 15 s.
     tokio::time::timeout(Duration::from_secs(15), async {

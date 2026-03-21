@@ -1398,6 +1398,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "irc",
+ "libc",
  "regex",
  "rustbot2-macros",
  "testcontainers",
