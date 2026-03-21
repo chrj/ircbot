@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc;
 
 use crate::{
-    connection::BotState,
+    connection::State,
     context::Context,
     handler::{HandlerEntry, Trigger},
     irc::{is_channel_name, CtcpMessage, IrcMessage},
@@ -46,10 +46,10 @@ pub type HandlerSet<T> = Arc<RwLock<Arc<Vec<HandlerEntry<T>>>>>;
 /// Returns an error if reading from the connection fails.
 pub async fn run_bot_internal<T: Send + Sync + 'static>(
     bot: Arc<T>,
-    state: BotState,
+    state: State,
     handlers: HandlerSet<T>,
 ) -> Result<(), BoxError> {
-    let BotState {
+    let State {
         nick,
         channels,
         server: _,

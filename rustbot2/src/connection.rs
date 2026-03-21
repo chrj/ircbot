@@ -16,7 +16,7 @@ pub const DEFAULT_FLOOD_BURST: usize = 4;
 pub const DEFAULT_FLOOD_RATE: Duration = Duration::from_millis(500);
 
 /// Holds the established connection to an IRC server plus join-on-connect metadata.
-pub struct BotState {
+pub struct State {
     pub nick: String,
     pub channels: Vec<String>,
     /// Server address used when reconnecting (e.g. `"irc.example.net:6667"`).
@@ -38,7 +38,7 @@ pub struct BotState {
     pub raw_fd: std::os::unix::io::RawFd,
 }
 
-impl BotState {
+impl State {
     /// Normalise a channel name: if it doesn't start with a recognised IRC
     /// channel prefix (`#`, `&`, `+`, `!`) a `#` is prepended automatically.
     fn normalise_channel(ch: String) -> String {
@@ -49,7 +49,7 @@ impl BotState {
         }
     }
 
-    /// Connect to an IRC server, send NICK/USER, and return a `BotState` ready to run.
+    /// Connect to an IRC server, send NICK/USER, and return a `State` ready to run.
     ///
     /// Channel names that do not already start with a channel prefix character
     /// (`#`, `&`, `+`, `!`) will automatically be prefixed with `#`, so both
@@ -62,7 +62,7 @@ impl BotState {
         nick: String,
         server: &str,
         channels: Vec<String>,
-    ) -> Result<BotState, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<State, Box<dyn std::error::Error + Send + Sync>> {
         let channels: Vec<String> = channels.into_iter().map(Self::normalise_channel).collect();
         let stream = TcpStream::connect(server).await?;
 
@@ -87,7 +87,7 @@ impl BotState {
         // Recover the inner write half from the BufWriter.
         let write_half = writer.into_inner();
 
-        Ok(BotState {
+        Ok(State {
             nick,
             channels,
             server: server.to_string(),
@@ -102,7 +102,7 @@ impl BotState {
         })
     }
 
-    /// Attempt to reconstruct a [`BotState`] from an inherited TCP file descriptor.
+    /// Attempt to reconstruct a [`State`] from an inherited TCP file descriptor.
     ///
     /// When the bot is reloaded via [`crate::hot_reload::exec_reload`] the new
     /// binary inherits the live TCP socket.  This method reads the metadata
@@ -118,8 +118,8 @@ impl BotState {
     /// Returns an error if the env vars are malformed or if the fd cannot be
     /// converted to a `TcpStream`.
     #[cfg(unix)]
-    pub fn try_inherit_from_env(
-    ) -> Result<Option<BotState>, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn try_inherit_from_env() -> Result<Option<State>, Box<dyn std::error::Error + Send + Sync>>
+    {
         use std::os::unix::io::{FromRawFd, RawFd};
 
         use crate::hot_reload::{
@@ -166,7 +166,7 @@ impl BotState {
         let (read_half, write_half) = stream.into_split();
         let reader = tokio::io::BufReader::new(read_half);
 
-        Ok(Some(BotState {
+        Ok(Some(State {
             nick,
             channels,
             server,

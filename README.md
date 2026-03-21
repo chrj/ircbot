@@ -78,11 +78,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Flexible triggers** — commands (`!ping`), glob message patterns (`"you are *"`), raw IRC events (`JOIN`, `PRIVMSG`, …), and bot-mention detection (`"botname: …"`), all with optional target-channel and regex filters.
 - **Context helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, and `ctx.whisper()` cover the most common reply patterns.
 - **Async / non-blocking** — built on Tokio; every handler is an `async fn`.
-- **Active keepalive** — the bot sends a periodic `PING` to the server (default every 30 s) and reconnects automatically if no `PONG` arrives within the timeout (default 10 s).  Interval and timeout are configurable via `BotState::with_keepalive()`.
+- **Active keepalive** — the bot sends a periodic `PING` to the server (default every 30 s) and reconnects automatically if no `PONG` arrives within the timeout (default 10 s).  Interval and timeout are configurable via `State::with_keepalive()`.
 - **Automatic reconnection** — on TCP drop or keepalive timeout the bot re-dials and re-joins all configured channels, preserving all handler registrations.
 - **Hot reload** — replace the running bot binary without dropping the IRC connection.  On Unix, sending `SIGHUP` execs the new binary with the live TCP socket inherited; no reconnect, no missed messages. See [Hot reload](#hot-reload).
 - **Concurrent write loop** — outgoing messages are serialised through an in-process channel so handlers can send replies without blocking each other.
-- **Flood protection** — a token-bucket rate limiter in the write loop ensures the bot cannot send messages faster than the server allows (default: burst of 4, then 1 message per 500 ms).  Configurable via `BotState::with_flood_control()`.
+- **Flood protection** — a token-bucket rate limiter in the write loop ensures the bot cannot send messages faster than the server allows (default: burst of 4, then 1 message per 500 ms).  Configurable via `State::with_flood_control()`.
 - **Automatic message splitting** — any outgoing message that would exceed the IRC 512-byte line limit is automatically split across multiple lines, with word-boundary awareness and UTF-8 safety.
 - **Output sanitization** — `\r`, `\n`, and `\0` are stripped from every outgoing message, preventing IRC injection attacks.
 
@@ -95,7 +95,7 @@ rustbot2/               ← library crate (public API)
   src/
     lib.rs              ← re-exports, type aliases, and internal::run_bot reconnection loop
     irc.rs              ← RFC 1459 IRC line parser
-    connection.rs       ← TCP connect + NICK/USER/JOIN, BotState, with_keepalive
+    connection.rs       ← TCP connect + NICK/USER/JOIN, State, with_keepalive
     context.rs          ← Context, User
     handler.rs          ← Trigger, HandlerEntry type aliases
     bot.rs              ← run_bot_internal, trigger matching, glob, keepalive ping
@@ -271,14 +271,14 @@ The bot actively monitors its connection by sending a `PING rustbot2-keepalive` 
 
 `main_loop()` never returns normally — it reconnects automatically whenever the connection is lost (TCP close or keepalive timeout), re-sends `NICK`/`USER`, and re-joins all configured channels.
 
-**Custom intervals** — configure keepalive before starting the bot by calling `BotState::with_keepalive()`.  When using the `#[bot]` macro, `new()` manages the `BotState` internally, so custom keepalive settings require the lower-level API:
+**Custom intervals** — configure keepalive before starting the bot by calling `State::with_keepalive()`.  When using the `#[bot]` macro, `new()` manages the `State` internally, so custom keepalive settings require the lower-level API:
 
 ```rust
 use std::sync::Arc;
 use std::time::Duration;
-use rustbot2::{BotState, HandlerEntry, internal};
+use rustbot2::{State, HandlerEntry, internal};
 
-let state = BotState::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
+let state = State::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
     .await?
     .with_keepalive(Duration::from_secs(60), Duration::from_secs(15));
 
@@ -300,7 +300,7 @@ On Unix, a TCP socket is just a file descriptor.  When a process calls `exec()` 
 2. **FD prepared** — `FD_CLOEXEC` is cleared on the live TCP socket so it survives `exec`.
 3. **State encoded** — the fd number, nick, server, channels, and keepalive settings are written into environment variables.
 4. **`exec` called** — the current process image is replaced with the new binary at the same path.  The PID is unchanged; the TCP connection is never closed.
-5. **New binary starts** — `new()` detects the env vars, calls `BotState::try_inherit_from_env()`, and wraps the inherited fd in a Tokio `TcpStream`.  No `NICK`/`USER`/`JOIN` is sent; the IRC session continues seamlessly.
+5. **New binary starts** — `new()` detects the env vars, calls `State::try_inherit_from_env()`, and wraps the inherited fd in a Tokio `TcpStream`.  No `NICK`/`USER`/`JOIN` is sent; the IRC session continues seamlessly.
 
 ### Using SIGHUP (zero configuration)
 
@@ -365,15 +365,15 @@ overwhelming the IRC server with outgoing messages.
 | Rate (token refill interval) | 500 ms |
 | Steady-state throughput | ≈ 2 messages / second |
 
-**Custom flood-control settings** — call `BotState::with_flood_control()` before
+**Custom flood-control settings** — call `State::with_flood_control()` before
 starting the bot.  When using the `#[bot]` macro, use the lower-level API:
 
 ```rust
 use std::sync::Arc;
 use std::time::Duration;
-use rustbot2::{BotState, HandlerEntry, internal};
+use rustbot2::{State, HandlerEntry, internal};
 
-let state = BotState::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
+let state = State::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
     .await?
     .with_flood_control(8, Duration::from_millis(250)); // burst of 8, ≈ 4 msg/s
 

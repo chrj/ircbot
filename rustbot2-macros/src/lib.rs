@@ -231,7 +231,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     quote! {
         pub struct #struct_name {
-            __state: std::option::Option<rustbot2::BotState>,
+            __state: std::option::Option<rustbot2::State>,
         }
 
         impl #struct_name {
@@ -248,12 +248,12 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
             ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
                 // On Unix, check for an inherited fd from a hot-reload exec.
                 #[cfg(unix)]
-                if let Some(state) = rustbot2::BotState::try_inherit_from_env()? {
+                if let Some(state) = rustbot2::State::try_inherit_from_env()? {
                     eprintln!("[rustbot2] hot-reload: resumed on inherited connection");
                     return Ok(#struct_name { __state: Some(state) });
                 }
 
-                let state = rustbot2::BotState::connect(
+                let state = rustbot2::State::connect(
                     nick.into(),
                     server.as_ref(),
                     channels.into_iter().map(|c| c.into()).collect(),
