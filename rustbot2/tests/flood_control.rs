@@ -56,11 +56,7 @@ fn test_make_messages_long_text_splits() {
     // Reassembling must reproduce the original text.
     let recovered: String = lines
         .iter()
-        .map(|l| {
-            l.strip_prefix(header)
-                .unwrap()
-                .trim_end_matches("\r\n")
-        })
+        .map(|l| l.strip_prefix(header).unwrap().trim_end_matches("\r\n"))
         .collect::<Vec<_>>()
         .join("");
     assert_eq!(recovered, text);
@@ -184,14 +180,16 @@ async fn test_flood_control_rate_limits_messages() {
             target: None,
             regex: None,
         },
-        handler: Box::new(|_bot: Arc<()>, ctx: Context| -> BoxFuture<rustbot2::Result> {
-            Box::pin(async move {
-                for i in 0..6_u32 {
-                    ctx.say(format!("message {i}"))?;
-                }
-                Ok(())
-            })
-        }),
+        handler: Box::new(
+            |_bot: Arc<()>, ctx: Context| -> BoxFuture<rustbot2::Result> {
+                Box::pin(async move {
+                    for i in 0..6_u32 {
+                        ctx.say(format!("message {i}"))?;
+                    }
+                    Ok(())
+                })
+            },
+        ),
     };
 
     let bot = Arc::new(());
@@ -206,12 +204,17 @@ async fn test_flood_control_rate_limits_messages() {
             }
         }
     });
-    collect.await.expect("did not receive all 6 messages within 10 s");
+    collect
+        .await
+        .expect("did not receive all 6 messages within 10 s");
     bot_task.abort();
 
     // The gap between the first and last message must be at least
     // (6 - burst) × rate = 4 × 200 ms = 800 ms.
-    let elapsed = timestamps.last().unwrap().duration_since(*timestamps.first().unwrap());
+    let elapsed = timestamps
+        .last()
+        .unwrap()
+        .duration_since(*timestamps.first().unwrap());
     assert!(
         elapsed >= Duration::from_millis(700), // small slack for scheduler jitter
         "flood control did not delay messages enough: elapsed = {elapsed:?}"
