@@ -12,19 +12,19 @@ impl MyBot {
     /// Respond to `!ping` from anywhere.
     #[command("ping")]
     async fn ping(&self, ctx: Context) -> Result {
-        ctx.reply("Pong!").await
+        ctx.reply("Pong!")
     }
 
     /// Respond to any message that looks like "you are …".
     #[on(message = "you are *")]
     async fn praise_me(&self, ctx: Context) -> Result {
-        ctx.say("Correct.").await
+        ctx.say("Correct.")
     }
 
     /// Welcome users who join a channel.
     #[on(event = "JOIN")]
     async fn welcome(&self, ctx: Context, user: User) -> Result {
-        ctx.say(format!("Welcome to the void, {}!", user.nick)).await
+        ctx.say(format!("Welcome to the void, {}!", user.nick))
     }
 
     /// Log every message posted to #general.
@@ -37,19 +37,19 @@ impl MyBot {
     /// Echo messages matching the regex back to the channel.
     #[on(event = "PRIVMSG", target = "#general", regex = r"^!echo (.+)$")]
     async fn echo(&self, ctx: Context, message: String) -> Result {
-        ctx.say(message).await
+        ctx.say(message)
     }
 
     /// Respond to `!dance` with a /me action, but only in #general.
     #[on(command = "dance", target = "#general")]
     async fn dance(&self, ctx: Context) -> Result {
-        ctx.action("Dancing!").await
+        ctx.action("Dancing!")
     }
 
     /// Respond when the bot is addressed by name in any channel.
     #[on(mention)]
     async fn on_mention(&self, ctx: Context, text: String) -> Result {
-        ctx.reply(format!("You said: {}", text)).await
+        ctx.reply(format!("You said: {}", text))
     }
 
     /// Send a private message directly to the caller, regardless of channel.
@@ -78,8 +78,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Flexible triggers** — commands (`!ping`), glob message patterns (`"you are *"`), raw IRC events (`JOIN`, `PRIVMSG`, …), and bot-mention detection (`"botname: …"`), all with optional target-channel and regex filters.
 - **Context helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, and `ctx.whisper()` cover the most common reply patterns.
 - **Async / non-blocking** — built on Tokio; every handler is an `async fn`.
-- **Automatic PING/PONG** — the framework handles keepalives transparently.
+- **Active keepalive** — the bot sends a periodic `PING` to the server (default every 30 s) and reconnects automatically if no `PONG` arrives within the timeout (default 10 s).  Interval and timeout are configurable via `BotState::with_keepalive()`.
+- **Automatic reconnection** — on TCP drop or keepalive timeout the bot re-dials and re-joins all configured channels, preserving all handler registrations.
 - **Concurrent write loop** — outgoing messages are serialised through an in-process channel so handlers can send replies without blocking each other.
+- **Output sanitization** — `\r`, `\n`, and `\0` are stripped from every outgoing message, preventing IRC injection attacks.
 
 ---
 
@@ -88,15 +90,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ```
 rustbot2/               ← library crate (public API)
   src/
-    lib.rs              ← re-exports and type aliases
+    lib.rs              ← re-exports, type aliases, and internal::run_bot reconnection loop
     irc.rs              ← RFC 1459 IRC line parser
-    connection.rs       ← TCP connect + NICK/USER/JOIN
+    connection.rs       ← TCP connect + NICK/USER/JOIN, BotState, with_keepalive
     context.rs          ← Context, User
     handler.rs          ← Trigger, HandlerEntry type aliases
-    bot.rs              ← run_bot_internal, trigger matching, glob
+    bot.rs              ← run_bot_internal, trigger matching, glob, keepalive ping
   tests/
     irc_parsing.rs      ← unit tests (IRC parsing)
     trigger_matching.rs ← unit tests (trigger dispatch)
+    keepalive.rs        ← unit tests (keepalive timeout, automatic reconnection)
   examples/
     basic_bot.rs        ← minimal demo
 
@@ -125,7 +128,7 @@ Placed on an `impl` block.  The macro generates:
 
 - A `struct` definition for the named type with internal connection state.
 - `YourBot::new(nick, server, channels)` — connects to the server, identifies, and joins the given channels.
-- `YourBot::main_loop(self)` — runs the event loop until the connection closes.
+- `YourBot::main_loop(self)` — runs the event loop until the connection closes, reconnecting automatically on TCP drops or keepalive timeouts.
 
 ```rust
 // Generated signatures (simplified):
@@ -150,13 +153,13 @@ Fires when a user sends `!name` (case-insensitive) in any channel or as a privat
 ```rust
 #[command("ping")]
 async fn ping(&self, ctx: Context) -> Result {
-    ctx.reply("Pong!").await
+    ctx.reply("Pong!")
 }
 
 // The rest of the line after `!echo` is captured as `text`.
 #[command("echo")]
 async fn echo(&self, ctx: Context, text: String) -> Result {
-    ctx.say(text).await
+    ctx.say(text)
 }
 ```
 
@@ -189,7 +192,7 @@ Exactly one of `command`, `message`, `event`, or `mention` must be present. `tar
 // The captured text is available as `praise`.
 #[on(message = "you are *")]
 async fn praise_me(&self, ctx: Context, praise: String) -> Result {
-    ctx.say(format!("Indeed, I am {}!", praise)).await
+    ctx.say(format!("Indeed, I am {}!", praise))
 }
 ```
 
@@ -199,7 +202,7 @@ async fn praise_me(&self, ctx: Context, praise: String) -> Result {
 // Fires whenever any user joins any channel.
 #[on(event = "JOIN")]
 async fn on_join(&self, ctx: Context, user: User) -> Result {
-    ctx.say(format!("Welcome, {}!", user.nick)).await
+    ctx.say(format!("Welcome, {}!", user.nick))
 }
 ```
 
@@ -209,7 +212,7 @@ async fn on_join(&self, ctx: Context, user: User) -> Result {
 // Fires only when someone joins #rust.
 #[on(event = "JOIN", target = "#rust")]
 async fn welcome_rust(&self, ctx: Context, user: User) -> Result {
-    ctx.say(format!("Welcome to #rust, {}!", user.nick)).await
+    ctx.say(format!("Welcome to #rust, {}!", user.nick))
 }
 ```
 
@@ -219,7 +222,7 @@ async fn welcome_rust(&self, ctx: Context, user: User) -> Result {
 // Fires on PRIVMSG lines that match `!op <nick> <reason>`.
 #[on(event = "PRIVMSG", regex = r"^!op (\S+) (.+)$")]
 async fn op_request(&self, ctx: Context, target_nick: String, reason: String) -> Result {
-    ctx.say(format!("Granting op to {} (reason: {})", target_nick, reason)).await
+    ctx.say(format!("Granting op to {} (reason: {})", target_nick, reason))
 }
 ```
 
@@ -228,7 +231,7 @@ async fn op_request(&self, ctx: Context, target_nick: String, reason: String) ->
 ```rust
 #[on(command = "dance", target = "#general")]
 async fn dance(&self, ctx: Context) -> Result {
-    ctx.action("dances!").await
+    ctx.action("dances!")
 }
 ```
 
@@ -238,7 +241,7 @@ async fn dance(&self, ctx: Context) -> Result {
 // Fires when a user writes "mybot: hello there" in a channel.
 #[on(mention)]
 async fn on_mention(&self, ctx: Context, text: String) -> Result {
-    ctx.reply(format!("You said: {}", text)).await
+    ctx.reply(format!("You said: {}", text))
 }
 
 // Restrict to a specific channel.
@@ -246,6 +249,37 @@ async fn on_mention(&self, ctx: Context, text: String) -> Result {
 async fn on_mention_rust(&self, ctx: Context) -> Result {
     ctx.notice("I heard you!").await
 }
+```
+
+---
+
+## Keepalive & reconnection
+
+The bot actively monitors its connection by sending a `PING rustbot2-keepalive` to the server at a regular interval. If no matching `PONG` is received within the timeout window, the connection is treated as dead and a new TCP connection is established.
+
+**Defaults:**
+
+| Setting | Value |
+|---------|-------|
+| Keepalive interval | 30 s |
+| PONG response timeout | 10 s |
+| Reconnect delay | 5 s |
+
+`main_loop()` never returns normally — it reconnects automatically whenever the connection is lost (TCP close or keepalive timeout), re-sends `NICK`/`USER`, and re-joins all configured channels.
+
+**Custom intervals** — configure keepalive before starting the bot by calling `BotState::with_keepalive()`.  When using the `#[bot]` macro, `new()` manages the `BotState` internally, so custom keepalive settings require the lower-level API:
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+use rustbot2::{BotState, HandlerEntry, internal};
+
+let state = BotState::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
+    .await?
+    .with_keepalive(Duration::from_secs(60), Duration::from_secs(15));
+
+let handlers: Vec<HandlerEntry<()>> = vec![/* your HandlerEntry values */];
+internal::run_bot(Arc::new(()), state, handlers).await?;
 ```
 
 ---
@@ -275,7 +309,7 @@ capture, each extra `String` parameter receives the next capture in order:
 // regex with two capture groups → two String parameters
 #[on(event = "PRIVMSG", regex = r"^!kick (\S+) (.*)$")]
 async fn kick(&self, ctx: Context, target_nick: String, reason: String) -> Result {
-    ctx.say(format!("Kicking {} ({})", target_nick, reason)).await
+    ctx.say(format!("Kicking {} ({})", target_nick, reason))
 }
 ```
 
@@ -304,11 +338,11 @@ incoming message and helper methods for sending replies.
 
 | Method | Behaviour |
 |--------|-----------|
-| `ctx.reply(msg)` | In a channel: `<target> nick, msg`. In a query: `<nick> msg`. |
-| `ctx.say(msg)` | Send `msg` to the current channel or query target, without a nick prefix. |
-| `ctx.action(msg)` | Send a CTCP ACTION (`/me msg`) to the current target. |
-| `ctx.notice(msg)` | Send a `NOTICE` to the current target. NOTICEs must never be replied to automatically (by convention), making them suitable for status messages and one-shot notifications. |
-| `ctx.whisper(msg)` | Send a private message directly to the sender's nick, regardless of whether the original message arrived in a channel or a query. |
+| `ctx.reply(msg)` | In a channel: `nick, msg`. In a query: `msg` to the sender. Synchronous. |
+| `ctx.say(msg)` | Send `msg` to the current channel or query target, without a nick prefix. Synchronous. |
+| `ctx.action(msg)` | Send a CTCP ACTION (`/me msg`) to the current target. Synchronous. |
+| `ctx.notice(msg)` | Send a `NOTICE` to the current target. NOTICEs must never be replied to automatically (by convention), making them suitable for status messages and one-shot notifications. **Async** — use `.await`. |
+| `ctx.whisper(msg)` | Send a private message directly to the sender's nick, regardless of whether the original message arrived in a channel or a query. **Async** — use `.await`. |
 | `ctx.message_text()` | The raw trailing text of the underlying IRC message. |
 
 ## User
@@ -340,7 +374,13 @@ by editing the `main` function.
 cargo test
 ```
 
-39 tests covering IRC parsing and all trigger types.
+41 unit tests covering IRC parsing, all trigger types, keepalive timeouts, and automatic reconnection.
+
+Integration tests (require Docker):
+
+```sh
+cargo test --features integration -- --test-threads=1
+```
 
 ---
 
