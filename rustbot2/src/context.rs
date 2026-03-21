@@ -218,3 +218,136 @@ impl Context {
         send_chunked(&self.tx, &header, &msg, "")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::irc::IrcMessage;
+    use tokio::sync::mpsc;
+
+    /// Build a `Context` wired to an in-process channel for easy inspection.
+    fn make_ctx(target: &str, is_channel: bool) -> (Context, mpsc::UnboundedReceiver<String>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let raw = IrcMessage::parse(":nick!u@h PRIVMSG #chan :hello").unwrap();
+        let ctx = Context {
+            tx,
+            target: target.to_string(),
+            is_channel,
+            sender: Some(User {
+                nick: "nick".to_string(),
+                user: "u".to_string(),
+                host: "h".to_string(),
+            }),
+            raw,
+            bot_nick: "bot".to_string(),
+            captures: vec![],
+        };
+        (ctx, rx)
+    }
+
+    // ── sanitize ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_strips_carriage_return() {
+        assert_eq!(sanitize("foo\rbar"), "foobar");
+    }
+
+    #[test]
+    fn sanitize_strips_newline() {
+        assert_eq!(sanitize("foo\nbar"), "foobar");
+    }
+
+    #[test]
+    fn sanitize_strips_null_byte() {
+        assert_eq!(sanitize("foo\0bar"), "foobar");
+    }
+
+    #[test]
+    fn sanitize_keeps_normal_text() {
+        assert_eq!(sanitize("hello world"), "hello world");
+    }
+
+    // ── message_text ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn message_text_returns_trailing_param() {
+        let (ctx, _rx) = make_ctx("#chan", true);
+        assert_eq!(ctx.message_text(), "hello");
+    }
+
+    // ── say ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn say_in_channel_sends_privmsg_to_channel() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.say("hi there").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "PRIVMSG #chan :hi there\r\n");
+    }
+
+    #[test]
+    fn say_in_query_sends_privmsg_to_sender_nick() {
+        let (ctx, mut rx) = make_ctx("bot", false);
+        ctx.say("hi there").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "PRIVMSG nick :hi there\r\n");
+    }
+
+    #[test]
+    fn say_strips_injection_characters() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.say("evil\r\nJOIN #other").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "PRIVMSG #chan :evilJOIN #other\r\n");
+    }
+
+    // ── reply ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn reply_in_channel_prefixes_sender_nick() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.reply("pong").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "PRIVMSG #chan :nick, pong\r\n");
+    }
+
+    #[test]
+    fn reply_in_query_sends_to_sender_nick() {
+        let (ctx, mut rx) = make_ctx("bot", false);
+        ctx.reply("pong").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "PRIVMSG nick :pong\r\n");
+    }
+
+    // ── action ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn action_in_channel_wraps_in_ctcp() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.action("waves").unwrap();
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            "PRIVMSG #chan :\x01ACTION waves\x01\r\n"
+        );
+    }
+
+    // ── notice ───────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn notice_in_channel_sends_notice_command() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.notice("status").await.unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "NOTICE #chan :status\r\n");
+    }
+
+    #[tokio::test]
+    async fn notice_in_query_sends_to_sender_nick() {
+        let (ctx, mut rx) = make_ctx("bot", false);
+        ctx.notice("status").await.unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "NOTICE nick :status\r\n");
+    }
+
+    // ── whisper ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn whisper_sends_pm_to_sender() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.whisper("secret").await.unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "PRIVMSG nick :secret\r\n");
+    }
+}

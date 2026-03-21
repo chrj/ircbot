@@ -135,3 +135,35 @@ fn ctcp_embedded_in_privmsg() {
     let ctcp = CtcpMessage::parse(msg.trailing().unwrap()).unwrap();
     assert_eq!(ctcp.command, "VERSION");
 }
+
+// ─── is_channel_name ──────────────────────────────────────────────────────────
+
+#[test]
+fn is_channel_hash() {
+    assert!(rustbot2::irc::is_channel_name("#general"));
+}
+
+#[test]
+fn is_channel_ampersand() {
+    assert!(rustbot2::irc::is_channel_name("&local"));
+}
+
+#[test]
+fn is_channel_plus() {
+    assert!(rustbot2::irc::is_channel_name("+moderated"));
+}
+
+#[test]
+fn is_channel_bang() {
+    assert!(rustbot2::irc::is_channel_name("!unique"));
+}
+
+#[test]
+fn is_channel_nick_is_not_channel() {
+    assert!(!rustbot2::irc::is_channel_name("alice"));
+}
+
+#[test]
+fn is_channel_empty_is_not_channel() {
+    assert!(!rustbot2::irc::is_channel_name(""));
+}
