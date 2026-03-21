@@ -436,7 +436,7 @@ by editing the `main` function.
 cargo test
 ```
 
-55 unit tests covering IRC parsing, all trigger types, keepalive timeouts, automatic reconnection, message splitting, and rate-limiting.
+Unit tests covering IRC parsing, all trigger types, keepalive timeouts, automatic reconnection, message splitting, and rate-limiting.
 
 Integration tests (require Docker):
 
