@@ -212,7 +212,9 @@ fn cached_regex(pattern: &str) -> Option<Arc<Regex>> {
     // Slow path: compile and insert.
     let re = Arc::new(Regex::new(pattern).ok()?);
     if let Ok(mut guard) = cache.write() {
-        guard.entry(pattern.to_string()).or_insert_with(|| Arc::clone(&re));
+        guard
+            .entry(pattern.to_string())
+            .or_insert_with(|| Arc::clone(&re));
     }
     Some(re)
 }
