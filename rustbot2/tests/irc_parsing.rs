@@ -131,8 +131,7 @@ fn ctcp_parse_non_ctcp_returns_none() {
 
 #[test]
 fn ctcp_embedded_in_privmsg() {
-    let msg =
-        IrcMessage::parse(":alice!a@host PRIVMSG mybot :\x01VERSION\x01").unwrap();
+    let msg = IrcMessage::parse(":alice!a@host PRIVMSG mybot :\x01VERSION\x01").unwrap();
     let ctcp = CtcpMessage::parse(msg.trailing().unwrap()).unwrap();
     assert_eq!(ctcp.command, "VERSION");
 }
