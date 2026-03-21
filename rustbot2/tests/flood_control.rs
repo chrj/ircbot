@@ -167,7 +167,7 @@ fn test_make_messages_exact_fit() {
 ///   - We allow up to 5 s to keep the test robust under load.
 #[tokio::test]
 async fn test_flood_control_rate_limits_messages() {
-    use rustbot2::BotState;
+    use rustbot2::State;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -191,7 +191,7 @@ async fn test_flood_control_rate_limits_messages() {
         }
     });
 
-    let state = BotState::connect("testbot".to_string(), &addr, vec![])
+    let state = State::connect("testbot".to_string(), &addr, vec![])
         .await
         .expect("failed to connect to mock server")
         .with_flood_control(2, Duration::from_millis(200));

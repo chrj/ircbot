@@ -14,7 +14,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
-use rustbot2::BotState;
+use rustbot2::State;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ async fn test_reconnects_after_tcp_disconnect() {
         tokio::time::sleep(Duration::from_secs(60)).await;
     });
 
-    let state = BotState::connect("testbot".to_string(), &addr, vec![])
+    let state = State::connect("testbot".to_string(), &addr, vec![])
         .await
         .expect("failed to connect to mock server");
 
@@ -115,7 +115,7 @@ async fn test_keepalive_timeout_triggers_reconnect() {
         }
     });
 
-    let state = BotState::connect("testbot".to_string(), &addr, vec![])
+    let state = State::connect("testbot".to_string(), &addr, vec![])
         .await
         .expect("failed to connect to mock server")
         // Short intervals so the test finishes in a few seconds.

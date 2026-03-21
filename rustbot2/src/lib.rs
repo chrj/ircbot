@@ -7,7 +7,7 @@ pub mod irc;
 
 pub use bot::HandlerSet;
 pub use connection::{
-    BotState, DEFAULT_FLOOD_BURST, DEFAULT_FLOOD_RATE, DEFAULT_KEEPALIVE_INTERVAL,
+    State, DEFAULT_FLOOD_BURST, DEFAULT_FLOOD_RATE, DEFAULT_KEEPALIVE_INTERVAL,
     DEFAULT_KEEPALIVE_TIMEOUT,
 };
 pub use context::{make_messages, Context, User};
@@ -23,19 +23,19 @@ pub type Result = std::result::Result<(), BoxError>;
 
 /// Errors specific to the bot framework.
 #[derive(Debug)]
-pub enum BotError {
+pub enum Error {
     MissingContext(&'static str),
 }
 
-impl std::fmt::Display for BotError {
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BotError::MissingContext(ctx) => write!(f, "missing context: {ctx}"),
+            Error::MissingContext(ctx) => write!(f, "missing context: {ctx}"),
         }
     }
 }
 
-impl std::error::Error for BotError {}
+impl std::error::Error for Error {}
 
 // ─── ReloadHandle ─────────────────────────────────────────────────────────────
 
@@ -81,7 +81,7 @@ pub mod internal {
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
-    use crate::{bot::HandlerSet, BotState, BoxError, HandlerEntry};
+    use crate::{bot::HandlerSet, BoxError, HandlerEntry, State};
 
     /// Delay between successive reconnection attempts.
     const RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -101,7 +101,7 @@ pub mod internal {
     /// Returns an error if a reconnection attempt fails.
     pub async fn run_bot<T: Send + Sync + 'static>(
         bot: Arc<T>,
-        state: BotState,
+        state: State,
         handlers: Vec<HandlerEntry<T>>,
     ) -> std::result::Result<(), BoxError> {
         // Wrap handlers in a HandlerSet so they can be hot-swapped at runtime.
@@ -134,7 +134,7 @@ pub mod internal {
             );
             tokio::time::sleep(RECONNECT_DELAY).await;
 
-            match BotState::connect(nick.clone(), &server, channels.clone()).await {
+            match State::connect(nick.clone(), &server, channels.clone()).await {
                 Ok(mut new_state) => {
                     new_state.keepalive_interval = keepalive_interval;
                     new_state.keepalive_timeout = keepalive_timeout;

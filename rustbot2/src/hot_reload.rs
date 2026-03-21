@@ -16,8 +16,8 @@
 /// 3. Calls `exec()` to replace the current process image with the new
 ///    binary.  The PID does not change; the TCP connection is never closed.
 ///
-/// The new binary calls [`crate::connection::BotState::try_inherit_from_env`]
-/// at startup.  If the env vars are present it reconstructs a live `BotState`
+/// The new binary calls [`crate::connection::State::try_inherit_from_env`]
+/// at startup.  If the env vars are present it reconstructs a live `State`
 /// from the inherited fd instead of opening a new TCP connection.
 ///
 /// This is the Unix-only implementation.  On non-Unix targets the function is
