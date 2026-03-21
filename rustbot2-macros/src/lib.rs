@@ -282,7 +282,6 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 );
 
                 let bot_arc = std::sync::Arc::new(self);
-                let handlers = rustbot2::internal::make_handler_set(#struct_name::__handlers());
 
                 // Install a SIGHUP listener that execs the new binary with the
                 // live fd inherited — zero-disconnect binary hot-reload.
@@ -313,7 +312,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     });
                 }
 
-                rustbot2::internal::run_bot(bot_arc, state, handlers).await
+                rustbot2::internal::run_bot(bot_arc, state, #struct_name::__handlers()).await
             }
 
             fn __handlers() -> Vec<rustbot2::HandlerEntry<#struct_name>> {

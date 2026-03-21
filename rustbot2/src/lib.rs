@@ -96,17 +96,17 @@ pub mod internal {
 
     /// Run the bot, reconnecting automatically whenever the connection is lost.
     ///
-    /// The `handlers` [`HandlerSet`] can be swapped at any time without
-    /// interrupting the IRC connection.
-    ///
     /// # Errors
     ///
     /// Returns an error if a reconnection attempt fails.
     pub async fn run_bot<T: Send + Sync + 'static>(
         bot: Arc<T>,
         state: BotState,
-        handlers: HandlerSet<T>,
+        handlers: Vec<HandlerEntry<T>>,
     ) -> std::result::Result<(), BoxError> {
+        // Wrap handlers in a HandlerSet so they can be hot-swapped at runtime.
+        let handlers = make_handler_set(handlers);
+
         // Preserve reconnection parameters before `state` is consumed.
         let server = state.server.clone();
         let nick = state.nick.clone();

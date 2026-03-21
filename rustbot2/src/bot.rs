@@ -11,7 +11,7 @@ use crate::{
     connection::BotState,
     context::Context,
     handler::{HandlerEntry, Trigger},
-    irc::{is_channel_name, IrcMessage},
+    irc::{is_channel_name, CtcpMessage, IrcMessage},
     BoxError,
 };
 
@@ -174,6 +174,17 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                         }
                                     }
                                 }
+                                dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
+                            }
+                            "PRIVMSG" => {
+                                handle_privmsg(
+                                    &bot,
+                                    &handlers,
+                                    &msg,
+                                    &bot_nick,
+                                    write_tx.clone(),
+                                )
+                                .await;
                             }
                             _ => {
                                 dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
@@ -361,6 +372,46 @@ fn glob_to_regex(pattern: &str) -> String {
 }
 
 // ─── dispatch ────────────────────────────────────────────────────────────────
+
+async fn handle_privmsg<T: Send + Sync + 'static>(
+    bot: &Arc<T>,
+    handlers: &HandlerSet<T>,
+    msg: &IrcMessage,
+    bot_nick: &str,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+) {
+    if let Some(ctcp) = msg.trailing().and_then(CtcpMessage::parse) {
+        match ctcp.command.as_str() {
+            "PING" => {
+                if let Some(sender) = msg.nick() {
+                    let reply = format!(
+                        "NOTICE {sender} :\x01PING{}{}\x01\r\n",
+                        if ctcp.arg.is_empty() { "" } else { " " },
+                        ctcp.arg,
+                    );
+                    if let Err(e) = tx.send(reply) {
+                        eprintln!("[rustbot2] failed to send CTCP PING reply: {e}");
+                    }
+                }
+                return;
+            }
+            "VERSION" => {
+                if let Some(sender) = msg.nick() {
+                    let reply = format!(
+                        "NOTICE {sender} :\x01VERSION rustbot2 {}\x01\r\n",
+                        env!("CARGO_PKG_VERSION"),
+                    );
+                    if let Err(e) = tx.send(reply) {
+                        eprintln!("[rustbot2] failed to send CTCP VERSION reply: {e}");
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+    }
+    dispatch(bot, handlers, msg, bot_nick, tx).await;
+}
 
 async fn dispatch<T: Send + Sync + 'static>(
     bot: &Arc<T>,
