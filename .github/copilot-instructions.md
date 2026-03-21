@@ -17,3 +17,7 @@ cargo test --workspace
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+## README
+
+Any user-facing changes (new features, changed behaviour, updated defaults, new API surface) must be reflected in `README.md`.
