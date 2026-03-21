@@ -21,8 +21,8 @@ pub struct BotState {
     pub channels: Vec<String>,
     /// Server address used when reconnecting (e.g. `"irc.example.net:6667"`).
     pub server: String,
-    pub(crate) keepalive_interval: Duration,
-    pub(crate) keepalive_timeout: Duration,
+    pub keepalive_interval: Duration,
+    pub keepalive_timeout: Duration,
     /// Token-bucket burst: how many messages may be sent immediately before
     /// rate-limiting kicks in.
     pub(crate) flood_burst: usize,
@@ -118,8 +118,8 @@ impl BotState {
     /// Returns an error if the env vars are malformed or if the fd cannot be
     /// converted to a `TcpStream`.
     #[cfg(unix)]
-    pub fn try_inherit_from_env()
-    -> Result<Option<BotState>, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn try_inherit_from_env(
+    ) -> Result<Option<BotState>, Box<dyn std::error::Error + Send + Sync>> {
         use std::os::unix::io::{FromRawFd, RawFd};
 
         use crate::hot_reload::{
@@ -140,7 +140,14 @@ impl BotState {
 
         // Clear the env vars so they are not accidentally inherited by any
         // child processes the bot might spawn.
-        for var in &[ENV_FD, ENV_NICK, ENV_SERVER, ENV_CHANNELS, ENV_KA_INTERVAL, ENV_KA_TIMEOUT] {
+        for var in &[
+            ENV_FD,
+            ENV_NICK,
+            ENV_SERVER,
+            ENV_CHANNELS,
+            ENV_KA_INTERVAL,
+            ENV_KA_TIMEOUT,
+        ] {
             std::env::remove_var(var);
         }
 

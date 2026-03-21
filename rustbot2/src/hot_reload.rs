@@ -36,19 +36,11 @@ pub fn exec_reload(
     // Clear FD_CLOEXEC so the fd survives exec.
     let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFD) };
     if flags == -1 {
-        return format!(
-            "fcntl(F_GETFD) failed: {}",
-            std::io::Error::last_os_error()
-        )
-        .into();
+        return format!("fcntl(F_GETFD) failed: {}", std::io::Error::last_os_error()).into();
     }
     let rc = unsafe { libc::fcntl(raw_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
     if rc == -1 {
-        return format!(
-            "fcntl(F_SETFD) failed: {}",
-            std::io::Error::last_os_error()
-        )
-        .into();
+        return format!("fcntl(F_SETFD) failed: {}", std::io::Error::last_os_error()).into();
     }
 
     // Encode state into env vars for the new process.

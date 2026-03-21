@@ -276,13 +276,13 @@ The bot actively monitors its connection by sending a `PING rustbot2-keepalive` 
 ```rust
 use std::sync::Arc;
 use std::time::Duration;
-use rustbot2::{BotState, internal};
+use rustbot2::{BotState, HandlerEntry, internal};
 
 let state = BotState::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
     .await?
     .with_keepalive(Duration::from_secs(60), Duration::from_secs(15));
 
-let handlers = internal::make_handler_set(vec![/* your HandlerEntry values */]);
+let handlers: Vec<HandlerEntry<()>> = vec![/* your HandlerEntry values */];
 internal::run_bot(Arc::new(()), state, handlers).await?;
 ```
 
@@ -371,13 +371,13 @@ starting the bot.  When using the `#[bot]` macro, use the lower-level API:
 ```rust
 use std::sync::Arc;
 use std::time::Duration;
-use rustbot2::{BotState, internal};
+use rustbot2::{BotState, HandlerEntry, internal};
 
 let state = BotState::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
     .await?
     .with_flood_control(8, Duration::from_millis(250)); // burst of 8, ≈ 4 msg/s
 
-let handlers = internal::make_handler_set(vec![/* your HandlerEntry values */]);
+let handlers: Vec<HandlerEntry<()>> = vec![/* your HandlerEntry values */];
 internal::run_bot(Arc::new(()), state, handlers).await?;
 ```
 

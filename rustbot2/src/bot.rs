@@ -60,7 +60,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         reader,
         write_half,
         #[cfg(unix)]
-        raw_fd: _,
+            raw_fd: _,
     } = state;
 
     // Create the mpsc write channel.
