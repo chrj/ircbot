@@ -7,13 +7,13 @@
 
 use std::time::Duration;
 
+use futures::StreamExt;
+use irc::client::prelude::{Client, Command, Config};
 use testcontainers::{
     core::{ContainerPort, WaitFor},
     runners::AsyncRunner,
-    GenericImage,
+    CopyDataSource, GenericImage, ImageExt,
 };
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use rustbot2::{bot, Context, Result};
@@ -34,116 +34,31 @@ impl TestBot {
     }
 }
 
-// ─── constants ───────────────────────────────────────────────────────────────
+// ─── ngircd configuration ────────────────────────────────────────────────────
 
-/// How long to wait after the bot connects for it to finish joining the channel.
-const BOT_JOIN_DELAY: Duration = Duration::from_millis(500);
+/// A minimal ngircd configuration used for all integration tests.
+///
+/// `PingTimeout` is set to 5 s (vs. the default 120 s) so that idle-connection
+/// PINGs arrive quickly and any PING-handling bugs are caught without a long wait.
+const NGIRCD_CONF: &[u8] = b"\
+[Global]
+ServerGID=irc
+ServerUID=irc
 
-// ─── test IRC client ─────────────────────────────────────────────────────────
+[Limits]
+PingTimeout = 5
 
-/// A minimal synchronous-style IRC client used to drive the tests.
-struct IrcClient {
-    reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
-    writer: BufWriter<tokio::net::tcp::OwnedWriteHalf>,
-}
+[Options]
+Ident=no
+PAM=no
 
-impl IrcClient {
-    /// Connect to `addr` and register with the given `nick`.
-    async fn connect(addr: &str, nick: &str) -> Self {
-        let stream = TcpStream::connect(addr)
-            .await
-            .expect("test client: failed to connect to IRC server");
-        let (r, w) = stream.into_split();
-        let mut client = IrcClient {
-            reader: BufReader::new(r),
-            writer: BufWriter::new(w),
-        };
-        client.send_raw(&format!("NICK {nick}")).await;
-        client
-            .send_raw(&format!("USER {nick} 0 * :Integration Test"))
-            .await;
-        client
-    }
-
-    /// Send a raw IRC line (a `\r\n` terminator is appended automatically).
-    async fn send_raw(&mut self, line: &str) {
-        self.writer
-            .write_all(format!("{line}\r\n").as_bytes())
-            .await
-            .expect("test client: write failed");
-        self.writer
-            .flush()
-            .await
-            .expect("test client: flush failed");
-    }
-
-    /// Send a `JOIN` command for `channel`.
-    async fn join(&mut self, channel: &str) {
-        self.send_raw(&format!("JOIN {channel}")).await;
-    }
-
-    /// Send a `PRIVMSG` to `target` with body `text`.
-    async fn privmsg(&mut self, target: &str, text: &str) {
-        self.send_raw(&format!("PRIVMSG {target} :{text}")).await;
-    }
-
-    /// Read IRC lines until `predicate` returns `true` for a line, or until
-    /// `max_wait` elapses.  Automatically replies to `PING` challenges.
-    /// Returns the first matching line on success; panics on timeout or I/O error.
-    async fn read_until(&mut self, predicate: impl Fn(&str) -> bool, max_wait: Duration) -> String {
-        let deadline = tokio::time::Instant::now() + max_wait;
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            assert!(
-                !remaining.is_zero(),
-                "test client: timed out waiting for expected IRC message"
-            );
-
-            let mut line = String::new();
-            match timeout(remaining, self.reader.read_line(&mut line)).await {
-                Ok(Ok(0)) => panic!("test client: connection closed unexpectedly"),
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => panic!("test client: I/O error reading from server: {e}"),
-                Err(_) => panic!("test client: timed out waiting for expected IRC message"),
-            }
-
-            let trimmed = line.trim_end_matches(['\r', '\n']);
-
-            // Respond to server PINGs so the connection stays alive.
-            if let Some(rest) = trimmed.strip_prefix("PING ") {
-                self.send_raw(&format!("PONG {rest}")).await;
-                continue;
-            }
-
-            if predicate(trimmed) {
-                return trimmed.to_string();
-            }
-        }
-    }
-
-    /// Block until the server's numeric `001` welcome message arrives.
-    async fn wait_for_welcome(&mut self) {
-        self.read_until(|l| l.contains(" 001 "), Duration::from_secs(15))
-            .await;
-    }
-
-    /// Block until the server echoes our own `JOIN` back for `channel`.
-    async fn wait_for_join(&mut self, channel: &str) {
-        self.read_until(
-            |l| {
-                l.contains("JOIN")
-                    && l.to_ascii_lowercase()
-                        .contains(&channel.to_ascii_lowercase())
-            },
-            Duration::from_secs(10),
-        )
-        .await;
-    }
-}
+[SSL]
+CAFile=/etc/ssl/certs/ca-certificates.crt
+";
 
 // ─── container helpers ───────────────────────────────────────────────────────
 
-/// Start an ngircd container and return `(container, host_port)`.
+/// Start an ngircd container with a custom config and return `(container, host_port)`.
 ///
 /// The container is automatically stopped and removed when `container` is
 /// dropped (i.e. when the test ends).
@@ -152,6 +67,11 @@ async fn start_ngircd() -> (testcontainers::ContainerAsync<GenericImage>, u16) {
         .with_exposed_port(ContainerPort::Tcp(6667))
         // Wait until ngircd logs "ready." to stdout before proceeding.
         .with_wait_for(WaitFor::message_on_stdout("ready."))
+        // Inject our custom config to override the default one shipped in the image.
+        .with_copy_to(
+            "/opt/ngircd/etc/ngircd.conf",
+            CopyDataSource::Data(NGIRCD_CONF.to_vec()),
+        )
         .start()
         .await
         .expect("failed to start ngircd container");
@@ -164,7 +84,77 @@ async fn start_ngircd() -> (testcontainers::ContainerAsync<GenericImage>, u16) {
     (container, port)
 }
 
-// ─── tests ───────────────────────────────────────────────────────────────────
+// ─── test helpers ────────────────────────────────────────────────────────────
+
+/// Build an `irc` crate [`Config`] for connecting to the server at `127.0.0.1:<port>`.
+fn irc_config(port: u16, nick: &str, channels: Vec<String>) -> Config {
+    Config {
+        nickname: Some(nick.to_owned()),
+        server: Some("127.0.0.1".to_owned()),
+        port: Some(port),
+        channels,
+        ..Default::default()
+    }
+}
+
+/// Read messages from `stream` until `predicate` returns `Some(T)` for a
+/// message, or until `max_wait` elapses.  Panics on timeout or stream error.
+async fn read_until<T>(
+    stream: &mut irc::client::ClientStream,
+    predicate: impl Fn(&irc::proto::Message) -> Option<T>,
+    max_wait: Duration,
+) -> T {
+    timeout(max_wait, async {
+        loop {
+            let msg = stream
+                .next()
+                .await
+                .expect("stream ended unexpectedly")
+                .expect("stream error");
+            if let Some(result) = predicate(&msg) {
+                return result;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for expected IRC message")
+}
+
+/// Wait until `testbot` is known to be in `#test` on the given stream.
+///
+/// The server sends a `353 RPL_NAMREPLY` with all current members right after
+/// our own `JOIN` is confirmed.  If `testbot` appears in that list, it was
+/// already in the channel.  If not, we keep reading until we see its `JOIN`.
+async fn wait_for_bot_in_channel(stream: &mut irc::client::ClientStream) {
+    read_until(
+        stream,
+        |msg| {
+            match &msg.command {
+                // Bot joined after the test client.
+                Command::JOIN(chan, _, _)
+                    if chan == "#test" && msg.source_nickname() == Some("testbot") =>
+                {
+                    Some(())
+                }
+                // NAMES list sent right after our own JOIN: check if testbot is already there.
+                Command::Response(irc::proto::Response::RPL_NAMREPLY, args) => {
+                    let nicks = args.last().map(String::as_str).unwrap_or("");
+                    if nicks
+                        .split_whitespace()
+                        .any(|n| n.trim_start_matches(['~', '&', '@', '%', '+']) == "testbot")
+                    {
+                        Some(())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+}
 
 /// Verify that the bot responds to `!ping` with `pong!`.
 #[tokio::test]
@@ -178,23 +168,34 @@ async fn test_ping_command() {
         .expect("bot failed to connect");
     let bot_task = tokio::spawn(bot.main_loop());
 
-    // Connect the test client.
-    let mut client = IrcClient::connect(&addr, "client").await;
-    client.wait_for_welcome().await;
-    client.join("#test").await;
-    client.wait_for_join("#test").await;
+    // Connect the test client via the `irc` crate.
+    let mut client = Client::from_config(irc_config(port, "client", vec!["#test".into()]))
+        .await
+        .expect("test client: failed to connect");
+    client.identify().expect("test client: identify failed");
+    let mut stream = client.stream().expect("test client: stream failed");
 
-    // Give the bot time to join the channel.
-    tokio::time::sleep(BOT_JOIN_DELAY).await;
+    // Wait until testbot is confirmed to be in #test.
+    wait_for_bot_in_channel(&mut stream).await;
 
     // Send the command and wait for the bot's reply.
-    client.privmsg("#test", "!ping").await;
-    let response = client
-        .read_until(
-            |l| l.contains("PRIVMSG") && l.contains("pong!"),
-            Duration::from_secs(10),
-        )
-        .await;
+    client
+        .send_privmsg("#test", "!ping")
+        .expect("test client: send failed");
+
+    let response = read_until(
+        &mut stream,
+        |msg| {
+            if let Command::PRIVMSG(ref target, ref text) = msg.command {
+                if target == "#test" && text.contains("pong!") {
+                    return Some(text.clone());
+                }
+            }
+            None
+        },
+        Duration::from_secs(10),
+    )
+    .await;
 
     assert!(
         response.contains("pong!"),
@@ -215,20 +216,32 @@ async fn test_echo_command() {
         .expect("bot failed to connect");
     let bot_task = tokio::spawn(bot.main_loop());
 
-    let mut client = IrcClient::connect(&addr, "client").await;
-    client.wait_for_welcome().await;
-    client.join("#test").await;
-    client.wait_for_join("#test").await;
+    let mut client = Client::from_config(irc_config(port, "client", vec!["#test".into()]))
+        .await
+        .expect("test client: failed to connect");
+    client.identify().expect("test client: identify failed");
+    let mut stream = client.stream().expect("test client: stream failed");
 
-    tokio::time::sleep(BOT_JOIN_DELAY).await;
+    // Wait until testbot is confirmed to be in #test.
+    wait_for_bot_in_channel(&mut stream).await;
 
-    client.privmsg("#test", "!echo hello world").await;
-    let response = client
-        .read_until(
-            |l| l.contains("PRIVMSG") && l.contains("hello world"),
-            Duration::from_secs(10),
-        )
-        .await;
+    client
+        .send_privmsg("#test", "!echo hello world")
+        .expect("test client: send failed");
+
+    let response = read_until(
+        &mut stream,
+        |msg| {
+            if let Command::PRIVMSG(ref target, ref text) = msg.command {
+                if target == "#test" && text.contains("hello world") {
+                    return Some(text.clone());
+                }
+            }
+            None
+        },
+        Duration::from_secs(10),
+    )
+    .await;
 
     assert!(
         response.contains("hello world"),

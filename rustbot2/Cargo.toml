@@ -14,6 +14,7 @@ rustbot2-macros = { path = "../rustbot2-macros" }
 
 [dev-dependencies]
 testcontainers = "0.23"
+irc = { version = "1", default-features = false }
 
 [[example]]
 name = "basic_bot"
