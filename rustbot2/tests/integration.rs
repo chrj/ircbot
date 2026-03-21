@@ -34,6 +34,11 @@ impl TestBot {
     }
 }
 
+// ─── constants ───────────────────────────────────────────────────────────────
+
+/// How long to wait after the bot connects for it to finish joining the channel.
+const BOT_JOIN_DELAY: Duration = Duration::from_millis(500);
+
 // ─── test IRC client ─────────────────────────────────────────────────────────
 
 /// A minimal synchronous-style IRC client used to drive the tests.
@@ -83,10 +88,10 @@ impl IrcClient {
     }
 
     /// Read IRC lines until `predicate` returns `true` for a line, or until
-    /// `timeout_secs` have elapsed.  Automatically replies to `PING` challenges.
+    /// `max_wait` elapses.  Automatically replies to `PING` challenges.
     /// Returns the first matching line on success; panics on timeout or I/O error.
-    async fn read_until(&mut self, predicate: impl Fn(&str) -> bool, timeout_secs: u64) -> String {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    async fn read_until(&mut self, predicate: impl Fn(&str) -> bool, max_wait: Duration) -> String {
+        let deadline = tokio::time::Instant::now() + max_wait;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             assert!(
@@ -118,7 +123,8 @@ impl IrcClient {
 
     /// Block until the server's numeric `001` welcome message arrives.
     async fn wait_for_welcome(&mut self) {
-        self.read_until(|l| l.contains(" 001 "), 15).await;
+        self.read_until(|l| l.contains(" 001 "), Duration::from_secs(15))
+            .await;
     }
 
     /// Block until the server echoes our own `JOIN` back for `channel`.
@@ -129,7 +135,7 @@ impl IrcClient {
                     && l.to_ascii_lowercase()
                         .contains(&channel.to_ascii_lowercase())
             },
-            10,
+            Duration::from_secs(10),
         )
         .await;
     }
@@ -179,12 +185,15 @@ async fn test_ping_command() {
     client.wait_for_join("#test").await;
 
     // Give the bot time to join the channel.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(BOT_JOIN_DELAY).await;
 
     // Send the command and wait for the bot's reply.
     client.privmsg("#test", "!ping").await;
     let response = client
-        .read_until(|l| l.contains("PRIVMSG") && l.contains("pong!"), 10)
+        .read_until(
+            |l| l.contains("PRIVMSG") && l.contains("pong!"),
+            Duration::from_secs(10),
+        )
         .await;
 
     assert!(
@@ -211,11 +220,14 @@ async fn test_echo_command() {
     client.join("#test").await;
     client.wait_for_join("#test").await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(BOT_JOIN_DELAY).await;
 
     client.privmsg("#test", "!echo hello world").await;
     let response = client
-        .read_until(|l| l.contains("PRIVMSG") && l.contains("hello world"), 10)
+        .read_until(
+            |l| l.contains("PRIVMSG") && l.contains("hello world"),
+            Duration::from_secs(10),
+        )
         .await;
 
     assert!(
