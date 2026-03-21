@@ -81,6 +81,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Active keepalive** — the bot sends a periodic `PING` to the server (default every 30 s) and reconnects automatically if no `PONG` arrives within the timeout (default 10 s).  Interval and timeout are configurable via `BotState::with_keepalive()`.
 - **Automatic reconnection** — on TCP drop or keepalive timeout the bot re-dials and re-joins all configured channels, preserving all handler registrations.
 - **Concurrent write loop** — outgoing messages are serialised through an in-process channel so handlers can send replies without blocking each other.
+- **Flood protection** — a token-bucket rate limiter in the write loop ensures the bot cannot send messages faster than the server allows (default: burst of 4, then 1 message per 500 ms).  Configurable via `BotState::with_flood_control()`.
+- **Automatic message splitting** — any outgoing message that would exceed the IRC 512-byte line limit is automatically split across multiple lines, with word-boundary awareness and UTF-8 safety.
 - **Output sanitization** — `\r`, `\n`, and `\0` are stripped from every outgoing message, preventing IRC injection attacks.
 
 ---
@@ -100,6 +102,7 @@ rustbot2/               ← library crate (public API)
     irc_parsing.rs      ← unit tests (IRC parsing)
     trigger_matching.rs ← unit tests (trigger dispatch)
     keepalive.rs        ← unit tests (keepalive timeout, automatic reconnection)
+    flood_control.rs    ← unit + integration tests (message splitting, rate limiting)
   examples/
     basic_bot.rs        ← minimal demo
 
@@ -284,6 +287,65 @@ internal::run_bot(Arc::new(()), state, handlers).await?;
 
 ---
 
+## Flood protection
+
+The bot's write loop enforces a **token-bucket rate limiter** to prevent it from
+overwhelming the IRC server with outgoing messages.
+
+**How it works:**
+
+1. The bucket starts full with `burst` tokens.
+2. Each outgoing message consumes one token.
+3. While at least one token is available the message is sent immediately.
+4. Once the bucket is empty the write loop waits until enough time has elapsed
+   for a new token to be added (one token per `rate` interval) before sending
+   the next message.
+
+**Defaults:**
+
+| Setting | Value |
+|---------|-------|
+| Burst (initial token supply) | 4 messages |
+| Rate (token refill interval) | 500 ms |
+| Steady-state throughput | ≈ 2 messages / second |
+
+**Custom flood-control settings** — call `BotState::with_flood_control()` before
+starting the bot.  When using the `#[bot]` macro, use the lower-level API:
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+use rustbot2::{BotState, HandlerEntry, internal};
+
+let state = BotState::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
+    .await?
+    .with_flood_control(8, Duration::from_millis(250)); // burst of 8, ≈ 4 msg/s
+
+let handlers: Vec<HandlerEntry<()>> = vec![/* your HandlerEntry values */];
+internal::run_bot(Arc::new(()), state, handlers).await?;
+```
+
+---
+
+## Automatic message splitting
+
+IRC limits each protocol line to **512 bytes** (including the trailing `\r\n`).
+Every `Context` reply method (`reply`, `say`, `action`, `notice`, `whisper`)
+automatically splits text that would exceed this limit into multiple messages.
+The splitter:
+
+- Prefers to break at an **ASCII space** (word-wrapping), falling back to a
+  hard byte-limit split when no space is available.
+- Always splits on a valid **UTF-8 character boundary** so multi-byte characters
+  are never corrupted.
+- Accounts for the fixed overhead of the IRC command prefix (e.g.
+  `PRIVMSG #channel :`) and any CTCP suffix when computing the available space.
+
+Splitting happens transparently — your handler code does not need to do
+anything special.
+
+---
+
 ## Handler signatures
 
 Handlers always start with `&self` and `ctx: Context`.  Additional parameters
@@ -374,7 +436,7 @@ by editing the `main` function.
 cargo test
 ```
 
-41 unit tests covering IRC parsing, all trigger types, keepalive timeouts, and automatic reconnection.
+55 unit tests covering IRC parsing, all trigger types, keepalive timeouts, automatic reconnection, message splitting, and rate-limiting.
 
 Integration tests (require Docker):
 
