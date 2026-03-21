@@ -3,11 +3,17 @@ name = "rustbot2"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+integration = []
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 regex = "1"
 futures = "0.3"
 rustbot2-macros = { path = "../rustbot2-macros" }
+
+[dev-dependencies]
+testcontainers = "0.23"
 
 [[example]]
 name = "basic_bot"

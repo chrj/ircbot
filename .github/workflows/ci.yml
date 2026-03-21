@@ -47,6 +47,19 @@ jobs:
           components: clippy
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Pull ngircd image
+        run: docker pull ghcr.io/ngircd/ngircd:latest
+      - name: Run integration tests
+        run: cargo test --features integration --test integration -- --test-threads=1
+
   security:
     name: Security audit
     runs-on: ubuntu-latest
