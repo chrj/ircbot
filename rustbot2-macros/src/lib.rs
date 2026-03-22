@@ -234,6 +234,12 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
             __state: std::option::Option<rustbot2::State>,
         }
 
+        impl Default for #struct_name {
+            fn default() -> Self {
+                #struct_name { __state: std::option::Option::None }
+            }
+        }
+
         impl #struct_name {
             /// Connect to an IRC server and return a bot ready to run.
             ///

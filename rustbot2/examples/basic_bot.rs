@@ -56,3 +56,140 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sy
     println!("  bot.main_loop().await?;");
     Ok(())
 }
+
+// ─── Unit tests ───────────────────────────────────────────────────────────────
+//
+// Each handler method can be tested directly without a live IRC connection by:
+//
+//   1. Creating the bot with `MyBot::default()` (no connection is made).
+//   2. Building a fake context with `rustbot2::testing::TestContext`.
+//   3. Calling the handler method and asserting on the captured replies.
+//
+// `TestContext::channel` simulates a PRIVMSG sent to a channel.
+// `TestContext::private` simulates a direct private message to the bot.
+// `TestContext::builder()` gives full control over every field.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustbot2::testing::TestContext;
+
+    // ── !ping ────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn ping_replies_with_nick_prefix_in_channel() {
+        let bot = MyBot::default();
+        let mut tc = TestContext::channel("#test", "alice", "!ping");
+        bot.ping(tc.take_ctx()).await.unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG #test :alice, pong!\r\n".to_string()),
+        );
+    }
+
+    #[tokio::test]
+    async fn ping_replies_without_prefix_in_query() {
+        let bot = MyBot::default();
+        let mut tc = TestContext::private("alice", "!ping");
+        bot.ping(tc.take_ctx()).await.unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG alice :pong!\r\n".to_string()),
+        );
+    }
+
+    // ── !echo ────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn echo_says_the_provided_text() {
+        let bot = MyBot::default();
+        let mut tc = TestContext::channel("#test", "alice", "!echo hello world");
+        bot.echo(tc.take_ctx(), "hello world".to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG #test :hello world\r\n".to_string()),
+        );
+    }
+
+    // ── hello * ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn greet_says_hello_with_captured_name() {
+        let bot = MyBot::default();
+        let mut tc = TestContext::channel("#test", "alice", "hello rust");
+        bot.greet(tc.take_ctx(), "rust".to_string()).await.unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG #test :Hello, rust!\r\n".to_string()),
+        );
+    }
+
+    // ── JOIN #rust ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn welcome_greets_new_user_in_rust_channel() {
+        let bot = MyBot::default();
+        // Simulate a context where the sender joins #rust.
+        let mut tc = TestContext::builder()
+            .target("#rust")
+            .is_channel(true)
+            .sender_nick("newuser")
+            .build();
+        bot.welcome(tc.take_ctx()).await.unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG #rust :Welcome to #rust, newuser!\r\n".to_string()),
+        );
+    }
+
+    // ── mention ───────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn on_mention_echoes_the_addressed_text() {
+        let bot = MyBot::default();
+        let mut tc = TestContext::channel("#test", "alice", "testbot: greetings");
+        // The framework extracts the text after "testbot: " as a capture;
+        // in a direct call we pass it ourselves.
+        bot.on_mention(tc.take_ctx(), "greetings".to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG #test :alice, You said: greetings\r\n".to_string()),
+        );
+    }
+
+    // ── mention target = "#rust" ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn on_mention_rust_sends_notice() {
+        let bot = MyBot::default();
+        let mut tc = TestContext::builder()
+            .target("#rust")
+            .is_channel(true)
+            .sender_nick("alice")
+            .build();
+        bot.on_mention_rust(tc.take_ctx()).await.unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("NOTICE #rust :I heard you!\r\n".to_string()),
+        );
+    }
+
+    // ── !secret ───────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn secret_whispers_to_sender_regardless_of_channel() {
+        let bot = MyBot::default();
+        // Even though the message arrives in a channel, whisper goes to the
+        // sender's nick directly.
+        let mut tc = TestContext::channel("#test", "alice", "!secret");
+        bot.secret(tc.take_ctx()).await.unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG alice :This is just between us.\r\n".to_string()),
+        );
+    }
+}
