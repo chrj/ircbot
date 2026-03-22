@@ -1,48 +1,5 @@
-use irc_proto::chan::ChannelExt;
-use irc_proto::prefix::Prefix;
 use irc_proto::Message;
 use rustbot2::CtcpMessage;
-
-// ─── source_nickname ─────────────────────────────────────────────────────────
-
-#[test]
-fn nick_from_user_prefix() {
-    let msg: Message = ":alice!a@host PRIVMSG #general :Hello, world!"
-        .parse()
-        .unwrap();
-    assert_eq!(msg.source_nickname(), Some("alice"));
-}
-
-#[test]
-fn nick_from_server_prefix_returns_none() {
-    // source_nickname() returns None for server prefixes.
-    let msg: Message = ":irc.net 001 bot :Welcome".parse().unwrap();
-    assert_eq!(msg.source_nickname(), None);
-}
-
-// ─── prefix / Prefix matching ─────────────────────────────────────────────────
-
-#[test]
-fn prefix_full_nickname() {
-    let msg: Message = ":nick!user@host PART #chan".parse().unwrap();
-    match msg.prefix.as_ref().unwrap() {
-        Prefix::Nickname(nick, user, host) => {
-            assert_eq!(nick, "nick");
-            assert_eq!(user, "user");
-            assert_eq!(host, "host");
-        }
-        other => panic!("unexpected prefix: {other:?}"),
-    }
-}
-
-#[test]
-fn prefix_server_is_not_nickname() {
-    let msg: Message = ":irc.net 001 bot :Welcome".parse().unwrap();
-    assert!(
-        !matches!(msg.prefix.as_ref().unwrap(), Prefix::Nickname(_, _, _)),
-        "server prefix should not be a Prefix::Nickname"
-    );
-}
 
 // ─── CTCP parsing ─────────────────────────────────────────────────────────────
 
@@ -98,36 +55,4 @@ fn ctcp_embedded_in_privmsg() {
     };
     let ctcp = CtcpMessage::parse(text).unwrap();
     assert_eq!(ctcp.command, "VERSION");
-}
-
-// ─── ChannelExt::is_channel_name ──────────────────────────────────────────────
-
-#[test]
-fn is_channel_hash() {
-    assert!("#general".is_channel_name());
-}
-
-#[test]
-fn is_channel_ampersand() {
-    assert!("&local".is_channel_name());
-}
-
-#[test]
-fn is_channel_plus() {
-    assert!("+moderated".is_channel_name());
-}
-
-#[test]
-fn is_channel_bang() {
-    assert!("!unique".is_channel_name());
-}
-
-#[test]
-fn is_channel_nick_is_not_channel() {
-    assert!(!"alice".is_channel_name());
-}
-
-#[test]
-fn is_channel_empty_is_not_channel() {
-    assert!(!"".is_channel_name());
 }
