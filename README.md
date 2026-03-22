@@ -436,6 +436,123 @@ message text (`ctx.message_text()`).
 
 ---
 
+## Unit testing handlers
+
+Handler methods can be tested directly without a live IRC connection using
+`rustbot2::testing::TestContext`.
+
+### How it works
+
+1. Create a bot instance with `MyBot::default()` — no connection is made.
+2. Build a fake [`Context`] with `TestContext::channel`, `TestContext::private`,
+   or `TestContext::builder()` for full control.
+3. Extract the context with `tc.take_ctx()` and pass it to the handler.
+4. Assert on the captured outgoing messages with `tc.next_reply()` or
+   `tc.replies()`.
+
+### Quick example
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustbot2::testing::TestContext;
+
+    #[tokio::test]
+    async fn ping_replies_pong_in_channel() {
+        let bot = MyBot::default();
+        let mut tc = TestContext::channel("#test", "alice", "!ping");
+        bot.ping(tc.take_ctx()).await.unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG #test :alice, pong!\r\n".to_string()),
+        );
+    }
+
+    #[tokio::test]
+    async fn ping_replies_pong_in_query() {
+        let bot = MyBot::default();
+        let mut tc = TestContext::private("alice", "!ping");
+        bot.ping(tc.take_ctx()).await.unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG alice :pong!\r\n".to_string()),
+        );
+    }
+}
+```
+
+### Testing handlers with extra parameters
+
+When a handler takes a `String` capture, pass it directly — the framework's
+extraction code is bypassed in a direct call:
+
+```rust
+#[tokio::test]
+async fn echo_says_text() {
+    let bot = MyBot::default();
+    let mut tc = TestContext::channel("#test", "alice", "!echo hello world");
+    bot.echo(tc.take_ctx(), "hello world".to_string()).await.unwrap();
+    assert_eq!(
+        tc.next_reply(),
+        Some("PRIVMSG #test :hello world\r\n".to_string()),
+    );
+}
+```
+
+If you want to exercise the full trigger-matching and argument-extraction
+pipeline (including glob/regex captures), use the integration test helpers
+in `tests/` instead.
+
+### Checking multiple replies
+
+`tc.replies()` drains all buffered replies at once:
+
+```rust
+#[tokio::test]
+async fn handler_sends_two_messages() {
+    let bot = MyBot::default();
+    let mut tc = TestContext::channel("#test", "alice", "!status");
+    bot.status(tc.take_ctx()).await.unwrap();
+    let msgs = tc.replies();
+    assert_eq!(msgs.len(), 2);
+    assert!(msgs[0].contains("online"));
+    assert!(msgs[1].contains("uptime"));
+}
+```
+
+### Advanced: custom context via the builder
+
+Use `TestContext::builder()` for scenarios that `channel`/`private` don't
+cover, such as simulating an event with a specific bot nick or pre-set
+captures:
+
+```rust
+let mut tc = TestContext::builder()
+    .target("#rust")
+    .is_channel(true)
+    .sender_nick("newuser")
+    .bot_nick("mybot")
+    .captures(vec!["hello".to_string()])
+    .build();
+```
+
+### Best practices
+
+- **One test per behaviour** — keep each test focused on a single observable
+  outcome (e.g. "reply text", "no reply", "two messages").
+- **Test channel *and* query** — `reply()` prefixes the nick in channels but
+  not in queries; verify both when it matters.
+- **Pass capture args directly** — rather than putting capture text in the
+  message body and relying on the framework, pass `String` args directly to
+  the method.  This makes tests faster, clearer, and independent of trigger
+  matching.
+- **Use `tc.replies()` for multi-message handlers** — if a handler may emit
+  more than one message (e.g. long text that gets split), collect with
+  `tc.replies()` and assert on the slice.
+
+---
+
 ## Context
 
 `Context` is passed to every handler and provides both metadata about the
@@ -493,6 +610,12 @@ cargo test
 ```
 
 Unit tests covering IRC parsing, all trigger types, keepalive timeouts, automatic reconnection, message splitting, and rate-limiting.
+
+To also run the handler tests embedded in the example bot:
+
+```sh
+cargo test --example basic_bot
+```
 
 Integration tests (require Docker):
 

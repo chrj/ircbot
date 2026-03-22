@@ -4,6 +4,7 @@ pub mod context;
 pub mod handler;
 pub mod hot_reload;
 pub mod irc;
+pub mod testing;
 
 pub use bot::HandlerSet;
 pub use connection::{
