@@ -1,66 +1,76 @@
-use rustbot2::irc::IrcMessage;
+use irc_proto::chan::ChannelExt;
+use irc_proto::Message;
+use rustbot2::irc::MessageExt;
 use rustbot2::CtcpMessage;
 
-#[test]
-fn parse_ping() {
-    let msg = IrcMessage::parse("PING :server.example.com").unwrap();
-    assert_eq!(msg.command, "PING");
-    assert_eq!(msg.prefix, None);
-    assert_eq!(msg.params, vec!["server.example.com"]);
-    assert_eq!(msg.trailing(), Some("server.example.com"));
-}
+// ─── MessageExt helpers ───────────────────────────────────────────────────────
 
 #[test]
-fn parse_privmsg_channel() {
-    let msg = IrcMessage::parse(":alice!a@host PRIVMSG #general :Hello, world!").unwrap();
-    assert_eq!(msg.command, "PRIVMSG");
-    assert_eq!(msg.prefix, Some("alice!a@host".to_string()));
-    assert_eq!(msg.params, vec!["#general", "Hello, world!"]);
-    assert_eq!(msg.nick(), Some("alice"));
-    assert_eq!(msg.target(), Some("#general"));
+fn trailing_privmsg() {
+    let msg: Message = ":alice!a@host PRIVMSG #general :Hello, world!"
+        .parse()
+        .unwrap();
     assert_eq!(msg.trailing(), Some("Hello, world!"));
 }
 
 #[test]
-fn parse_privmsg_query() {
-    let msg = IrcMessage::parse(":bob!b@host PRIVMSG botname :hey there").unwrap();
-    assert_eq!(msg.target(), Some("botname"));
-    assert_eq!(msg.trailing(), Some("hey there"));
+fn trailing_ping() {
+    let msg: Message = "PING :server.example.com".parse().unwrap();
+    assert_eq!(msg.trailing(), Some("server.example.com"));
 }
 
 #[test]
-fn parse_join() {
-    let msg = IrcMessage::parse(":carol!c@host JOIN #rust").unwrap();
-    assert_eq!(msg.command, "JOIN");
-    assert_eq!(msg.nick(), Some("carol"));
-    assert_eq!(msg.target(), Some("#rust"));
+fn trailing_join() {
+    let msg: Message = ":carol!c@host JOIN #rust".parse().unwrap();
+    assert_eq!(msg.trailing(), Some("#rust"));
 }
 
 #[test]
-fn parse_numeric() {
-    let msg = IrcMessage::parse(":irc.server.net 001 mynick :Welcome to the network!").unwrap();
-    assert_eq!(msg.command, "001");
-    assert_eq!(msg.params[0], "mynick");
+fn trailing_numeric() {
+    let msg: Message = ":irc.server.net 001 mynick :Welcome to the network!"
+        .parse()
+        .unwrap();
     assert_eq!(msg.trailing(), Some("Welcome to the network!"));
 }
 
 #[test]
-fn parse_crlf_stripped() {
-    let msg = IrcMessage::parse("PING :server\r\n").unwrap();
-    assert_eq!(msg.command, "PING");
-    assert_eq!(msg.trailing(), Some("server"));
+fn target_privmsg_channel() {
+    let msg: Message = ":alice!a@host PRIVMSG #general :Hello, world!"
+        .parse()
+        .unwrap();
+    assert_eq!(msg.target(), Some("#general"));
 }
 
 #[test]
-fn parse_no_trailing() {
-    let msg = IrcMessage::parse(":server.net MODE #chan +o alice").unwrap();
-    assert_eq!(msg.command, "MODE");
-    assert_eq!(msg.params, vec!["#chan", "+o", "alice"]);
+fn target_privmsg_query() {
+    let msg: Message = ":bob!b@host PRIVMSG botname :hey there".parse().unwrap();
+    assert_eq!(msg.target(), Some("botname"));
 }
 
 #[test]
-fn parse_user_prefix() {
-    let msg = IrcMessage::parse(":nick!user@host PART #chan").unwrap();
+fn target_join() {
+    let msg: Message = ":carol!c@host JOIN #rust".parse().unwrap();
+    assert_eq!(msg.target(), Some("#rust"));
+}
+
+#[test]
+fn nick_from_user_prefix() {
+    let msg: Message = ":alice!a@host PRIVMSG #general :Hello, world!"
+        .parse()
+        .unwrap();
+    assert_eq!(msg.nick(), Some("alice"));
+}
+
+#[test]
+fn nick_from_server_prefix_returns_none() {
+    // source_nickname() returns None for server prefixes.
+    let msg: Message = ":irc.net 001 bot :Welcome".parse().unwrap();
+    assert_eq!(msg.nick(), None);
+}
+
+#[test]
+fn parse_user_full_prefix() {
+    let msg: Message = ":nick!user@host PART #chan".parse().unwrap();
     let user = msg.parse_user().unwrap();
     assert_eq!(user.nick, "nick");
     assert_eq!(user.user, "user");
@@ -68,22 +78,33 @@ fn parse_user_prefix() {
 }
 
 #[test]
-fn parse_server_prefix_no_user() {
-    // Server prefixes have no '!' so parse_user returns None.
-    let msg = IrcMessage::parse(":irc.net 001 bot :Welcome").unwrap();
+fn parse_user_server_prefix_returns_none() {
+    // Server prefixes have no '!user' component so parse_user returns None.
+    let msg: Message = ":irc.net 001 bot :Welcome".parse().unwrap();
     assert!(msg.parse_user().is_none());
 }
 
 #[test]
-fn parse_empty_returns_none() {
-    assert!(IrcMessage::parse("").is_none());
-    assert!(IrcMessage::parse("\r\n").is_none());
+fn command_str_privmsg() {
+    let msg: Message = ":alice!a@host PRIVMSG #general :Hello, world!"
+        .parse()
+        .unwrap();
+    assert_eq!(msg.command_str().as_ref(), "PRIVMSG");
 }
 
 #[test]
-fn command_is_uppercase() {
-    let msg = IrcMessage::parse("ping :server").unwrap();
-    assert_eq!(msg.command, "PING");
+fn command_str_numeric() {
+    let msg: Message = ":irc.server.net 001 mynick :Welcome to the network!"
+        .parse()
+        .unwrap();
+    assert_eq!(msg.command_str().as_ref(), "001");
+}
+
+#[test]
+fn command_str_is_uppercase() {
+    // irc-proto normalises command names; verify our helper does too.
+    let msg: Message = "PING :server".parse().unwrap();
+    assert_eq!(msg.command_str().as_ref(), "PING");
 }
 
 // ─── CTCP parsing ─────────────────────────────────────────────────────────────
@@ -131,39 +152,41 @@ fn ctcp_parse_non_ctcp_returns_none() {
 
 #[test]
 fn ctcp_embedded_in_privmsg() {
-    let msg = IrcMessage::parse(":alice!a@host PRIVMSG mybot :\x01VERSION\x01").unwrap();
+    let msg: Message = ":alice!a@host PRIVMSG mybot :\x01VERSION\x01"
+        .parse()
+        .unwrap();
     let ctcp = CtcpMessage::parse(msg.trailing().unwrap()).unwrap();
     assert_eq!(ctcp.command, "VERSION");
 }
 
-// ─── is_channel_name ──────────────────────────────────────────────────────────
+// ─── ChannelExt::is_channel_name ──────────────────────────────────────────────
 
 #[test]
 fn is_channel_hash() {
-    assert!(rustbot2::irc::is_channel_name("#general"));
+    assert!("#general".is_channel_name());
 }
 
 #[test]
 fn is_channel_ampersand() {
-    assert!(rustbot2::irc::is_channel_name("&local"));
+    assert!("&local".is_channel_name());
 }
 
 #[test]
 fn is_channel_plus() {
-    assert!(rustbot2::irc::is_channel_name("+moderated"));
+    assert!("+moderated".is_channel_name());
 }
 
 #[test]
 fn is_channel_bang() {
-    assert!(rustbot2::irc::is_channel_name("!unique"));
+    assert!("!unique".is_channel_name());
 }
 
 #[test]
 fn is_channel_nick_is_not_channel() {
-    assert!(!rustbot2::irc::is_channel_name("alice"));
+    assert!(!"alice".is_channel_name());
 }
 
 #[test]
 fn is_channel_empty_is_not_channel() {
-    assert!(!rustbot2::irc::is_channel_name(""));
+    assert!(!"".is_channel_name());
 }

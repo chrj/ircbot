@@ -450,7 +450,7 @@ incoming message and helper methods for sending replies.
 | `ctx.sender` | `Option<User>` | The user who sent the message |
 | `ctx.bot_nick` | `String` | The bot's own IRC nick (useful for self-detection) |
 | `ctx.captures` | `Vec<String>` | Regex or glob capture groups from the matched trigger |
-| `ctx.raw` | `IrcMessage` | The underlying parsed IRC message |
+| `ctx.raw` | `irc_proto::Message` | The underlying parsed IRC message (from the [`irc-proto`](https://docs.rs/irc-proto) crate) |
 
 ### Methods
 

@@ -1,6 +1,6 @@
+use irc_proto::Message;
 use rustbot2::bot::{check_trigger, glob_match};
 use rustbot2::handler::Trigger;
-use rustbot2::irc::IrcMessage;
 
 // ─── glob_match ───────────────────────────────────────────────────────────────
 
@@ -48,8 +48,10 @@ fn glob_case_insensitive() {
 
 // ─── check_trigger: Command ───────────────────────────────────────────────────
 
-fn privmsg(target: &str, text: &str) -> IrcMessage {
-    IrcMessage::parse(&format!(":nick!u@h PRIVMSG {} :{}", target, text)).unwrap()
+fn privmsg(target: &str, text: &str) -> Message {
+    format!(":nick!u@h PRIVMSG {} :{}", target, text)
+        .parse()
+        .unwrap()
 }
 
 #[test]
@@ -110,7 +112,7 @@ fn command_trigger_ignores_non_privmsg() {
         name: "ping".to_string(),
         target: None,
     };
-    let msg = IrcMessage::parse(":nick!u@h JOIN #chan").unwrap();
+    let msg = ":nick!u@h JOIN #chan".parse().unwrap();
     assert!(check_trigger(&trigger, &msg, "bot").is_none());
 }
 
@@ -155,7 +157,7 @@ fn event_trigger_join() {
         target: None,
         regex: None,
     };
-    let msg = IrcMessage::parse(":nick!u@h JOIN #chan").unwrap();
+    let msg = ":nick!u@h JOIN #chan".parse().unwrap();
     assert!(check_trigger(&trigger, &msg, "bot").is_some());
 }
 
@@ -166,7 +168,7 @@ fn event_trigger_join_wrong_event() {
         target: None,
         regex: None,
     };
-    let msg = IrcMessage::parse(":nick!u@h JOIN #chan").unwrap();
+    let msg = ":nick!u@h JOIN #chan".parse().unwrap();
     assert!(check_trigger(&trigger, &msg, "bot").is_none());
 }
 
@@ -236,7 +238,7 @@ fn mention_trigger_no_separator() {
 #[test]
 fn mention_trigger_ignores_non_privmsg() {
     let trigger = Trigger::Mention { target: None };
-    let msg = IrcMessage::parse(":nick!u@h JOIN #chan").unwrap();
+    let msg = ":nick!u@h JOIN #chan".parse().unwrap();
     assert!(check_trigger(&trigger, &msg, "rustbot").is_none());
 }
 
@@ -298,8 +300,8 @@ fn event_trigger_target_filter() {
         target: Some("#rust".to_string()),
         regex: None,
     };
-    let join_rust = IrcMessage::parse(":nick!u@h JOIN #rust").unwrap();
-    let join_other = IrcMessage::parse(":nick!u@h JOIN #other").unwrap();
+    let join_rust = ":nick!u@h JOIN #rust".parse().unwrap();
+    let join_other = ":nick!u@h JOIN #other".parse().unwrap();
     assert!(check_trigger(&trigger, &join_rust, "bot").is_some());
     assert!(check_trigger(&trigger, &join_other, "bot").is_none());
 }
@@ -307,13 +309,13 @@ fn event_trigger_target_filter() {
 #[test]
 fn event_trigger_case_insensitive_event_name() {
     // The event field in the trigger is matched case-insensitively against
-    // the (already-uppercased) IrcMessage command.
+    // the command name.
     let trigger = Trigger::Event {
         event: "join".to_string(),
         target: None,
         regex: None,
     };
-    let msg = IrcMessage::parse(":nick!u@h JOIN #chan").unwrap();
+    let msg = ":nick!u@h JOIN #chan".parse().unwrap();
     assert!(check_trigger(&trigger, &msg, "bot").is_some());
 }
 

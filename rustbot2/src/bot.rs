@@ -11,9 +11,10 @@ use crate::{
     connection::State,
     context::Context,
     handler::{HandlerEntry, Trigger},
-    irc::{is_channel_name, CtcpMessage, IrcMessage},
+    irc::{ChannelExt, CtcpMessage, Message, MessageExt},
     BoxError,
 };
+use irc_proto::{Command, Response};
 
 /// Command prefix recognised by the bot (e.g. `!ping`).
 const CMD_PREFIX: char = '!';
@@ -151,21 +152,23 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                         continue;
                     }
 
-                    if let Some(msg) = IrcMessage::parse(&line) {
-                        match msg.command.as_str() {
-                            "PING" => {
-                                let srv = msg.params.first().map_or("", String::as_str);
+                    if let Ok(msg) = line.parse::<Message>() {
+                        match &msg.command {
+                            Command::PING(srv, _) => {
                                 if let Err(e) = write_tx.send(format!("PONG :{srv}\r\n")) {
                                     eprintln!("[rustbot2] failed to send PONG: {e}");
                                 }
                             }
-                            "PONG" => {
-                                // Acknowledge our own keepalive ping.
-                                if msg.trailing() == Some(KEEPALIVE_TOKEN) {
+                            Command::PONG(a, b) => {
+                                // The keepalive token is echoed back in the
+                                // trailing position: "PONG server :token" → b,
+                                // or without a server: "PONG :token" → a.
+                                let token = b.as_deref().unwrap_or(a.as_str());
+                                if token == KEEPALIVE_TOKEN {
                                     pong_received.store(true, Ordering::Relaxed);
                                 }
                             }
-                            "001" => {
+                            Command::Response(Response::RPL_WELCOME, _) => {
                                 if !joined {
                                     joined = true;
                                     for ch in &channels {
@@ -176,7 +179,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                 }
                                 dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
                             }
-                            "PRIVMSG" => {
+                            Command::PRIVMSG(_, _) => {
                                 handle_privmsg(
                                     &bot,
                                     &handlers,
@@ -214,10 +217,10 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
 
 /// Returns `Some(captures)` if `msg` matches `trigger`, `None` otherwise.
 #[must_use]
-pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, bot_nick: &str) -> Option<Vec<String>> {
+pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option<Vec<String>> {
     match trigger {
         Trigger::Command { name, target } => {
-            if msg.command != "PRIVMSG" {
+            if !matches!(&msg.command, Command::PRIVMSG(_, _)) {
                 return None;
             }
             // Optional target filter
@@ -242,7 +245,7 @@ pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, bot_nick: &str) -> Opt
         }
 
         Trigger::Message { pattern, target } => {
-            if msg.command != "PRIVMSG" {
+            if !matches!(&msg.command, Command::PRIVMSG(_, _)) {
                 return None;
             }
             if let Some(t) = target {
@@ -259,7 +262,7 @@ pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, bot_nick: &str) -> Opt
             target,
             regex,
         } => {
-            if !msg.command.eq_ignore_ascii_case(event) {
+            if !msg.command_str().eq_ignore_ascii_case(event) {
                 return None;
             }
             if let Some(t) = target {
@@ -283,7 +286,7 @@ pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, bot_nick: &str) -> Opt
         }
 
         Trigger::Mention { target } => {
-            if msg.command != "PRIVMSG" {
+            if !matches!(&msg.command, Command::PRIVMSG(_, _)) {
                 return None;
             }
             if let Some(t) = target {
@@ -376,7 +379,7 @@ fn glob_to_regex(pattern: &str) -> String {
 async fn handle_privmsg<T: Send + Sync + 'static>(
     bot: &Arc<T>,
     handlers: &HandlerSet<T>,
-    msg: &IrcMessage,
+    msg: &Message,
     bot_nick: &str,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
@@ -416,7 +419,7 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
 async fn dispatch<T: Send + Sync + 'static>(
     bot: &Arc<T>,
     handlers: &HandlerSet<T>,
-    msg: &IrcMessage,
+    msg: &Message,
     bot_nick: &str,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
@@ -429,7 +432,7 @@ async fn dispatch<T: Send + Sync + 'static>(
 
     let sender = msg.parse_user();
     let target = msg.target().unwrap_or("").to_string();
-    let is_channel = is_channel_name(&target);
+    let is_channel = target.is_channel_name();
 
     for entry in current.iter() {
         if let Some(captures) = check_trigger(&entry.trigger, msg, bot_nick) {
