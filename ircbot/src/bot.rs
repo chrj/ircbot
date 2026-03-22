@@ -20,7 +20,7 @@ use irc_proto::{prefix::Prefix, Command, Response};
 const CMD_PREFIX: char = '!';
 
 /// The token sent in our client-initiated keepalive `PING`.
-const KEEPALIVE_TOKEN: &str = "rustbot2-keepalive";
+const KEEPALIVE_TOKEN: &str = "ircbot-keepalive";
 
 /// A shareable, atomically-swappable set of handler entries.
 ///
@@ -127,7 +127,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
             }
             tokio::time::sleep(keepalive_timeout).await;
             if !pong_received_keepalive.load(Ordering::Relaxed) {
-                eprintln!("[rustbot2] keepalive timeout — reconnecting");
+                eprintln!("[ircbot] keepalive timeout — reconnecting");
                 if let Some(tx) = fail_tx.take() {
                     let _ = tx.send(());
                 }
@@ -156,7 +156,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                         match &msg.command {
                             Command::PING(srv, _) => {
                                 if let Err(e) = write_tx.send(format!("PONG :{srv}\r\n")) {
-                                    eprintln!("[rustbot2] failed to send PONG: {e}");
+                                    eprintln!("[ircbot] failed to send PONG: {e}");
                                 }
                             }
                             Command::PONG(a, b) => {
@@ -173,7 +173,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                     joined = true;
                                     for ch in &channels {
                                         if let Err(e) = write_tx.send(format!("JOIN {ch}\r\n")) {
-                                            eprintln!("[rustbot2] failed to send JOIN {ch}: {e}");
+                                            eprintln!("[ircbot] failed to send JOIN {ch}: {e}");
                                         }
                                     }
                                 }
@@ -449,7 +449,7 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
                         ctcp.arg,
                     );
                     if let Err(e) = tx.send(reply) {
-                        eprintln!("[rustbot2] failed to send CTCP PING reply: {e}");
+                        eprintln!("[ircbot] failed to send CTCP PING reply: {e}");
                     }
                 }
                 return;
@@ -457,11 +457,11 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
             "VERSION" => {
                 if let Some(sender) = msg.source_nickname() {
                     let reply = format!(
-                        "NOTICE {sender} :\x01VERSION rustbot2 {}\x01\r\n",
+                        "NOTICE {sender} :\x01VERSION ircbot {}\x01\r\n",
                         env!("CARGO_PKG_VERSION"),
                     );
                     if let Err(e) = tx.send(reply) {
-                        eprintln!("[rustbot2] failed to send CTCP VERSION reply: {e}");
+                        eprintln!("[ircbot] failed to send CTCP VERSION reply: {e}");
                     }
                 }
                 return;
@@ -511,7 +511,7 @@ async fn dispatch<T: Send + Sync + 'static>(
             let bot_clone = Arc::clone(bot);
             let fut = (entry.handler)(bot_clone, ctx);
             if let Err(e) = fut.await {
-                eprintln!("[rustbot2] handler error: {e}");
+                eprintln!("[ircbot] handler error: {e}");
             }
         }
     }

@@ -1,5 +1,5 @@
 use irc_proto::Message;
-use rustbot2::CtcpMessage;
+use ircbot::CtcpMessage;
 
 // ─── CTCP parsing ─────────────────────────────────────────────────────────────
 

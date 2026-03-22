@@ -13,7 +13,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
-use rustbot2::make_messages;
+use ircbot::make_messages;
 
 // ─── make_messages unit tests ────────────────────────────────────────────────
 
@@ -167,7 +167,7 @@ fn test_make_messages_exact_fit() {
 ///   - We allow up to 5 s to keep the test robust under load.
 #[tokio::test]
 async fn test_flood_control_rate_limits_messages() {
-    use rustbot2::State;
+    use ircbot::State;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -197,7 +197,7 @@ async fn test_flood_control_rate_limits_messages() {
         .with_flood_control(2, Duration::from_millis(200));
 
     // Build a tiny bot that sends 6 PRIVMSG lines on the 001 welcome event.
-    use rustbot2::{handler::HandlerEntry, handler::Trigger, BoxFuture, Context};
+    use ircbot::{handler::HandlerEntry, handler::Trigger, BoxFuture, Context};
 
     let handler: HandlerEntry<()> = HandlerEntry {
         trigger: Trigger::Event {
@@ -205,20 +205,18 @@ async fn test_flood_control_rate_limits_messages() {
             target: None,
             regex: None,
         },
-        handler: Box::new(
-            |_bot: Arc<()>, ctx: Context| -> BoxFuture<rustbot2::Result> {
-                Box::pin(async move {
-                    for i in 0..6_u32 {
-                        ctx.say(format!("message {i}"))?;
-                    }
-                    Ok(())
-                })
-            },
-        ),
+        handler: Box::new(|_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
+            Box::pin(async move {
+                for i in 0..6_u32 {
+                    ctx.say(format!("message {i}"))?;
+                }
+                Ok(())
+            })
+        }),
     };
 
     let bot = Arc::new(());
-    let bot_task = tokio::spawn(rustbot2::internal::run_bot(bot, state, vec![handler]));
+    let bot_task = tokio::spawn(ircbot::internal::run_bot(bot, state, vec![handler]));
 
     // Collect all 6 timestamps with a generous timeout.
     let mut timestamps = Vec::new();

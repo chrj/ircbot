@@ -8,11 +8,11 @@
 //! # Quick start
 //!
 //! ```rust,no_run
-//! # use rustbot2::testing::TestContext;
+//! # use ircbot::testing::TestContext;
 //! # struct MyBot;
 //! # impl MyBot {
 //! #     fn default() -> Self { MyBot }
-//! #     async fn ping(&self, ctx: rustbot2::Context) -> rustbot2::Result { ctx.reply("pong!") }
+//! #     async fn ping(&self, ctx: ircbot::Context) -> ircbot::Result { ctx.reply("pong!") }
 //! # }
 //! #[tokio::test]
 //! async fn test_ping() {
@@ -44,11 +44,11 @@ use crate::context::{Context, User};
 /// # Example
 ///
 /// ```rust,no_run
-/// # use rustbot2::testing::TestContext;
+/// # use ircbot::testing::TestContext;
 /// # struct MyBot;
 /// # impl MyBot {
 /// #     fn default() -> Self { MyBot }
-/// #     async fn echo(&self, ctx: rustbot2::Context, text: String) -> rustbot2::Result { ctx.say(text) }
+/// #     async fn echo(&self, ctx: ircbot::Context, text: String) -> ircbot::Result { ctx.say(text) }
 /// # }
 /// #[tokio::test]
 /// async fn echo_says_text() {

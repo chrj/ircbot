@@ -1,5 +1,5 @@
 [package]
-name = "rustbot2"
+name = "ircbot"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,7 +10,7 @@ integration = []
 tokio = { version = "1", features = ["full"] }
 regex = "1"
 futures = "0.3"
-rustbot2-macros = { path = "../rustbot2-macros" }
+ircbot-macros = { path = "../ircbot-macros" }
 irc-proto = { version = "1", default-features = false }
 
 [dev-dependencies]

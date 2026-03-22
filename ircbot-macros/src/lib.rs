@@ -114,7 +114,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             let name = &args.name;
                             let target_ts = opt_str_ts(args.target.as_deref());
                             trigger_tokens = Some(quote! {
-                                rustbot2::Trigger::Command {
+                                ircbot::Trigger::Command {
                                     name: #name.to_string(),
                                     target: #target_ts,
                                 }
@@ -172,14 +172,14 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             // trigger types in one `#[on(...)]` is not supported.
                             if let Some(msg_pat) = message {
                                 trigger_tokens = Some(quote! {
-                                    rustbot2::Trigger::Message {
+                                    ircbot::Trigger::Message {
                                         pattern: #msg_pat.to_string(),
                                         target: #target_ts,
                                     }
                                 });
                             } else if let Some(cmd) = command_on {
                                 trigger_tokens = Some(quote! {
-                                    rustbot2::Trigger::Command {
+                                    ircbot::Trigger::Command {
                                         name: #cmd.to_string(),
                                         target: #target_ts,
                                     }
@@ -187,7 +187,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             } else if let Some(ev) = event {
                                 let regex_ts = opt_str_ts(regex.as_deref());
                                 trigger_tokens = Some(quote! {
-                                    rustbot2::Trigger::Event {
+                                    ircbot::Trigger::Event {
                                         event: #ev.to_string(),
                                         target: #target_ts,
                                         regex: #regex_ts,
@@ -195,7 +195,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                                 });
                             } else if mention {
                                 trigger_tokens = Some(quote! {
-                                    rustbot2::Trigger::Mention {
+                                    ircbot::Trigger::Mention {
                                         target: #target_ts,
                                     }
                                 });
@@ -211,7 +211,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
             if let Some(trigger) = trigger_tokens {
                 let wrapper = build_wrapper(method_name, &extra_args);
                 handler_entries.push(quote! {
-                    rustbot2::HandlerEntry {
+                    ircbot::HandlerEntry {
                         trigger: #trigger,
                         handler: std::boxed::Box::new(#wrapper),
                     }
@@ -231,7 +231,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     quote! {
         pub struct #struct_name {
-            __state: std::option::Option<rustbot2::State>,
+            __state: std::option::Option<ircbot::State>,
         }
 
         impl Default for #struct_name {
@@ -254,12 +254,12 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
             ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
                 // On Unix, check for an inherited fd from a hot-reload exec.
                 #[cfg(unix)]
-                if let Some(state) = rustbot2::State::try_inherit_from_env()? {
-                    eprintln!("[rustbot2] hot-reload: resumed on inherited connection");
+                if let Some(state) = ircbot::State::try_inherit_from_env()? {
+                    eprintln!("[ircbot] hot-reload: resumed on inherited connection");
                     return Ok(#struct_name { __state: Some(state) });
                 }
 
-                let state = rustbot2::State::connect(
+                let state = ircbot::State::connect(
                     nick.into(),
                     server.as_ref(),
                     channels.into_iter().map(|c| c.into()).collect(),
@@ -298,8 +298,8 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         match signal(SignalKind::hangup()) {
                             Ok(mut stream) => {
                                 while stream.recv().await.is_some() {
-                                    eprintln!("[rustbot2] SIGHUP — hot-reload: exec new binary");
-                                    let err = rustbot2::hot_reload::exec_reload(
+                                    eprintln!("[ircbot] SIGHUP — hot-reload: exec new binary");
+                                    let err = ircbot::hot_reload::exec_reload(
                                         raw_fd,
                                         &reload_nick,
                                         &reload_server,
@@ -308,20 +308,20 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                                         reload_ka_timeout_ms,
                                     );
                                     // exec_reload only returns on failure.
-                                    eprintln!("[rustbot2] hot-reload exec failed: {err}");
+                                    eprintln!("[ircbot] hot-reload exec failed: {err}");
                                 }
                             }
                             Err(e) => {
-                                eprintln!("[rustbot2] failed to install SIGHUP handler: {e}");
+                                eprintln!("[ircbot] failed to install SIGHUP handler: {e}");
                             }
                         }
                     });
                 }
 
-                rustbot2::internal::run_bot(bot_arc, state, #struct_name::__handlers()).await
+                ircbot::internal::run_bot(bot_arc, state, #struct_name::__handlers()).await
             }
 
-            fn __handlers() -> Vec<rustbot2::HandlerEntry<#struct_name>> {
+            fn __handlers() -> Vec<ircbot::HandlerEntry<#struct_name>> {
                 vec![ #(#handler_entries),* ]
             }
 
@@ -344,7 +344,7 @@ fn opt_str_ts(s: Option<&str>) -> TokenStream2 {
 fn build_wrapper(method_name: &Ident, extra_args: &[(String, String)]) -> TokenStream2 {
     if extra_args.is_empty() {
         return quote! {
-            |bot: std::sync::Arc<_>, ctx: rustbot2::Context| -> rustbot2::BoxFuture<rustbot2::Result> {
+            |bot: std::sync::Arc<_>, ctx: ircbot::Context| -> ircbot::BoxFuture<ircbot::Result> {
                 std::boxed::Box::pin(async move { bot.#method_name(ctx).await })
             }
         };
@@ -384,7 +384,7 @@ fn build_wrapper(method_name: &Ident, extra_args: &[(String, String)]) -> TokenS
     }
 
     quote! {
-        |bot: std::sync::Arc<_>, ctx: rustbot2::Context| -> rustbot2::BoxFuture<rustbot2::Result> {
+        |bot: std::sync::Arc<_>, ctx: ircbot::Context| -> ircbot::BoxFuture<ircbot::Result> {
             std::boxed::Box::pin(async move {
                 #(#extractions)*
                 bot.#method_name(ctx, #(#call_args),*).await
