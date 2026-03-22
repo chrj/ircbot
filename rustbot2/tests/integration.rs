@@ -205,6 +205,181 @@ async fn test_ping_command() {
     bot_task.abort();
 }
 
+// ─── hot-reload helper ───────────────────────────────────────────────────────
+
+/// Read one CRLF-terminated IRC line byte-by-byte from a blocking `TcpStream`.
+///
+/// Reading one byte at a time avoids introducing a user-space buffer that
+/// could swallow server messages meant for the inherited connection in
+/// [`test_hot_reload_inherit`].
+#[cfg(unix)]
+fn irc_read_line(stream: &mut std::net::TcpStream) -> String {
+    use std::io::Read;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        stream
+            .read_exact(&mut byte)
+            .expect("irc_read_line: read_exact failed");
+        line.push(byte[0]);
+        if line.ends_with(b"\r\n") {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&line)
+        .trim_end_matches(['\r', '\n'])
+        .to_owned()
+}
+
+// ─── hot-reload integration test ─────────────────────────────────────────────
+
+/// Verify that a bot reconstructed from environment variables — the path taken
+/// by `State::try_inherit_from_env` after `exec_reload` — can continue to
+/// respond to commands on the same IRC connection without any disconnection.
+///
+/// The test simulates the "old bot" phase by opening a raw blocking TCP
+/// connection to ngircd and performing the IRC handshake manually.  It then
+/// transfers the fd via the env vars that `try_inherit_from_env` reads and
+/// constructs a new `TestBot` — which, on Unix, calls `try_inherit_from_env`
+/// automatically inside `new()`, skipping the TCP dial and reusing the live
+/// socket.
+///
+/// This test is Unix-only because the hot-reload mechanism (fd inheritance
+/// across `exec`) is a Unix-specific feature.
+#[tokio::test]
+#[cfg(unix)]
+async fn test_hot_reload_inherit() {
+    use std::io::Write;
+    use std::os::unix::io::IntoRawFd;
+
+    use rustbot2::hot_reload::{
+        ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_SERVER,
+    };
+
+    let (_container, port) = start_ngircd().await;
+    let addr = format!("127.0.0.1:{port}");
+
+    // ── Phase 1: "Old bot" — raw blocking IRC session ─────────────────────
+    //
+    // We use a plain std::net::TcpStream (not tokio) so that we can transfer
+    // the raw fd cleanly to try_inherit_from_env without tokio fd-registration
+    // complications.
+
+    let mut raw_stream = std::net::TcpStream::connect(&addr).expect("failed to connect to ngircd");
+    raw_stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("set_read_timeout failed");
+
+    // Send NICK / USER to begin the IRC handshake.
+    raw_stream
+        .write_all(b"NICK testbot\r\nUSER testbot 0 * :testbot\r\n")
+        .expect("NICK/USER write failed");
+
+    // Read until RPL_WELCOME (001), responding to any server PINGs.
+    loop {
+        let line = irc_read_line(&mut raw_stream);
+        if line.starts_with("PING ") {
+            let token = line.strip_prefix("PING ").unwrap_or("");
+            raw_stream
+                .write_all(format!("PONG {token}\r\n").as_bytes())
+                .expect("PONG write failed");
+        }
+        if line.contains(" 001 ") {
+            break;
+        }
+    }
+
+    // Join #test and wait for the server to echo the JOIN back.
+    raw_stream
+        .write_all(b"JOIN #test\r\n")
+        .expect("JOIN write failed");
+
+    loop {
+        let line = irc_read_line(&mut raw_stream);
+        if line.starts_with("PING ") {
+            let token = line.strip_prefix("PING ").unwrap_or("");
+            raw_stream
+                .write_all(format!("PONG {token}\r\n").as_bytes())
+                .expect("PONG write failed");
+        }
+        // ngircd echoes: ":testbot!user@host JOIN :#test"
+        if line.contains("JOIN") && line.contains("#test") {
+            break;
+        }
+    }
+
+    // ── Phase 2: Transfer the fd (simulating exec_reload) ────────────────
+    //
+    // `into_raw_fd` consumes the TcpStream and returns the raw fd without
+    // closing it — exactly what exec_reload does before calling exec().
+    // Any server data that arrives between now and phase 3 accumulates in the
+    // kernel TCP receive buffer and will be read by the new tokio BufReader.
+
+    let raw_fd = raw_stream.into_raw_fd();
+
+    let ka_interval_ms = rustbot2::DEFAULT_KEEPALIVE_INTERVAL.as_millis() as u64;
+    let ka_timeout_ms = rustbot2::DEFAULT_KEEPALIVE_TIMEOUT.as_millis() as u64;
+
+    // Populate the same env vars that exec_reload would have written.
+    std::env::set_var(ENV_FD, raw_fd.to_string());
+    std::env::set_var(ENV_NICK, "testbot");
+    std::env::set_var(ENV_SERVER, &addr);
+    std::env::set_var(ENV_CHANNELS, "#test");
+    std::env::set_var(ENV_KA_INTERVAL, ka_interval_ms.to_string());
+    std::env::set_var(ENV_KA_TIMEOUT, ka_timeout_ms.to_string());
+
+    // ── Phase 3: "New bot" — pick up the inherited connection ─────────────
+    //
+    // TestBot::new() calls State::try_inherit_from_env() on Unix.  Because
+    // ENV_FD is set it reconstructs a State from the raw fd instead of
+    // dialling a new TCP connection.  The env vars are erased inside
+    // try_inherit_from_env once consumed.
+
+    let bot = TestBot::new("testbot", &addr, ["#test"])
+        .await
+        .expect("hot-reload bot failed to start");
+    let bot_task = tokio::spawn(bot.main_loop());
+
+    // ── Phase 4: Verify the inherited connection still works ──────────────
+
+    let mut client = Client::from_config(irc_config(port, "client", vec!["#test".into()]))
+        .await
+        .expect("test client: failed to connect");
+    client.identify().expect("test client: identify failed");
+    let mut stream = client.stream().expect("test client: stream failed");
+
+    // testbot was already in #test before the reload; it should appear in the
+    // NAMES reply (RPL_NAMREPLY) rather than arriving via a fresh JOIN.
+    wait_for_bot_in_channel(&mut stream).await;
+
+    // A successful !ping → pong! exchange confirms the inherited connection
+    // is live and the bot is processing messages correctly.
+    client
+        .send_privmsg("#test", "!ping")
+        .expect("test client: send_privmsg failed");
+
+    let response = read_until(
+        &mut stream,
+        |msg| {
+            if let Command::PRIVMSG(ref target, ref text) = msg.command {
+                if target == "#test" && text.contains("pong!") {
+                    return Some(text.clone());
+                }
+            }
+            None
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    assert!(
+        response.contains("pong!"),
+        "expected 'pong!' in bot response after hot reload, got: {response}"
+    );
+
+    bot_task.abort();
+}
+
 /// Verify that the bot echoes the text argument back when given `!echo <text>`.
 #[tokio::test]
 async fn test_echo_command() {
