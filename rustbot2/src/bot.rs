@@ -9,11 +9,12 @@ use tokio::sync::mpsc;
 
 use crate::{
     connection::State,
-    context::Context,
+    context::{Context, User},
     handler::{HandlerEntry, Trigger},
-    irc::{is_channel_name, CtcpMessage, IrcMessage},
+    irc::{ChannelExt, CtcpMessage, Message},
     BoxError,
 };
+use irc_proto::{prefix::Prefix, Command, Response};
 
 /// Command prefix recognised by the bot (e.g. `!ping`).
 const CMD_PREFIX: char = '!';
@@ -151,21 +152,23 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                         continue;
                     }
 
-                    if let Some(msg) = IrcMessage::parse(&line) {
-                        match msg.command.as_str() {
-                            "PING" => {
-                                let srv = msg.params.first().map_or("", String::as_str);
+                    if let Ok(msg) = line.parse::<Message>() {
+                        match &msg.command {
+                            Command::PING(srv, _) => {
                                 if let Err(e) = write_tx.send(format!("PONG :{srv}\r\n")) {
                                     eprintln!("[rustbot2] failed to send PONG: {e}");
                                 }
                             }
-                            "PONG" => {
-                                // Acknowledge our own keepalive ping.
-                                if msg.trailing() == Some(KEEPALIVE_TOKEN) {
+                            Command::PONG(a, b) => {
+                                // The keepalive token is echoed back in the
+                                // trailing position: "PONG server :token" → b,
+                                // or without a server: "PONG :token" → a.
+                                let token = b.as_deref().unwrap_or(a.as_str());
+                                if token == KEEPALIVE_TOKEN {
                                     pong_received.store(true, Ordering::Relaxed);
                                 }
                             }
-                            "001" => {
+                            Command::Response(Response::RPL_WELCOME, _) => {
                                 if !joined {
                                     joined = true;
                                     for ch in &channels {
@@ -176,7 +179,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                 }
                                 dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
                             }
-                            "PRIVMSG" => {
+                            Command::PRIVMSG(_, _) => {
                                 handle_privmsg(
                                     &bot,
                                     &handlers,
@@ -214,19 +217,18 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
 
 /// Returns `Some(captures)` if `msg` matches `trigger`, `None` otherwise.
 #[must_use]
-pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, bot_nick: &str) -> Option<Vec<String>> {
+pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option<Vec<String>> {
     match trigger {
         Trigger::Command { name, target } => {
-            if msg.command != "PRIVMSG" {
+            let Command::PRIVMSG(msg_target, text) = &msg.command else {
                 return None;
-            }
+            };
             // Optional target filter
             if let Some(t) = target {
-                if msg.target() != Some(t.as_str()) {
+                if msg_target.as_str() != t.as_str() {
                     return None;
                 }
             }
-            let text = msg.trailing()?;
             let text = text.strip_prefix(CMD_PREFIX)?;
             let (cmd, rest) = text
                 .split_once(' ')
@@ -242,15 +244,14 @@ pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, bot_nick: &str) -> Opt
         }
 
         Trigger::Message { pattern, target } => {
-            if msg.command != "PRIVMSG" {
+            let Command::PRIVMSG(msg_target, text) = &msg.command else {
                 return None;
-            }
+            };
             if let Some(t) = target {
-                if msg.target() != Some(t.as_str()) {
+                if msg_target.as_str() != t.as_str() {
                     return None;
                 }
             }
-            let text = msg.trailing()?;
             glob_match(pattern, text)
         }
 
@@ -259,16 +260,16 @@ pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, bot_nick: &str) -> Opt
             target,
             regex,
         } => {
-            if !msg.command.eq_ignore_ascii_case(event) {
+            if !command_name(msg).eq_ignore_ascii_case(event) {
                 return None;
             }
             if let Some(t) = target {
-                if msg.target() != Some(t.as_str()) {
+                if target_param(msg) != Some(t.as_str()) {
                     return None;
                 }
             }
             if let Some(re_str) = regex {
-                let text = msg.trailing().unwrap_or("");
+                let text = trailing_param(msg).unwrap_or("");
                 let re = cached_regex(re_str)?;
                 let caps = re.captures(text)?;
                 let groups: Vec<String> = caps
@@ -283,15 +284,14 @@ pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, bot_nick: &str) -> Opt
         }
 
         Trigger::Mention { target } => {
-            if msg.command != "PRIVMSG" {
+            let Command::PRIVMSG(msg_target, text) = &msg.command else {
                 return None;
-            }
+            };
             if let Some(t) = target {
-                if msg.target() != Some(t.as_str()) {
+                if msg_target.as_str() != t.as_str() {
                     return None;
                 }
             }
-            let text = msg.trailing()?;
             let lower = text.to_ascii_lowercase();
             let nick_lower = bot_nick.to_ascii_lowercase();
             // Accept "<nick>: " or "<nick>, " address prefixes.
@@ -308,6 +308,61 @@ pub fn check_trigger(trigger: &Trigger, msg: &IrcMessage, bot_nick: &str) -> Opt
             })?;
             Some(if rest.is_empty() { vec![] } else { vec![rest] })
         }
+    }
+}
+
+// ─── IRC message helpers ─────────────────────────────────────────────────────
+
+/// The IRC command name as an uppercase ASCII string (e.g. `"PRIVMSG"`, `"001"`).
+///
+/// Uses the command's wire representation for known variants, and the stored
+/// name directly for `Raw` variants.
+fn command_name(msg: &Message) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    match &msg.command {
+        Command::Raw(name, _) => Cow::Borrowed(name.as_str()),
+        cmd => {
+            let s = String::from(cmd);
+            let end = s.find(' ').unwrap_or(s.len());
+            Cow::Owned(s[..end].to_ascii_uppercase())
+        }
+    }
+}
+
+/// The trailing parameter — the main text content of the message.
+fn trailing_param(msg: &Message) -> Option<&str> {
+    match &msg.command {
+        Command::PRIVMSG(_, text) | Command::NOTICE(_, text) => Some(text),
+        Command::PING(server, _) => Some(server),
+        Command::PONG(_, Some(token)) => Some(token),
+        Command::PONG(server, None) => Some(server),
+        Command::JOIN(channel, _, _) => Some(channel),
+        Command::PART(_, Some(reason)) => Some(reason),
+        Command::PART(channel, None) => Some(channel),
+        Command::QUIT(Some(message)) => Some(message),
+        Command::KICK(_, _, Some(reason)) => Some(reason),
+        Command::TOPIC(_, Some(topic)) => Some(topic),
+        Command::TOPIC(channel, None) => Some(channel),
+        Command::Response(_, args) => args.last().map(String::as_str),
+        Command::Raw(_, args) => args.last().map(String::as_str),
+        _ => None,
+    }
+}
+
+/// The first parameter — typically the target channel or nick.
+fn target_param(msg: &Message) -> Option<&str> {
+    match &msg.command {
+        Command::PRIVMSG(target, _) | Command::NOTICE(target, _) => Some(target),
+        Command::JOIN(channel, _, _) => Some(channel),
+        Command::PART(channel, _) => Some(channel),
+        Command::KICK(channel, _, _) => Some(channel),
+        Command::TOPIC(channel, _) => Some(channel),
+        Command::INVITE(_, channel) => Some(channel),
+        Command::ChannelMODE(channel, _) => Some(channel),
+        Command::UserMODE(nick, _) => Some(nick),
+        Command::Response(_, args) => args.first().map(String::as_str),
+        Command::Raw(_, args) => args.first().map(String::as_str),
+        _ => None,
     }
 }
 
@@ -376,14 +431,18 @@ fn glob_to_regex(pattern: &str) -> String {
 async fn handle_privmsg<T: Send + Sync + 'static>(
     bot: &Arc<T>,
     handlers: &HandlerSet<T>,
-    msg: &IrcMessage,
+    msg: &Message,
     bot_nick: &str,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
-    if let Some(ctcp) = msg.trailing().and_then(CtcpMessage::parse) {
+    let Command::PRIVMSG(_, text) = &msg.command else {
+        dispatch(bot, handlers, msg, bot_nick, tx).await;
+        return;
+    };
+    if let Some(ctcp) = CtcpMessage::parse(text) {
         match ctcp.command.as_str() {
             "PING" => {
-                if let Some(sender) = msg.nick() {
+                if let Some(sender) = msg.source_nickname() {
                     let reply = format!(
                         "NOTICE {sender} :\x01PING{}{}\x01\r\n",
                         if ctcp.arg.is_empty() { "" } else { " " },
@@ -396,7 +455,7 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
                 return;
             }
             "VERSION" => {
-                if let Some(sender) = msg.nick() {
+                if let Some(sender) = msg.source_nickname() {
                     let reply = format!(
                         "NOTICE {sender} :\x01VERSION rustbot2 {}\x01\r\n",
                         env!("CARGO_PKG_VERSION"),
@@ -416,7 +475,7 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
 async fn dispatch<T: Send + Sync + 'static>(
     bot: &Arc<T>,
     handlers: &HandlerSet<T>,
-    msg: &IrcMessage,
+    msg: &Message,
     bot_nick: &str,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
@@ -427,9 +486,16 @@ async fn dispatch<T: Send + Sync + 'static>(
         Arc::clone(&*guard)
     };
 
-    let sender = msg.parse_user();
-    let target = msg.target().unwrap_or("").to_string();
-    let is_channel = is_channel_name(&target);
+    let sender = match msg.prefix.as_ref() {
+        Some(Prefix::Nickname(nick, user, host)) if !user.is_empty() => Some(User {
+            nick: nick.clone(),
+            user: user.clone(),
+            host: host.clone(),
+        }),
+        _ => None,
+    };
+    let target = target_param(msg).unwrap_or("").to_string();
+    let is_channel = target.is_channel_name();
 
     for entry in current.iter() {
         if let Some(captures) = check_trigger(&entry.trigger, msg, bot_nick) {

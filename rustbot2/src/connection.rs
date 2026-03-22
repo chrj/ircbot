@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::irc::is_channel_name;
+use irc_proto::chan::ChannelExt;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
 
@@ -42,7 +42,7 @@ impl State {
     /// Normalise a channel name: if it doesn't start with a recognised IRC
     /// channel prefix (`#`, `&`, `+`, `!`) a `#` is prepended automatically.
     fn normalise_channel(ch: String) -> String {
-        if is_channel_name(&ch) {
+        if ch.is_channel_name() {
             ch
         } else {
             format!("#{ch}")

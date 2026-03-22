@@ -1,4 +1,4 @@
-use crate::irc::IrcMessage;
+use irc_proto::Message;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// IRC mandates that no message line (including the trailing `\r\n`) may
@@ -23,7 +23,7 @@ pub struct Context {
     /// The user who sent the message (if available).
     pub sender: Option<User>,
     /// The underlying parsed IRC message.
-    pub raw: IrcMessage,
+    pub raw: Message,
     /// The bot's own nick (for self-detection).
     pub bot_nick: String,
     /// Wildcard or regex captures from the matched trigger pattern.
@@ -174,7 +174,22 @@ impl Context {
     /// The trailing text of the underlying IRC message.
     #[must_use]
     pub fn message_text(&self) -> &str {
-        self.raw.trailing().unwrap_or("")
+        match &self.raw.command {
+            irc_proto::Command::PRIVMSG(_, text) | irc_proto::Command::NOTICE(_, text) => text,
+            irc_proto::Command::PING(server, _) => server,
+            irc_proto::Command::PONG(_, Some(token)) => token,
+            irc_proto::Command::PONG(server, None) => server,
+            irc_proto::Command::JOIN(channel, _, _) => channel,
+            irc_proto::Command::PART(_, Some(reason)) => reason,
+            irc_proto::Command::PART(channel, None) => channel,
+            irc_proto::Command::QUIT(Some(message)) => message,
+            irc_proto::Command::KICK(_, _, Some(reason)) => reason,
+            irc_proto::Command::TOPIC(_, Some(topic)) => topic,
+            irc_proto::Command::TOPIC(channel, None) => channel,
+            irc_proto::Command::Response(_, args) => args.last().map(String::as_str).unwrap_or(""),
+            irc_proto::Command::Raw(_, args) => args.last().map(String::as_str).unwrap_or(""),
+            _ => "",
+        }
     }
 
     /// Send an IRC NOTICE to the channel / private target.
@@ -222,13 +237,14 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::irc::IrcMessage;
     use tokio::sync::mpsc;
 
     /// Build a `Context` wired to an in-process channel for easy inspection.
     fn make_ctx(target: &str, is_channel: bool) -> (Context, mpsc::UnboundedReceiver<String>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let raw = IrcMessage::parse(":nick!u@h PRIVMSG #chan :hello").unwrap();
+        let raw = ":nick!u@h PRIVMSG #chan :hello"
+            .parse::<irc_proto::Message>()
+            .unwrap();
         let ctx = Context {
             tx,
             target: target.to_string(),
