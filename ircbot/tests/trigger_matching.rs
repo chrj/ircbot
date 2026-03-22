@@ -1,6 +1,6 @@
 use irc_proto::Message;
-use rustbot2::bot::{check_trigger, glob_match};
-use rustbot2::handler::Trigger;
+use ircbot::bot::{check_trigger, glob_match};
+use ircbot::handler::Trigger;
 
 // ─── glob_match ───────────────────────────────────────────────────────────────
 

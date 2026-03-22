@@ -16,7 +16,7 @@ use testcontainers::{
 };
 use tokio::time::timeout;
 
-use rustbot2::{bot, Context, Result};
+use ircbot::{bot, Context, Result};
 
 // ─── bot under test ──────────────────────────────────────────────────────────
 
@@ -252,7 +252,7 @@ async fn test_hot_reload_inherit() {
     use std::io::Write;
     use std::os::unix::io::IntoRawFd;
 
-    use rustbot2::hot_reload::{
+    use ircbot::hot_reload::{
         ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_SERVER,
     };
 
@@ -317,8 +317,8 @@ async fn test_hot_reload_inherit() {
 
     let raw_fd = raw_stream.into_raw_fd();
 
-    let ka_interval_ms = rustbot2::DEFAULT_KEEPALIVE_INTERVAL.as_millis() as u64;
-    let ka_timeout_ms = rustbot2::DEFAULT_KEEPALIVE_TIMEOUT.as_millis() as u64;
+    let ka_interval_ms = ircbot::DEFAULT_KEEPALIVE_INTERVAL.as_millis() as u64;
+    let ka_timeout_ms = ircbot::DEFAULT_KEEPALIVE_TIMEOUT.as_millis() as u64;
 
     // Populate the same env vars that exec_reload would have written.
     std::env::set_var(ENV_FD, raw_fd.to_string());

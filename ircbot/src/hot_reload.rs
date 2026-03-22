@@ -63,9 +63,9 @@ pub fn exec_reload(
 
 // ─── env var names ────────────────────────────────────────────────────────────
 
-pub const ENV_FD: &str = "RUSTBOT2_INHERIT_FD";
-pub const ENV_NICK: &str = "RUSTBOT2_NICK";
-pub const ENV_SERVER: &str = "RUSTBOT2_SERVER";
-pub const ENV_CHANNELS: &str = "RUSTBOT2_CHANNELS";
-pub const ENV_KA_INTERVAL: &str = "RUSTBOT2_KEEPALIVE_INTERVAL_MS";
-pub const ENV_KA_TIMEOUT: &str = "RUSTBOT2_KEEPALIVE_TIMEOUT_MS";
+pub const ENV_FD: &str = "IRCBOT_INHERIT_FD";
+pub const ENV_NICK: &str = "IRCBOT_NICK";
+pub const ENV_SERVER: &str = "IRCBOT_SERVER";
+pub const ENV_CHANNELS: &str = "IRCBOT_CHANNELS";
+pub const ENV_KA_INTERVAL: &str = "IRCBOT_KEEPALIVE_INTERVAL_MS";
+pub const ENV_KA_TIMEOUT: &str = "IRCBOT_KEEPALIVE_TIMEOUT_MS";

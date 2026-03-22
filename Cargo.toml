@@ -1,3 +1,3 @@
 [workspace]
-members = ["rustbot2", "rustbot2-macros"]
+members = ["ircbot", "ircbot-macros"]
 resolver = "2"

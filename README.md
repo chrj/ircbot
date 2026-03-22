@@ -1,11 +1,11 @@
-# rustbot2
+# ircbot
 
 An async IRC bot framework for Rust powered by [Tokio](https://tokio.rs/) and procedural macros.
 
 Write clean, declarative bots without boilerplate:
 
 ```rust
-use rustbot2::{bot, Context, User, Result};
+use ircbot::{bot, Context, User, Result};
 
 #[bot]
 impl MyBot {
@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ## Workspace layout
 
 ```
-rustbot2/               ← library crate (public API)
+ircbot/               ← library crate (public API)
   src/
     lib.rs              ← re-exports, type aliases, and internal::run_bot reconnection loop
     irc.rs              ← RFC 1459 IRC line parser
@@ -107,7 +107,7 @@ rustbot2/               ← library crate (public API)
   examples/
     basic_bot.rs        ← minimal demo
 
-rustbot2-macros/        ← proc-macro crate
+ircbot-macros/        ← proc-macro crate
   src/
     lib.rs              ← #[bot], #[command], #[on]
 ```
@@ -116,11 +116,11 @@ rustbot2-macros/        ← proc-macro crate
 
 ## Getting started
 
-Add `rustbot2` to your `Cargo.toml`:
+Add `ircbot` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rustbot2 = { path = "path/to/rustbot2" }
+ircbot = { path = "path/to/ircbot" }
 tokio    = { version = "1", features = ["full"] }
 ```
 
@@ -259,7 +259,7 @@ async fn on_mention_rust(&self, ctx: Context) -> Result {
 
 ## Keepalive & reconnection
 
-The bot actively monitors its connection by sending a `PING rustbot2-keepalive` to the server at a regular interval. If no matching `PONG` is received within the timeout window, the connection is treated as dead and a new TCP connection is established.
+The bot actively monitors its connection by sending a `PING ircbot-keepalive` to the server at a regular interval. If no matching `PONG` is received within the timeout window, the connection is treated as dead and a new TCP connection is established.
 
 **Defaults:**
 
@@ -276,7 +276,7 @@ The bot actively monitors its connection by sending a `PING rustbot2-keepalive` 
 ```rust
 use std::sync::Arc;
 use std::time::Duration;
-use rustbot2::{State, HandlerEntry, internal};
+use ircbot::{State, HandlerEntry, internal};
 
 let state = State::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
     .await?
@@ -322,7 +322,7 @@ kill -HUP $(pidof my_bot)
 For programmatic control call `hot_reload::exec_reload` directly — for example from an IRC admin command:
 
 ```rust
-use rustbot2::hot_reload::exec_reload;
+use ircbot::hot_reload::exec_reload;
 
 // Inside a handler:
 #[command("reload")]
@@ -371,7 +371,7 @@ starting the bot.  When using the `#[bot]` macro, use the lower-level API:
 ```rust
 use std::sync::Arc;
 use std::time::Duration;
-use rustbot2::{State, HandlerEntry, internal};
+use ircbot::{State, HandlerEntry, internal};
 
 let state = State::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
     .await?
@@ -439,7 +439,7 @@ message text (`ctx.message_text()`).
 ## Unit testing handlers
 
 Handler methods can be tested directly without a live IRC connection using
-`rustbot2::testing::TestContext`.
+`ircbot::testing::TestContext`.
 
 ### How it works
 
@@ -456,7 +456,7 @@ Handler methods can be tested directly without a live IRC connection using
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustbot2::testing::TestContext;
+    use ircbot::testing::TestContext;
 
     #[tokio::test]
     async fn ping_replies_pong_in_channel() {

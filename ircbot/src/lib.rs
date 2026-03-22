@@ -14,7 +14,7 @@ pub use connection::{
 pub use context::{make_messages, Context, User};
 pub use handler::{BoxFuture, HandlerEntry, HandlerFn, Trigger};
 pub use irc::CtcpMessage;
-pub use rustbot2_macros::{bot, command, on};
+pub use ircbot_macros::{bot, command, on};
 
 /// The standard error type used throughout the crate.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -124,13 +124,13 @@ pub mod internal {
                 crate::bot::run_bot_internal(Arc::clone(&bot), current_state, Arc::clone(&handlers))
                     .await
             {
-                eprintln!("[rustbot2] connection error: {e}");
+                eprintln!("[ircbot] connection error: {e}");
             } else {
-                eprintln!("[rustbot2] disconnected from {server}");
+                eprintln!("[ircbot] disconnected from {server}");
             }
 
             eprintln!(
-                "[rustbot2] reconnecting to {server} in {:.0?}…",
+                "[ircbot] reconnecting to {server} in {:.0?}…",
                 RECONNECT_DELAY
             );
             tokio::time::sleep(RECONNECT_DELAY).await;
@@ -144,7 +144,7 @@ pub mod internal {
                     current_state = new_state;
                 }
                 Err(e) => {
-                    eprintln!("[rustbot2] failed to reconnect to {server}: {e}");
+                    eprintln!("[ircbot] failed to reconnect to {server}: {e}");
                     return Err(e);
                 }
             }

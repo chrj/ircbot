@@ -915,6 +915,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "ircbot"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "irc",
+ "irc-proto",
+ "ircbot-macros",
+ "libc",
+ "regex",
+ "testcontainers",
+ "tokio",
+]
+
+[[package]]
+name = "ircbot-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1390,29 +1413,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rustbot2"
-version = "0.1.0"
-dependencies = [
- "futures",
- "irc",
- "irc-proto",
- "libc",
- "regex",
- "rustbot2-macros",
- "testcontainers",
- "tokio",
-]
-
-[[package]]
-name = "rustbot2-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]

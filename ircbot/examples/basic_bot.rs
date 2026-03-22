@@ -1,4 +1,4 @@
-use rustbot2::{bot, Context, Result};
+use ircbot::{bot, Context, Result};
 
 #[bot]
 impl MyBot {
@@ -52,7 +52,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sy
     // so we just demonstrate the API compiles correctly.
     println!("basic_bot example compiled successfully.");
     println!("To connect for real, uncomment the lines below and point at a live server:");
-    println!("  let bot = MyBot::new(\"rustbot2\", \"irc.libera.chat:6667\", [\"#rust\"]).await?;");
+    println!("  let bot = MyBot::new(\"ircbot\", \"irc.libera.chat:6667\", [\"#rust\"]).await?;");
     println!("  bot.main_loop().await?;");
     Ok(())
 }
@@ -62,7 +62,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sy
 // Each handler method can be tested directly without a live IRC connection by:
 //
 //   1. Creating the bot with `MyBot::default()` (no connection is made).
-//   2. Building a fake context with `rustbot2::testing::TestContext`.
+//   2. Building a fake context with `ircbot::testing::TestContext`.
 //   3. Calling the handler method and asserting on the captured replies.
 //
 // `TestContext::channel` simulates a PRIVMSG sent to a channel.
@@ -72,7 +72,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sy
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustbot2::testing::TestContext;
+    use ircbot::testing::TestContext;
 
     // ── !ping ────────────────────────────────────────────────────────────────
 
