@@ -249,3 +249,245 @@ impl TestContextBuilder {
         TestContext { ctx: Some(ctx), rx }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── TestContext::channel ──────────────────────────────────────────────────
+
+    #[test]
+    fn channel_sets_is_channel_true() {
+        let mut tc = TestContext::channel("#rust", "alice", "hello");
+        assert!(tc.take_ctx().is_channel);
+    }
+
+    #[test]
+    fn channel_sets_target() {
+        let mut tc = TestContext::channel("#rust", "alice", "hello");
+        assert_eq!(tc.take_ctx().target, "#rust");
+    }
+
+    #[test]
+    fn channel_sets_sender_nick() {
+        let mut tc = TestContext::channel("#rust", "alice", "hello");
+        let ctx = tc.take_ctx();
+        assert_eq!(ctx.sender.as_ref().unwrap().nick, "alice");
+    }
+
+    #[test]
+    fn channel_sets_message_text() {
+        let mut tc = TestContext::channel("#rust", "alice", "hello world");
+        assert_eq!(tc.take_ctx().message_text(), "hello world");
+    }
+
+    // ── TestContext::private ──────────────────────────────────────────────────
+
+    #[test]
+    fn private_sets_is_channel_false() {
+        let mut tc = TestContext::private("alice", "hey bot");
+        assert!(!tc.take_ctx().is_channel);
+    }
+
+    #[test]
+    fn private_sets_target_to_sender_nick() {
+        let mut tc = TestContext::private("alice", "hey bot");
+        assert_eq!(tc.take_ctx().target, "alice");
+    }
+
+    #[test]
+    fn private_sets_sender_nick() {
+        let mut tc = TestContext::private("alice", "hey bot");
+        let ctx = tc.take_ctx();
+        assert_eq!(ctx.sender.as_ref().unwrap().nick, "alice");
+    }
+
+    // ── take_ctx ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn take_ctx_returns_context() {
+        let mut tc = TestContext::channel("#test", "nick", "msg");
+        let ctx = tc.take_ctx();
+        assert_eq!(ctx.target, "#test");
+    }
+
+    #[test]
+    #[should_panic(expected = "take_ctx called twice")]
+    fn take_ctx_panics_on_second_call() {
+        let mut tc = TestContext::channel("#test", "nick", "msg");
+        let _ = tc.take_ctx();
+        let _ = tc.take_ctx(); // must panic
+    }
+
+    // ── next_reply ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn next_reply_returns_none_when_no_messages_sent() {
+        let mut tc = TestContext::channel("#test", "nick", "msg");
+        // Context not even consumed — nothing sent.
+        assert_eq!(tc.next_reply(), None);
+    }
+
+    #[test]
+    fn next_reply_captures_say() {
+        let mut tc = TestContext::channel("#test", "nick", "msg");
+        tc.take_ctx().say("hello").unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG #test :hello\r\n".to_string()),
+        );
+    }
+
+    #[test]
+    fn next_reply_returns_messages_in_order() {
+        let mut tc = TestContext::channel("#test", "nick", "msg");
+        let ctx = tc.take_ctx();
+        ctx.say("first").unwrap();
+        ctx.say("second").unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG #test :first\r\n".to_string()),
+        );
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG #test :second\r\n".to_string()),
+        );
+        assert_eq!(tc.next_reply(), None);
+    }
+
+    // ── replies ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn replies_returns_empty_vec_when_nothing_sent() {
+        let mut tc = TestContext::channel("#test", "nick", "msg");
+        assert!(tc.replies().is_empty());
+    }
+
+    #[test]
+    fn replies_drains_all_messages_at_once() {
+        let mut tc = TestContext::channel("#test", "nick", "msg");
+        let ctx = tc.take_ctx();
+        ctx.say("one").unwrap();
+        ctx.say("two").unwrap();
+        ctx.say("three").unwrap();
+        let msgs = tc.replies();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0], "PRIVMSG #test :one\r\n");
+        assert_eq!(msgs[1], "PRIVMSG #test :two\r\n");
+        assert_eq!(msgs[2], "PRIVMSG #test :three\r\n");
+    }
+
+    #[test]
+    fn replies_is_empty_after_being_drained() {
+        let mut tc = TestContext::channel("#test", "nick", "msg");
+        tc.take_ctx().say("hi").unwrap();
+        let _ = tc.replies();
+        assert!(tc.replies().is_empty());
+    }
+
+    // ── TestContextBuilder defaults ───────────────────────────────────────────
+
+    #[test]
+    fn builder_default_target_is_test_channel() {
+        let mut tc = TestContextBuilder::new().build();
+        assert_eq!(tc.take_ctx().target, "#test");
+    }
+
+    #[test]
+    fn builder_default_is_channel_true() {
+        let mut tc = TestContextBuilder::new().build();
+        assert!(tc.take_ctx().is_channel);
+    }
+
+    #[test]
+    fn builder_default_sender_nick_is_tester() {
+        let mut tc = TestContextBuilder::new().build();
+        let ctx = tc.take_ctx();
+        assert_eq!(ctx.sender.as_ref().unwrap().nick, "tester");
+    }
+
+    #[test]
+    fn builder_default_bot_nick_is_testbot() {
+        let mut tc = TestContextBuilder::new().build();
+        assert_eq!(tc.take_ctx().bot_nick, "testbot");
+    }
+
+    #[test]
+    fn builder_default_captures_empty() {
+        let mut tc = TestContextBuilder::new().build();
+        assert!(tc.take_ctx().captures.is_empty());
+    }
+
+    // ── TestContextBuilder setters ────────────────────────────────────────────
+
+    #[test]
+    fn builder_target_overrides_default() {
+        let mut tc = TestContextBuilder::new().target("#general").build();
+        assert_eq!(tc.take_ctx().target, "#general");
+    }
+
+    #[test]
+    fn builder_is_channel_false_overrides_default() {
+        let mut tc = TestContextBuilder::new().is_channel(false).build();
+        assert!(!tc.take_ctx().is_channel);
+    }
+
+    #[test]
+    fn builder_sender_nick_overrides_default() {
+        let mut tc = TestContextBuilder::new().sender_nick("bob").build();
+        let ctx = tc.take_ctx();
+        assert_eq!(ctx.sender.as_ref().unwrap().nick, "bob");
+    }
+
+    #[test]
+    fn builder_sender_user_overrides_default() {
+        let mut tc = TestContextBuilder::new().sender_user("bobident").build();
+        let ctx = tc.take_ctx();
+        assert_eq!(ctx.sender.as_ref().unwrap().user, "bobident");
+    }
+
+    #[test]
+    fn builder_sender_host_overrides_default() {
+        let mut tc = TestContextBuilder::new().sender_host("example.com").build();
+        let ctx = tc.take_ctx();
+        assert_eq!(ctx.sender.as_ref().unwrap().host, "example.com");
+    }
+
+    #[test]
+    fn builder_bot_nick_overrides_default() {
+        let mut tc = TestContextBuilder::new().bot_nick("mybot").build();
+        assert_eq!(tc.take_ctx().bot_nick, "mybot");
+    }
+
+    #[test]
+    fn builder_text_sets_message_text() {
+        let mut tc = TestContextBuilder::new().text("hello there").build();
+        assert_eq!(tc.take_ctx().message_text(), "hello there");
+    }
+
+    #[test]
+    fn builder_captures_sets_captures_list() {
+        let caps = vec!["foo".to_string(), "bar".to_string()];
+        let mut tc = TestContextBuilder::new().captures(caps.clone()).build();
+        assert_eq!(tc.take_ctx().captures, caps);
+    }
+
+    // ── reply / say helpers via TestContext ───────────────────────────────────
+
+    #[test]
+    fn reply_in_channel_prefixes_nick() {
+        let mut tc = TestContext::channel("#test", "alice", "msg");
+        tc.take_ctx().reply("hi").unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG #test :alice, hi\r\n".to_string()),
+        );
+    }
+
+    #[test]
+    fn reply_in_query_sends_to_sender() {
+        let mut tc = TestContext::private("alice", "msg");
+        tc.take_ctx().reply("hi").unwrap();
+        assert_eq!(tc.next_reply(), Some("PRIVMSG alice :hi\r\n".to_string()),);
+    }
+}
