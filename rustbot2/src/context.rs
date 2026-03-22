@@ -174,8 +174,22 @@ impl Context {
     /// The trailing text of the underlying IRC message.
     #[must_use]
     pub fn message_text(&self) -> &str {
-        use crate::irc::MessageExt;
-        self.raw.trailing().unwrap_or("")
+        match &self.raw.command {
+            irc_proto::Command::PRIVMSG(_, text) | irc_proto::Command::NOTICE(_, text) => text,
+            irc_proto::Command::PING(server, _) => server,
+            irc_proto::Command::PONG(_, Some(token)) => token,
+            irc_proto::Command::PONG(server, None) => server,
+            irc_proto::Command::JOIN(channel, _, _) => channel,
+            irc_proto::Command::PART(_, Some(reason)) => reason,
+            irc_proto::Command::PART(channel, None) => channel,
+            irc_proto::Command::QUIT(Some(message)) => message,
+            irc_proto::Command::KICK(_, _, Some(reason)) => reason,
+            irc_proto::Command::TOPIC(_, Some(topic)) => topic,
+            irc_proto::Command::TOPIC(channel, None) => channel,
+            irc_proto::Command::Response(_, args) => args.last().map(String::as_str).unwrap_or(""),
+            irc_proto::Command::Raw(_, args) => args.last().map(String::as_str).unwrap_or(""),
+            _ => "",
+        }
     }
 
     /// Send an IRC NOTICE to the channel / private target.
