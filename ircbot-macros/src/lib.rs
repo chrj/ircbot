@@ -1,3 +1,8 @@
+//! Procedural macros for the [`ircbot`](https://docs.rs/ircbot) framework.
+//!
+//! These macros are re-exported by the `ircbot` crate — refer to its
+//! documentation for usage.
+
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;

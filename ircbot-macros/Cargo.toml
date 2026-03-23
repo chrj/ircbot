@@ -5,6 +5,7 @@ edition = "2021"
 description = "Procedural macros for the ircbot IRC bot framework"
 license = "MIT"
 repository = "https://github.com/chrj/ircbot"
+readme = "../README.md"
 keywords = ["irc", "bot", "macros", "proc-macro"]
 categories = ["network-programming"]
 

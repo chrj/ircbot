@@ -1,3 +1,5 @@
+#![doc = include_str!("../../README.md")]
+
 pub mod bot;
 pub mod connection;
 pub mod context;

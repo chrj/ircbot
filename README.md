@@ -4,7 +4,7 @@ An async IRC bot framework for Rust powered by [Tokio](https://tokio.rs/) and pr
 
 Write clean, declarative bots without boilerplate:
 
-```rust
+```rust,ignore
 use ircbot::{bot, Context, User, Result};
 
 #[bot]
@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 ## Workspace layout
 
-```
+```text
 ircbot/               ← library crate (public API)
   src/
     lib.rs              ← re-exports, type aliases, and internal::run_bot reconnection loop
@@ -141,7 +141,7 @@ Placed on an `impl` block.  The macro generates:
 - `YourBot::new(nick, server, channels)` — connects to the server, identifies, and joins the given channels.  On Unix, if this process was started via `SIGHUP` hot-reload, the live TCP socket is inherited from the previous binary instead.
 - `YourBot::main_loop(self)` — runs the event loop, reconnecting automatically on TCP drops or keepalive timeouts.  On Unix, also listens for `SIGHUP` and performs a zero-disconnect binary exec-reload.
 
-```rust
+```rust,ignore
 // Generated signatures (simplified):
 impl YourBot {
     pub async fn new(
@@ -161,7 +161,7 @@ Channel names in `channels` are automatically prefixed with `#` if they do not a
 
 Fires when a user sends `!name` (case-insensitive) in any channel or as a private message.  The text that follows `!name` on the same line is available as the first `String` parameter.
 
-```rust
+```rust,ignore
 #[command("ping")]
 async fn ping(&self, ctx: Context) -> Result {
     ctx.reply("Pong!")
@@ -176,7 +176,7 @@ async fn echo(&self, ctx: Context, text: String) -> Result {
 
 Optional `target` filter:
 
-```rust
+```text
 #[command("roll", target = "#dice")]
 async fn roll(&self, ctx: Context) -> Result { … }
 ```
@@ -200,7 +200,7 @@ Exactly one of `command`, `message`, `event`, `mention`, or `cron` must be prese
 
 **`message`** — glob pattern on PRIVMSG text.  Each `*` captures the corresponding portion of the text as a `String` parameter:
 
-```rust
+```rust,ignore
 // Fires on any PRIVMSG that looks like "you are <something>".
 // The captured text is available as `praise`.
 #[on(message = "you are *")]
@@ -211,7 +211,7 @@ async fn praise_me(&self, ctx: Context, praise: String) -> Result {
 
 **`event`** — any raw IRC command.  Use this for protocol-level events:
 
-```rust
+```rust,ignore
 // Fires whenever any user joins any channel.
 #[on(event = "JOIN")]
 async fn on_join(&self, ctx: Context, user: User) -> Result {
@@ -221,7 +221,7 @@ async fn on_join(&self, ctx: Context, user: User) -> Result {
 
 **`event` + `target`** — restrict to a specific channel:
 
-```rust
+```rust,ignore
 // Fires only when someone joins #rust.
 #[on(event = "JOIN", target = "#rust")]
 async fn welcome_rust(&self, ctx: Context, user: User) -> Result {
@@ -231,7 +231,7 @@ async fn welcome_rust(&self, ctx: Context, user: User) -> Result {
 
 **`event` + `regex`** — filter by a regex applied to the message text.  Capture groups become `String` parameters in the order they appear:
 
-```rust
+```rust,ignore
 // Fires on PRIVMSG lines that match `!op <nick> <reason>`.
 #[on(event = "PRIVMSG", regex = r"^!op (\S+) (.+)$")]
 async fn op_request(&self, ctx: Context, target_nick: String, reason: String) -> Result {
@@ -241,7 +241,7 @@ async fn op_request(&self, ctx: Context, target_nick: String, reason: String) ->
 
 **`command`** — command-style shorthand inside `#[on]`, useful when you also need `target`:
 
-```rust
+```rust,ignore
 #[on(command = "dance", target = "#general")]
 async fn dance(&self, ctx: Context) -> Result {
     ctx.action("dances!")
@@ -250,7 +250,7 @@ async fn dance(&self, ctx: Context) -> Result {
 
 **`mention`** — fires when a PRIVMSG directly addresses the bot by name (`"botname: …"` or `"botname, …"`).  The text that follows the prefix is passed as the first `String` parameter:
 
-```rust
+```rust,ignore
 // Fires when a user writes "mybot: hello there" in a channel.
 #[on(mention)]
 async fn on_mention(&self, ctx: Context, text: String) -> Result {
@@ -266,13 +266,13 @@ async fn on_mention_rust(&self, ctx: Context) -> Result {
 
 **`cron`** — fires the handler according to a cron schedule, independent of any IRC message.  The expression uses the **6-field Quartz format** backed by the [`cron`](https://crates.io/crates/cron) crate:
 
-```
+```text
 sec  min  hour  day-of-month  month  day-of-week  [year]
 ```
 
 Times are evaluated in UTC by default.  Use `tz` to specify any IANA timezone (backed by [`chrono-tz`](https://crates.io/crates/chrono-tz)).  Both the cron expression and the timezone are **validated at compile time** — a typo is a compile error, not a runtime panic.
 
-```rust
+```rust,ignore
 // Top of every hour, 8 a.m.–4 p.m. Eastern time, Monday–Friday.
 #[on(cron = "0 0 8-16 * * MON-FRI", tz = "America/New_York", target = "#work")]
 async fn work_hours_reminder(&self, ctx: Context) -> Result {
@@ -327,7 +327,7 @@ The bot actively monitors its connection by sending a `PING ircbot-keepalive` to
 
 **Custom intervals** — configure keepalive before starting the bot by calling `State::with_keepalive()`.  When using the `#[bot]` macro, `new()` manages the `State` internally, so custom keepalive settings require the lower-level API:
 
-```rust
+```rust,ignore
 use std::sync::Arc;
 use std::time::Duration;
 use ircbot::{State, HandlerEntry, internal};
@@ -375,7 +375,7 @@ kill -HUP $(pidof my_bot)
 
 For programmatic control call `hot_reload::exec_reload` directly — for example from an IRC admin command:
 
-```rust
+```rust,ignore
 use ircbot::hot_reload::exec_reload;
 
 // Inside a handler:
@@ -422,7 +422,7 @@ overwhelming the IRC server with outgoing messages.
 **Custom flood-control settings** — call `State::with_flood_control()` before
 starting the bot.  When using the `#[bot]` macro, use the lower-level API:
 
-```rust
+```rust,ignore
 use std::sync::Arc;
 use std::time::Duration;
 use ircbot::{State, HandlerEntry, internal};
@@ -461,7 +461,7 @@ anything special.
 Handlers always start with `&self` and `ctx: Context`.  Additional parameters
 are extracted automatically from the matched message:
 
-```rust
+```rust,ignore
 // No extra args — most handlers look like this.
 async fn handler(&self, ctx: Context) -> Result
 
@@ -477,7 +477,7 @@ async fn handler(&self, ctx: Context, message: String) -> Result
 When a `regex` (or a `message` glob with multiple `*`) produces more than one
 capture, each extra `String` parameter receives the next capture in order:
 
-```rust
+```rust,ignore
 // regex with two capture groups → two String parameters
 #[on(event = "PRIVMSG", regex = r"^!kick (\S+) (.*)$")]
 async fn kick(&self, ctx: Context, target_nick: String, reason: String) -> Result {
@@ -506,7 +506,7 @@ Handler methods can be tested directly without a live IRC connection using
 
 ### Quick example
 
-```rust
+```rust,ignore
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,7 +541,7 @@ mod tests {
 When a handler takes a `String` capture, pass it directly — the framework's
 extraction code is bypassed in a direct call:
 
-```rust
+```rust,ignore
 #[tokio::test]
 async fn echo_says_text() {
     let bot = MyBot::default();
@@ -562,7 +562,7 @@ in `tests/` instead.
 
 `tc.replies()` drains all buffered replies at once:
 
-```rust
+```rust,ignore
 #[tokio::test]
 async fn handler_sends_two_messages() {
     let bot = MyBot::default();
@@ -581,7 +581,7 @@ Use `TestContext::builder()` for scenarios that `channel`/`private` don't
 cover, such as simulating an event with a specific bot nick or pre-set
 captures:
 
-```rust
+```rust,ignore
 let mut tc = TestContext::builder()
     .target("#rust")
     .is_channel(true)

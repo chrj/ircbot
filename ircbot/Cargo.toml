@@ -5,6 +5,7 @@ edition = "2021"
 description = "An async IRC bot framework for Rust powered by Tokio and procedural macros"
 license = "MIT"
 repository = "https://github.com/chrj/ircbot"
+readme = "../README.md"
 keywords = ["irc", "bot", "async", "tokio", "framework"]
 categories = ["network-programming", "asynchronous"]
 
