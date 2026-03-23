@@ -1,5 +1,8 @@
 # ircbot
 
+[![ircbot on crates.io](https://img.shields.io/crates/v/ircbot.svg)](https://crates.io/crates/ircbot)
+[![ircbot-macros on crates.io](https://img.shields.io/crates/v/ircbot-macros.svg)](https://crates.io/crates/ircbot-macros)
+
 An async IRC bot framework for Rust powered by [Tokio](https://tokio.rs/) and procedural macros.
 
 Write clean, declarative bots without boilerplate:
@@ -127,8 +130,8 @@ Add `ircbot` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ircbot = { path = "path/to/ircbot" }
-tokio    = { version = "1", features = ["full"] }
+ircbot = "0.1"
+tokio  = { version = "1", features = ["full"] }
 ```
 
 ### Macros
