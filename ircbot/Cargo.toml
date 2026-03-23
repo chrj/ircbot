@@ -12,6 +12,9 @@ regex = "1"
 futures = "0.3"
 ircbot-macros = { path = "../ircbot-macros" }
 irc-proto = { version = "1", default-features = false }
+cron = "0.15"
+chrono = "0.4"
+chrono-tz = "0.10"
 
 [dev-dependencies]
 testcontainers = "0.27"

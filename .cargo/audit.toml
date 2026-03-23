@@ -1,0 +1,13 @@
+[advisories]
+# RUSTSEC-2026-0066: astral-tokio-tar 0.5.x — "Insufficient validation of PAX
+# extensions during extraction".
+#
+# Affected path: astral-tokio-tar 0.5.6 → testcontainers 0.27.1 → ircbot (dev)
+#
+# This is a transitive dev-only dependency used exclusively by the Docker-based
+# integration tests.  It is never present in production builds.  The fixed
+# version (astral-tokio-tar 0.6.0) requires a semver-incompatible upgrade of
+# testcontainers; no patched 0.5.x release or updated testcontainers version is
+# available at the time of writing.  Re-evaluate when testcontainers releases a
+# version that depends on astral-tokio-tar ≥ 0.6.
+ignore = ["RUSTSEC-2026-0066"]

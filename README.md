@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ## Features
 
 - **Proc-macro API** — annotate handler methods with `#[command]` or `#[on]` and let the `#[bot]` macro wire everything up.
-- **Flexible triggers** — commands (`!ping`), glob message patterns (`"you are *"`), raw IRC events (`JOIN`, `PRIVMSG`, …), and bot-mention detection (`"botname: …"`), all with optional target-channel and regex filters.
+- **Flexible triggers** — commands (`!ping`), glob message patterns (`"you are *"`), raw IRC events (`JOIN`, `PRIVMSG`, …), bot-mention detection (`"botname: …"`), and **cron-scheduled handlers** (`#[on(cron = "0 0 8-16 * * MON-FRI")]`), all with optional target-channel and regex filters.
 - **Context helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, and `ctx.whisper()` cover the most common reply patterns.
 - **Async / non-blocking** — built on Tokio; every handler is an `async fn`.
 - **Active keepalive** — the bot sends a periodic `PING` to the server (default every 30 s) and reconnects automatically if no `PONG` arrives within the timeout (default 10 s).  Interval and timeout are configurable via `State::with_keepalive()`.
@@ -103,6 +103,7 @@ ircbot/               ← library crate (public API)
     irc_parsing.rs      ← unit tests (IRC parsing)
     trigger_matching.rs ← unit tests (trigger dispatch)
     keepalive.rs        ← unit tests (keepalive timeout, automatic reconnection)
+    cron.rs             ← unit tests (cron/periodic handlers)
     flood_control.rs    ← unit + integration tests (message splitting, rate limiting)
   examples/
     basic_bot.rs        ← minimal demo
@@ -184,10 +185,12 @@ The general-purpose trigger attribute.  Accepts the following named keys:
 | `message = "pattern"` | Glob pattern on PRIVMSG text; `*` is a capturing wildcard |
 | `event = "IRC_CMD"` | Any IRC command (e.g. `"JOIN"`, `"PRIVMSG"`, `"PART"`) |
 | `mention` | Fires when a PRIVMSG addresses the bot by name (`"botname: …"` or `"botname, …"`) |
+| `cron = "expr"` | Fires on a cron schedule, independent of any IRC message |
+| `tz = "Timezone"` | IANA timezone for evaluating the cron schedule (default: `"UTC"`; only valid with `cron`) |
 | `target = "#channel"` | Optional channel filter (for any trigger type) |
 | `regex = "…"` | Optional regex on the message text; capture groups become `String` args |
 
-Exactly one of `command`, `message`, `event`, or `mention` must be present. `target` and `regex` are optional modifiers. Trigger precedence when multiple keys are given: `message` > `command` > `event` > `mention`.
+Exactly one of `command`, `message`, `event`, `mention`, or `cron` must be present. `target` and `regex` are optional modifiers. Trigger precedence when multiple keys are given: `message` > `command` > `event` > `mention` > `cron`.
 
 **`message`** — glob pattern on PRIVMSG text.  Each `*` captures the corresponding portion of the text as a `String` parameter:
 
@@ -254,6 +257,51 @@ async fn on_mention_rust(&self, ctx: Context) -> Result {
     ctx.notice("I heard you!").await
 }
 ```
+
+**`cron`** — fires the handler according to a cron schedule, independent of any IRC message.  The expression uses the **6-field Quartz format** backed by the [`cron`](https://crates.io/crates/cron) crate:
+
+```
+sec  min  hour  day-of-month  month  day-of-week  [year]
+```
+
+Times are evaluated in UTC by default.  Use `tz` to specify any IANA timezone (backed by [`chrono-tz`](https://crates.io/crates/chrono-tz)).  Both the cron expression and the timezone are **validated at compile time** — a typo is a compile error, not a runtime panic.
+
+```rust
+// Top of every hour, 8 a.m.–4 p.m. Eastern time, Monday–Friday.
+#[on(cron = "0 0 8-16 * * MON-FRI", tz = "America/New_York", target = "#work")]
+async fn work_hours_reminder(&self, ctx: Context) -> Result {
+    ctx.say("Heads up: stand-up in 5 minutes!")
+}
+
+// Every 15 minutes, UTC (default when `tz` is omitted).
+#[on(cron = "0 */15 * * * *", target = "#general")]
+async fn quarter_hour(&self, ctx: Context) -> Result {
+    ctx.say("15-minute check-in!")
+}
+
+// Every Monday at 9 a.m. Tokyo time.
+#[on(cron = "0 0 9 * * MON", tz = "Asia/Tokyo")]
+async fn weekly_report(&self, ctx: Context) -> Result {
+    // ctx.target is empty when no target is specified;
+    // use ctx.tx directly or store the channel name in bot state.
+    Ok(())
+}
+```
+
+**Quick reference — common expressions:**
+
+| Expression | Meaning |
+|---|---|
+| `"0 0 * * * *"` | Every hour (on the minute) |
+| `"0 0 8-16 * * MON-FRI"` | Top of each hour, 8 a.m.–4 p.m., weekdays |
+| `"0 */15 * * * *"` | Every 15 minutes |
+| `"0 30 9 * * *"` | Every day at 09:30 |
+| `"0 0 9 * * MON"` | Every Monday at 9 a.m. |
+| `"* * * * * *"` | Every second (useful in tests) |
+
+The handler fires for the first time after the next scheduled time is reached (never at bot startup). On reconnect, the schedule is evaluated fresh from the current time.
+
+Cron handlers receive a synthetic [`Context`] whose `sender` is `None` and `captures` is empty.  Use `ctx.say()` to post to the configured `target`.
 
 ---
 

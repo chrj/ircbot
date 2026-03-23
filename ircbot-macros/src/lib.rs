@@ -133,6 +133,8 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             let mut target: Option<String> = None;
                             let mut regex: Option<String> = None;
                             let mut mention = false;
+                            let mut cron_interval: Option<String> = None;
+                            let mut cron_tz: Option<String> = None;
 
                             if let Ok(metas) = metas_result {
                                 for meta in metas {
@@ -157,6 +159,8 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                                                     "command" => command_on = Some(v),
                                                     "target" => target = Some(v),
                                                     "regex" => regex = Some(v),
+                                                    "cron" => cron_interval = Some(v),
+                                                    "tz" => cron_tz = Some(v),
                                                     _ => {}
                                                 }
                                             }
@@ -167,7 +171,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             }
 
                             let target_ts = opt_str_ts(target.as_deref());
-                            // Precedence: message > command > event > mention.
+                            // Precedence: message > command > event > mention > cron.
                             // Only the first matching key wins; combining multiple
                             // trigger types in one `#[on(...)]` is not supported.
                             if let Some(msg_pat) = message {
@@ -196,6 +200,43 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             } else if mention {
                                 trigger_tokens = Some(quote! {
                                     ircbot::Trigger::Mention {
+                                        target: #target_ts,
+                                    }
+                                });
+                            } else if let Some(cron_str) = cron_interval {
+                                // Validate the cron expression at compile time.
+                                if let Err(e) = cron_str.parse::<cron::Schedule>() {
+                                    panic!(
+                                        "invalid cron expression {cron_str:?}: {e}\n\
+                                         \n\
+                                         The expression must use the 6-field Quartz format \
+                                         with an optional 7th year field:\n\
+                                         \n\
+                                         sec  min  hour  day-of-month  month  day-of-week  [year]\n\
+                                         \n\
+                                         Examples:\n\
+                                         \"0 0 * * * *\"          every hour (on the minute)\n\
+                                         \"0 0 8-16 * * MON-FRI\" top of each hour, 8 a.m.–4 p.m., weekdays\n\
+                                         \"0 */15 * * * *\"        every 15 minutes\n\
+                                         \"0 0 9 * * MON\"         every Monday at 9 a.m."
+                                    );
+                                }
+                                // Validate the timezone at compile time (defaults to UTC).
+                                let tz_str = cron_tz.as_deref().unwrap_or("UTC");
+                                if let Err(e) = tz_str.parse::<chrono_tz::Tz>() {
+                                    panic!(
+                                        "invalid timezone {tz_str:?}: {e}\n\
+                                         \n\
+                                         Use an IANA timezone name such as:\n\
+                                         \"UTC\", \"America/New_York\", \"Europe/London\", \
+                                         \"Asia/Tokyo\""
+                                    );
+                                }
+                                let tz_str = tz_str.to_string();
+                                trigger_tokens = Some(quote! {
+                                    ircbot::Trigger::Cron {
+                                        schedule: #cron_str.to_string(),
+                                        tz: #tz_str.to_string(),
                                         target: #target_ts,
                                     }
                                 });
