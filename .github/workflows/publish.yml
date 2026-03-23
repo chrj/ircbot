@@ -35,7 +35,8 @@ jobs:
           # Update ircbot-macros dependency version inside ircbot/Cargo.toml
           sed -i "s/ircbot-macros = { version = \"[^\"]*\" }/ircbot-macros = { version = \"$VERSION\" }/" ircbot/Cargo.toml
           # Regenerate Cargo.lock to match the new versions
-          cargo update -p ircbot-macros -p ircbot
+          # Use path-based pkgid to avoid ambiguity with the registry version
+          cargo update -p "path+file://$(pwd)/ircbot-macros" -p "path+file://$(pwd)/ircbot"
       - name: Commit and push version bump
         run: |
           git config user.name "github-actions[bot]"
