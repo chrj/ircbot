@@ -2,6 +2,11 @@
 name = "ircbot-macros"
 version = "0.1.0"
 edition = "2021"
+description = "Procedural macros for the ircbot IRC bot framework"
+license = "MIT"
+repository = "https://github.com/chrj/ircbot"
+keywords = ["irc", "bot", "macros", "proc-macro"]
+categories = ["network-programming"]
 
 [lib]
 proc-macro = true
