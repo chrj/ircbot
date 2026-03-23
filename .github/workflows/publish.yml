@@ -44,6 +44,10 @@ jobs:
           # Only commit if there are staged changes (version may already be correct)
           git diff --staged --quiet || git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
           git push origin HEAD:refs/heads/main
+          # Move the tag to point to the new version-bump commit so that the
+          # published crate and the tagged source tree are in sync.
+          git tag -f "$GITHUB_REF_NAME"
+          git push origin -f "refs/tags/$GITHUB_REF_NAME"
 
   publish-ircbot-macros:
     name: Publish ircbot-macros
