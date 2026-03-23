@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
+use chrono::Utc;
 use regex::Regex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc;
@@ -106,9 +107,10 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         }
     });
 
-    // Snapshot the handler list once and spawn a periodic task for each Cron
-    // trigger.  The tasks are aborted when this connection is torn down and
-    // re-spawned on reconnect (restarting their interval).
+    // Snapshot the handler list once and spawn a scheduled task for each Cron
+    // trigger.  Each task sleeps until the next scheduled occurrence (computed
+    // from the cron expression), fires the handler, then repeats.  Tasks are
+    // aborted when this connection is torn down and re-spawned on reconnect.
     let bot_nick = nick.clone();
     let cron_snapshot: Arc<Vec<HandlerEntry<T>>> = {
         let guard = handlers.read().unwrap_or_else(|e| e.into_inner());
@@ -116,8 +118,10 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     };
     let mut cron_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     for idx in 0..cron_snapshot.len() {
-        let (interval, cron_target) = match &cron_snapshot[idx].trigger {
-            Trigger::Cron { interval, target } => (*interval, target.clone().unwrap_or_default()),
+        let (schedule_str, cron_target) = match &cron_snapshot[idx].trigger {
+            Trigger::Cron { schedule, target } => {
+                (schedule.clone(), target.clone().unwrap_or_default())
+            }
             _ => continue,
         };
         let cron_is_channel = cron_target.is_channel_name();
@@ -127,8 +131,24 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         let snapshot_cron = Arc::clone(&cron_snapshot);
 
         let task = tokio::spawn(async move {
+            let schedule: cron::Schedule = match schedule_str.parse() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[ircbot] invalid cron expression {schedule_str:?}: {e}");
+                    return;
+                }
+            };
             loop {
-                tokio::time::sleep(interval).await;
+                // Compute when the handler should next fire.
+                let Some(next) = schedule.upcoming(Utc).next() else {
+                    eprintln!(
+                        "[ircbot] cron schedule {schedule_str:?} has no upcoming occurrences"
+                    );
+                    return;
+                };
+                let delay = (next - Utc::now()).to_std().unwrap_or(Duration::ZERO);
+                tokio::time::sleep(delay).await;
+
                 let raw = ":ircbot!ircbot@ircbot PING :cron"
                     .parse::<Message>()
                     .unwrap_or_else(|_| {

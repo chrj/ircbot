@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ## Features
 
 - **Proc-macro API** — annotate handler methods with `#[command]` or `#[on]` and let the `#[bot]` macro wire everything up.
-- **Flexible triggers** — commands (`!ping`), glob message patterns (`"you are *"`), raw IRC events (`JOIN`, `PRIVMSG`, …), bot-mention detection (`"botname: …"`), and **periodic cron-like handlers** (`#[on(cron = "5m")]`), all with optional target-channel and regex filters.
+- **Flexible triggers** — commands (`!ping`), glob message patterns (`"you are *"`), raw IRC events (`JOIN`, `PRIVMSG`, …), bot-mention detection (`"botname: …"`), and **cron-scheduled handlers** (`#[on(cron = "0 0 8-16 * * MON-FRI")]`), all with optional target-channel and regex filters.
 - **Context helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, and `ctx.whisper()` cover the most common reply patterns.
 - **Async / non-blocking** — built on Tokio; every handler is an `async fn`.
 - **Active keepalive** — the bot sends a periodic `PING` to the server (default every 30 s) and reconnects automatically if no `PONG` arrives within the timeout (default 10 s).  Interval and timeout are configurable via `State::with_keepalive()`.
@@ -185,7 +185,7 @@ The general-purpose trigger attribute.  Accepts the following named keys:
 | `message = "pattern"` | Glob pattern on PRIVMSG text; `*` is a capturing wildcard |
 | `event = "IRC_CMD"` | Any IRC command (e.g. `"JOIN"`, `"PRIVMSG"`, `"PART"`) |
 | `mention` | Fires when a PRIVMSG addresses the bot by name (`"botname: …"` or `"botname, …"`) |
-| `cron = "interval"` | Fires periodically at the given interval, independent of any IRC message |
+| `cron = "expr"` | Fires on a cron schedule, independent of any IRC message |
 | `target = "#channel"` | Optional channel filter (for any trigger type) |
 | `regex = "…"` | Optional regex on the message text; capture groups become `String` args |
 
@@ -257,36 +257,50 @@ async fn on_mention_rust(&self, ctx: Context) -> Result {
 }
 ```
 
-**`cron`** — fires the handler at a regular interval, independent of any IRC message.  The interval is specified as a duration string using `h` (hours), `m` (minutes), and/or `s` (seconds):
+**`cron`** — fires the handler according to a cron schedule, independent of any IRC message.  The expression uses the **6-field Quartz format** backed by the [`cron`](https://crates.io/crates/cron) crate:
+
+```
+sec  min  hour  day-of-month  month  day-of-week  [year]
+```
+
+All times are evaluated in **UTC**.  The expression is validated at compile time — a malformed expression is a compile error, not a runtime panic.
 
 ```rust
-// Post a reminder to #general every 30 minutes.
-#[on(cron = "30m", target = "#general")]
-async fn half_hourly_reminder(&self, ctx: Context) -> Result {
+// Top of every hour, 8 a.m.–4 p.m. UTC, Monday–Friday.
+#[on(cron = "0 0 8-16 * * MON-FRI", target = "#work")]
+async fn work_hours_reminder(&self, ctx: Context) -> Result {
     ctx.say("Heads up: stand-up in 5 minutes!")
 }
 
-// Fire every hour and a half (1 h 30 m = 90 minutes).
-#[on(cron = "1h30m")]
-async fn stats_reporter(&self, ctx: Context) -> Result {
+// Every 15 minutes, around the clock.
+#[on(cron = "0 */15 * * * *", target = "#general")]
+async fn quarter_hour(&self, ctx: Context) -> Result {
+    ctx.say("15-minute check-in!")
+}
+
+// Every Monday at 9 a.m. UTC.
+#[on(cron = "0 0 9 * * MON")]
+async fn weekly_report(&self, ctx: Context) -> Result {
     // ctx.target is empty when no target is specified;
-    // send elsewhere via ctx.tx or store target in bot state.
+    // use ctx.tx directly or store the channel name in bot state.
     Ok(())
 }
 ```
 
-Valid duration formats: `"30s"`, `"5m"`, `"1h"`, `"1h30m"`, `"1h30m15s"`.
+**Quick reference — common expressions:**
 
-The handler fires for the first time after the full interval has elapsed (not at bot startup). On reconnect the interval timer restarts from zero.
+| Expression | Meaning |
+|---|---|
+| `"0 0 * * * *"` | Every hour (on the minute) |
+| `"0 0 8-16 * * MON-FRI"` | Top of each hour, 8 a.m.–4 p.m., weekdays |
+| `"0 */15 * * * *"` | Every 15 minutes |
+| `"0 30 9 * * *"` | Every day at 09:30 UTC |
+| `"0 0 9 * * MON"` | Every Monday at 9 a.m. UTC |
+| `"* * * * * *"` | Every second (useful in tests) |
 
-Cron handlers receive a synthetic [`Context`] whose `sender` is `None` and `captures` is empty.  Use `ctx.say()` to post to the configured `target`:
+The handler fires for the first time after the next scheduled time is reached (never at bot startup). On reconnect, the schedule is evaluated fresh from the current time.
 
-```rust
-#[on(cron = "1h", target = "#rust")]
-async fn hourly_reminder(&self, ctx: Context) -> Result {
-    ctx.say("Reminder: be excellent to each other!")
-}
-```
+Cron handlers receive a synthetic [`Context`] whose `sender` is `None` and `captures` is empty.  Use `ctx.say()` to post to the configured `target`.
 
 ---
 

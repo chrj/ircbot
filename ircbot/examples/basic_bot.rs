@@ -44,8 +44,10 @@ impl MyBot {
         ctx.whisper("This is just between us.").await
     }
 
-    /// Post a reminder to #rust every hour.
-    #[on(cron = "1h", target = "#rust")]
+    /// Post a reminder to #rust every hour on the hour, on weekdays between
+    /// 8 a.m. and 4 p.m. UTC.  The cron expression uses the 6-field Quartz
+    /// format: sec min hour day-of-month month day-of-week.
+    #[on(cron = "0 0 8-16 * * MON-FRI", target = "#rust")]
     async fn hourly_reminder(&self, ctx: Context) -> Result {
         ctx.say("Reminder: be excellent to each other!")
     }

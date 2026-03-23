@@ -33,12 +33,14 @@ pub enum Trigger {
     /// message (e.g. `"botname: hello"` or `"botname, ping"`).
     /// The text following the address prefix is provided as a capture.
     Mention { target: Option<String> },
-    /// Fires periodically at the given `interval`, independent of any incoming
-    /// IRC message.  The handler receives a synthetic [`Context`] whose
-    /// `target` and `is_channel` fields are derived from `target`; when
-    /// `target` is `None` the target string is empty.
+    /// Fires on a schedule described by a cron expression.  The expression uses
+    /// the 6-field Quartz format: `sec min hour day-of-month month day-of-week`
+    /// with an optional 7th `year` field.  All times are evaluated in UTC.
+    ///
+    /// Example — top of every hour on weekday afternoons:
+    /// `"0 0 8-16 * * MON-FRI"`
     Cron {
-        interval: std::time::Duration,
+        schedule: String,
         target: Option<String>,
     },
 }

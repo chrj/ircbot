@@ -26,8 +26,8 @@ const WELCOME: &[u8] = b":server 001 testbot :Welcome to the mock IRC server\r\n
 
 // ─── tests ───────────────────────────────────────────────────────────────────
 
-/// A cron handler must fire at least twice within a reasonable time when a
-/// short interval is configured.
+/// A cron handler scheduled every second (`"* * * * * *"`) must fire at least
+/// twice within a reasonable timeout.
 #[tokio::test]
 async fn test_cron_handler_fires_periodically() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -60,8 +60,9 @@ async fn test_cron_handler_fires_periodically() {
     );
 
     let handlers = vec![HandlerEntry {
+        // "* * * * * *" fires every second — fast enough to observe in a test.
         trigger: Trigger::Cron {
-            interval: Duration::from_millis(50),
+            schedule: "* * * * * *".to_string(),
             target: None,
         },
         handler,
@@ -71,17 +72,17 @@ async fn test_cron_handler_fires_periodically() {
     let handler_set = ircbot::internal::make_handler_set(handlers);
     let bot_task = tokio::spawn(run_bot_internal(bot, state, handler_set));
 
-    // The handler fires every 50 ms; wait up to 2 s for at least 2 firings.
-    tokio::time::timeout(Duration::from_secs(2), async {
+    // Allow up to 5 s for at least 2 firings (each ~1 s apart).
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if fire_count.load(Ordering::Relaxed) >= 2 {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .expect("cron handler did not fire at least twice within 2 s");
+    .expect("cron handler did not fire at least twice within 5 s");
 
     bot_task.abort();
 }
@@ -123,7 +124,7 @@ async fn test_cron_handler_context_target() {
 
     let handlers = vec![HandlerEntry {
         trigger: Trigger::Cron {
-            interval: Duration::from_millis(50),
+            schedule: "* * * * * *".to_string(),
             target: Some("#chan".to_string()),
         },
         handler,
@@ -134,16 +135,16 @@ async fn test_cron_handler_context_target() {
     let bot_task = tokio::spawn(run_bot_internal(bot, state, handler_set));
 
     // Wait until the handler has fired at least once.
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if seen_target.lock().unwrap().is_some() {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .expect("cron handler did not fire within 2 s");
+    .expect("cron handler did not fire within 5 s");
 
     let (target, is_channel) = seen_target.lock().unwrap().clone().unwrap();
     assert_eq!(target, "#chan");
