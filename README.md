@@ -52,6 +52,12 @@ impl MyBot {
         ctx.reply(format!("You said: {}", text))
     }
 
+    /// Post a morning reminder to #general every weekday at 9 a.m. UTC.
+    #[on(cron = "0 0 9 * * MON-FRI", target = "#general")]
+    async fn morning_reminder(&self, ctx: Context) -> Result {
+        ctx.say("Good morning, everyone!")
+    }
+
     /// Send a private message directly to the caller, regardless of channel.
     #[command("secret")]
     async fn secret(&self, ctx: Context) -> Result {
