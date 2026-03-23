@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ## Features
 
 - **Proc-macro API** — annotate handler methods with `#[command]` or `#[on]` and let the `#[bot]` macro wire everything up.
-- **Flexible triggers** — commands (`!ping`), glob message patterns (`"you are *"`), raw IRC events (`JOIN`, `PRIVMSG`, …), and bot-mention detection (`"botname: …"`), all with optional target-channel and regex filters.
+- **Flexible triggers** — commands (`!ping`), glob message patterns (`"you are *"`), raw IRC events (`JOIN`, `PRIVMSG`, …), bot-mention detection (`"botname: …"`), and **periodic cron-like handlers** (`#[on(cron = "5m")]`), all with optional target-channel and regex filters.
 - **Context helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, and `ctx.whisper()` cover the most common reply patterns.
 - **Async / non-blocking** — built on Tokio; every handler is an `async fn`.
 - **Active keepalive** — the bot sends a periodic `PING` to the server (default every 30 s) and reconnects automatically if no `PONG` arrives within the timeout (default 10 s).  Interval and timeout are configurable via `State::with_keepalive()`.
@@ -103,6 +103,7 @@ ircbot/               ← library crate (public API)
     irc_parsing.rs      ← unit tests (IRC parsing)
     trigger_matching.rs ← unit tests (trigger dispatch)
     keepalive.rs        ← unit tests (keepalive timeout, automatic reconnection)
+    cron.rs             ← unit tests (cron/periodic handlers)
     flood_control.rs    ← unit + integration tests (message splitting, rate limiting)
   examples/
     basic_bot.rs        ← minimal demo
@@ -184,10 +185,11 @@ The general-purpose trigger attribute.  Accepts the following named keys:
 | `message = "pattern"` | Glob pattern on PRIVMSG text; `*` is a capturing wildcard |
 | `event = "IRC_CMD"` | Any IRC command (e.g. `"JOIN"`, `"PRIVMSG"`, `"PART"`) |
 | `mention` | Fires when a PRIVMSG addresses the bot by name (`"botname: …"` or `"botname, …"`) |
+| `cron = "interval"` | Fires periodically at the given interval, independent of any IRC message |
 | `target = "#channel"` | Optional channel filter (for any trigger type) |
 | `regex = "…"` | Optional regex on the message text; capture groups become `String` args |
 
-Exactly one of `command`, `message`, `event`, or `mention` must be present. `target` and `regex` are optional modifiers. Trigger precedence when multiple keys are given: `message` > `command` > `event` > `mention`.
+Exactly one of `command`, `message`, `event`, `mention`, or `cron` must be present. `target` and `regex` are optional modifiers. Trigger precedence when multiple keys are given: `message` > `command` > `event` > `mention` > `cron`.
 
 **`message`** — glob pattern on PRIVMSG text.  Each `*` captures the corresponding portion of the text as a `String` parameter:
 
@@ -252,6 +254,37 @@ async fn on_mention(&self, ctx: Context, text: String) -> Result {
 #[on(mention, target = "#rust")]
 async fn on_mention_rust(&self, ctx: Context) -> Result {
     ctx.notice("I heard you!").await
+}
+```
+
+**`cron`** — fires the handler at a regular interval, independent of any IRC message.  The interval is specified as a duration string using `h` (hours), `m` (minutes), and/or `s` (seconds):
+
+```rust
+// Post a reminder to #general every 30 minutes.
+#[on(cron = "30m", target = "#general")]
+async fn half_hourly_reminder(&self, ctx: Context) -> Result {
+    ctx.say("Heads up: stand-up in 5 minutes!")
+}
+
+// Fire every hour and a half (1 h 30 m = 90 minutes).
+#[on(cron = "1h30m")]
+async fn stats_reporter(&self, ctx: Context) -> Result {
+    // ctx.target is empty when no target is specified;
+    // send elsewhere via ctx.tx or store target in bot state.
+    Ok(())
+}
+```
+
+Valid duration formats: `"30s"`, `"5m"`, `"1h"`, `"1h30m"`, `"1h30m15s"`.
+
+The handler fires for the first time after the full interval has elapsed (not at bot startup). On reconnect the interval timer restarts from zero.
+
+Cron handlers receive a synthetic [`Context`] whose `sender` is `None` and `captures` is empty.  Use `ctx.say()` to post to the configured `target`:
+
+```rust
+#[on(cron = "1h", target = "#rust")]
+async fn hourly_reminder(&self, ctx: Context) -> Result {
+    ctx.say("Reminder: be excellent to each other!")
 }
 ```
 

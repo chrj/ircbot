@@ -106,6 +106,54 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         }
     });
 
+    // Snapshot the handler list once and spawn a periodic task for each Cron
+    // trigger.  The tasks are aborted when this connection is torn down and
+    // re-spawned on reconnect (restarting their interval).
+    let bot_nick = nick.clone();
+    let cron_snapshot: Arc<Vec<HandlerEntry<T>>> = {
+        let guard = handlers.read().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(&*guard)
+    };
+    let mut cron_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    for idx in 0..cron_snapshot.len() {
+        let (interval, cron_target) = match &cron_snapshot[idx].trigger {
+            Trigger::Cron { interval, target } => (*interval, target.clone().unwrap_or_default()),
+            _ => continue,
+        };
+        let cron_is_channel = cron_target.is_channel_name();
+        let bot_cron = Arc::clone(&bot);
+        let write_tx_cron = write_tx.clone();
+        let bot_nick_cron = bot_nick.clone();
+        let snapshot_cron = Arc::clone(&cron_snapshot);
+
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let raw = ":ircbot!ircbot@ircbot PING :cron"
+                    .parse::<Message>()
+                    .unwrap_or_else(|_| {
+                        ":ircbot!ircbot@ircbot PRIVMSG #ircbot :cron"
+                            .parse()
+                            .unwrap()
+                    });
+                let ctx = Context {
+                    tx: write_tx_cron.clone(),
+                    target: cron_target.clone(),
+                    is_channel: cron_is_channel,
+                    sender: None,
+                    raw,
+                    bot_nick: bot_nick_cron.clone(),
+                    captures: vec![],
+                };
+                let fut = (snapshot_cron[idx].handler)(Arc::clone(&bot_cron), ctx);
+                if let Err(e) = fut.await {
+                    eprintln!("[ircbot] cron handler error: {e}");
+                }
+            }
+        });
+        cron_tasks.push(task);
+    }
+
     // Keepalive: set to `true` on startup (no ping pending) and whenever we
     // receive a matching PONG.  The keepalive task resets it to `false` before
     // each PING, then checks it again after the timeout.
@@ -136,7 +184,6 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         }
     });
 
-    let bot_nick = nick.clone();
     let mut joined = false;
     let mut lines = reader.lines();
     let mut keepalive_fail_rx = keepalive_fail_rx;
@@ -205,8 +252,11 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     }
     .await;
 
-    // Always clean up the keepalive and write tasks before returning.
+    // Always clean up the keepalive, cron, and write tasks before returning.
     keepalive_task.abort();
+    for task in &cron_tasks {
+        task.abort();
+    }
     drop(write_tx);
     let _ = write_task.await;
 
@@ -282,6 +332,8 @@ pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option
                 Some(vec![])
             }
         }
+
+        Trigger::Cron { .. } => None,
 
         Trigger::Mention { target } => {
             let Command::PRIVMSG(msg_target, text) = &msg.command else {

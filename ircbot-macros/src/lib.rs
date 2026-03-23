@@ -7,6 +7,43 @@ use syn::{
 
 // ─── Custom parsers ──────────────────────────────────────────────────────────
 
+/// Parses a human-readable duration string such as `"30s"`, `"5m"`, `"1h"`,
+/// or combinations like `"1h30m"` or `"1h30m15s"`.
+///
+/// Supported unit suffixes: `h` (hours), `m` (minutes), `s` (seconds).
+/// Returns the total number of whole seconds, or `None` on any parse error
+/// (unknown unit, trailing digits without a unit, or zero total).
+fn parse_duration_secs(s: &str) -> Option<u64> {
+    let mut total: u64 = 0;
+    let mut num = String::new();
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+        } else {
+            if num.is_empty() {
+                return None;
+            }
+            let n: u64 = num.parse().ok()?;
+            let factor = match c {
+                'h' => 3600u64,
+                'm' => 60,
+                's' => 1,
+                _ => return None,
+            };
+            total = total.checked_add(n.checked_mul(factor)?)?;
+            num.clear();
+        }
+    }
+    if !num.is_empty() {
+        // Trailing digits with no unit suffix.
+        return None;
+    }
+    if total == 0 {
+        return None;
+    }
+    Some(total)
+}
+
 /// Parses `#[command("name")]` or `#[command("name", target = "...")]`
 struct CommandArgs {
     name: String,
@@ -133,6 +170,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             let mut target: Option<String> = None;
                             let mut regex: Option<String> = None;
                             let mut mention = false;
+                            let mut cron_interval: Option<String> = None;
 
                             if let Ok(metas) = metas_result {
                                 for meta in metas {
@@ -157,6 +195,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                                                     "command" => command_on = Some(v),
                                                     "target" => target = Some(v),
                                                     "regex" => regex = Some(v),
+                                                    "cron" => cron_interval = Some(v),
                                                     _ => {}
                                                 }
                                             }
@@ -167,7 +206,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             }
 
                             let target_ts = opt_str_ts(target.as_deref());
-                            // Precedence: message > command > event > mention.
+                            // Precedence: message > command > event > mention > cron.
                             // Only the first matching key wins; combining multiple
                             // trigger types in one `#[on(...)]` is not supported.
                             if let Some(msg_pat) = message {
@@ -196,6 +235,16 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             } else if mention {
                                 trigger_tokens = Some(quote! {
                                     ircbot::Trigger::Mention {
+                                        target: #target_ts,
+                                    }
+                                });
+                            } else if let Some(cron_str) = cron_interval {
+                                let secs = parse_duration_secs(&cron_str).unwrap_or_else(|| {
+                                    panic!("invalid cron interval {cron_str:?}: use a duration like \"30s\", \"5m\", or \"1h\"")
+                                });
+                                trigger_tokens = Some(quote! {
+                                    ircbot::Trigger::Cron {
+                                        interval: std::time::Duration::from_secs(#secs),
                                         target: #target_ts,
                                     }
                                 });

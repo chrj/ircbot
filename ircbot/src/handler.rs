@@ -33,6 +33,14 @@ pub enum Trigger {
     /// message (e.g. `"botname: hello"` or `"botname, ping"`).
     /// The text following the address prefix is provided as a capture.
     Mention { target: Option<String> },
+    /// Fires periodically at the given `interval`, independent of any incoming
+    /// IRC message.  The handler receives a synthetic [`Context`] whose
+    /// `target` and `is_channel` fields are derived from `target`; when
+    /// `target` is `None` the target string is empty.
+    Cron {
+        interval: std::time::Duration,
+        target: Option<String>,
+    },
 }
 
 /// Associates a [`Trigger`] with a handler function for a bot of type `T`.

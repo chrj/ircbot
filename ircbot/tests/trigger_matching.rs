@@ -291,7 +291,27 @@ fn glob_literal_dot_does_not_match_any_char() {
     assert!(glob_match("3.14", "3X14").is_none());
 }
 
-// ─── check_trigger: Event with target filter and case-insensitive event ───────
+// ─── check_trigger: Cron ────────────────────────────────────────────────────
+
+#[test]
+fn cron_trigger_never_matches_privmsg() {
+    let trigger = Trigger::Cron {
+        interval: std::time::Duration::from_secs(60),
+        target: None,
+    };
+    let msg = privmsg("#chan", "hello");
+    assert!(check_trigger(&trigger, &msg, "bot").is_none());
+}
+
+#[test]
+fn cron_trigger_never_matches_join() {
+    let trigger = Trigger::Cron {
+        interval: std::time::Duration::from_secs(60),
+        target: Some("#chan".to_string()),
+    };
+    let msg = ":nick!u@h JOIN #chan".parse().unwrap();
+    assert!(check_trigger(&trigger, &msg, "bot").is_none());
+}
 
 #[test]
 fn event_trigger_target_filter() {

@@ -43,6 +43,12 @@ impl MyBot {
     async fn secret(&self, ctx: Context) -> Result {
         ctx.whisper("This is just between us.").await
     }
+
+    /// Post a reminder to #rust every hour.
+    #[on(cron = "1h", target = "#rust")]
+    async fn hourly_reminder(&self, ctx: Context) -> Result {
+        ctx.say("Reminder: be excellent to each other!")
+    }
 }
 
 #[tokio::main]
@@ -190,6 +196,23 @@ mod tests {
         assert_eq!(
             tc.next_reply(),
             Some("PRIVMSG alice :This is just between us.\r\n".to_string()),
+        );
+    }
+
+    // ── cron handler ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn hourly_reminder_says_to_channel() {
+        let bot = MyBot::default();
+        // Cron handlers can be called directly like any other handler.
+        let mut tc = TestContext::builder()
+            .target("#rust")
+            .is_channel(true)
+            .build();
+        bot.hourly_reminder(tc.take_ctx()).await.unwrap();
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG #rust :Reminder: be excellent to each other!\r\n".to_string()),
         );
     }
 }
