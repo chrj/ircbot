@@ -1,0 +1,56 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  publish-ircbot-macros:
+    name: Publish ircbot-macros
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Publish ircbot-macros
+        run: cargo publish --package ircbot-macros
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish-ircbot:
+    name: Publish ircbot
+    runs-on: ubuntu-latest
+    needs: publish-ircbot-macros
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Wait for ircbot-macros to be available on crates.io
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | \
+            python3 -c "import sys,json; pkgs=json.load(sys.stdin)['packages']; \
+              print(next(p['version'] for p in pkgs if p['name']=='ircbot-macros'))")
+          echo "Waiting for ircbot-macros $VERSION on crates.io..."
+          for i in $(seq 1 20); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              "https://crates.io/api/v1/crates/ircbot-macros/$VERSION")
+            if [ "$STATUS" = "200" ]; then
+              echo "ircbot-macros $VERSION is available"
+              break
+            fi
+            echo "Attempt $i: not yet available (HTTP $STATUS), retrying in 15s..."
+            sleep 15
+          done
+      - name: Publish ircbot
+        run: cargo publish --package ircbot
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
