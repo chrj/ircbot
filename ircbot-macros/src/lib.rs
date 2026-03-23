@@ -1,3 +1,8 @@
+//! Procedural macros for the [`ircbot`](https://docs.rs/ircbot) framework.
+//!
+//! These macros are re-exported by the `ircbot` crate — refer to its
+//! documentation for usage.
+
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
@@ -436,11 +441,13 @@ fn build_wrapper(method_name: &Ident, extra_args: &[(String, String)]) -> TokenS
 
 // ─── #[command] / #[on] as standalone no-ops ─────────────────────────────────
 
+#[doc = include_str!("../docs/command.md")]
 #[proc_macro_attribute]
 pub fn command(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
+#[doc = include_str!("../docs/on.md")]
 #[proc_macro_attribute]
 pub fn on(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item

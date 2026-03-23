@@ -1,3 +1,5 @@
+#![doc = include_str!("../../README.md")]
+
 pub mod bot;
 pub mod connection;
 pub mod context;
@@ -14,7 +16,11 @@ pub use connection::{
 pub use context::{make_messages, Context, User};
 pub use handler::{BoxFuture, HandlerEntry, HandlerFn, Trigger};
 pub use irc::CtcpMessage;
-pub use ircbot_macros::{bot, command, on};
+pub use ircbot_macros::bot;
+#[doc = include_str!("../../ircbot-macros/docs/command.md")]
+pub use ircbot_macros::command;
+#[doc = include_str!("../../ircbot-macros/docs/on.md")]
+pub use ircbot_macros::on;
 
 /// The standard error type used throughout the crate.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
