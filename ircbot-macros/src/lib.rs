@@ -441,11 +441,137 @@ fn build_wrapper(method_name: &Ident, extra_args: &[(String, String)]) -> TokenS
 
 // ─── #[command] / #[on] as standalone no-ops ─────────────────────────────────
 
+/// Registers the annotated method as a command handler inside a [`#[bot]`](macro@bot) impl block.
+///
+/// Fires when a user sends `!name` (case-insensitive) to any channel the bot
+/// has joined, or as a private message.  The text that follows `!name` on the
+/// same line is available as the first `String` parameter.
+///
+/// # Arguments
+///
+/// - `"name"` — *(required, positional)* the command keyword, without the
+///   leading `!`.  Matching is case-insensitive.
+/// - `target = "#channel"` — *(optional)* restrict the command to a specific
+///   channel.  When omitted, the command responds everywhere.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// #[bot]
+/// impl MyBot {
+///     // Responds to `!ping` from anywhere.
+///     #[command("ping")]
+///     async fn ping(&self, ctx: Context) -> Result {
+///         ctx.reply("Pong!")
+///     }
+///
+///     // Captures everything after `!echo` as `text`.
+///     #[command("echo")]
+///     async fn echo(&self, ctx: Context, text: String) -> Result {
+///         ctx.say(text)
+///     }
+///
+///     // Only responds in #dice.
+///     #[command("roll", target = "#dice")]
+///     async fn roll(&self, ctx: Context) -> Result {
+///         ctx.say("🎲 You rolled a 4!")
+///     }
+/// }
+/// ```
+///
+/// # Note
+///
+/// `#[command]` is meaningful **only** when placed on a method inside an
+/// `#[bot]` impl block.  Outside that context it is a no-op marker that leaves
+/// the item unchanged.
 #[proc_macro_attribute]
 pub fn command(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
+/// Registers the annotated method as an event handler inside a [`#[bot]`](macro@bot) impl block.
+///
+/// The general-purpose trigger attribute.  Exactly one of `command`,
+/// `message`, `event`, `mention`, or `cron` must be present.  `target`,
+/// `regex`, and `tz` are optional modifiers.
+///
+/// # Keys
+///
+/// | Key | Description |
+/// |-----|-------------|
+/// | `command = "name"` | Fires on `!name`; equivalent to [`#[command("name")]`](macro@command) but also accepts `target` |
+/// | `message = "pattern"` | Glob pattern on PRIVMSG text; each `*` captures the matched portion as a `String` parameter |
+/// | `event = "IRC_CMD"` | Any raw IRC command (e.g. `"JOIN"`, `"PRIVMSG"`, `"PART"`, `"NICK"`) |
+/// | `mention` | Fires when a PRIVMSG addresses the bot by name (`"botname: …"` or `"botname, …"`); matched text is passed as first `String` parameter |
+/// | `cron = "expr"` | Fires on a cron schedule independent of any IRC message; uses the 6-field Quartz format (`sec min hour dom month dow`) with an optional 7th year field, validated at compile time |
+/// | `target = "#channel"` | *(optional)* Restrict the trigger to a specific channel |
+/// | `regex = "pattern"` | *(optional, with `event`)* Further filter by a regex on the message text; capture groups become `String` parameters |
+/// | `tz = "Timezone"` | *(optional, with `cron`)* IANA timezone for evaluating the schedule (default: `"UTC"`), validated at compile time |
+///
+/// When multiple trigger keys are present, the first one in this precedence
+/// order wins: `message` › `command` › `event` › `mention` › `cron`.
+///
+/// # Examples
+///
+/// **`message`** — glob match on PRIVMSG text:
+///
+/// ```rust,ignore
+/// #[on(message = "you are *")]
+/// async fn praise_me(&self, ctx: Context, praise: String) -> Result {
+///     ctx.say(format!("Indeed, I am {}!", praise))
+/// }
+/// ```
+///
+/// **`event`** — raw IRC event, optionally restricted to a channel:
+///
+/// ```rust,ignore
+/// #[on(event = "JOIN", target = "#rust")]
+/// async fn welcome(&self, ctx: Context, user: User) -> Result {
+///     ctx.say(format!("Welcome to #rust, {}!", user.nick))
+/// }
+/// ```
+///
+/// **`event` + `regex`** — regex filter with capture groups:
+///
+/// ```rust,ignore
+/// #[on(event = "PRIVMSG", regex = r"^!op (\S+) (.+)$")]
+/// async fn op_request(&self, ctx: Context, target_nick: String, reason: String) -> Result {
+///     ctx.say(format!("Granting op to {} (reason: {})", target_nick, reason))
+/// }
+/// ```
+///
+/// **`command`** — shorthand with optional `target`:
+///
+/// ```rust,ignore
+/// #[on(command = "dance", target = "#general")]
+/// async fn dance(&self, ctx: Context) -> Result {
+///     ctx.action("dances!")
+/// }
+/// ```
+///
+/// **`mention`** — fires when the bot is addressed by name:
+///
+/// ```rust,ignore
+/// #[on(mention)]
+/// async fn on_mention(&self, ctx: Context, text: String) -> Result {
+///     ctx.reply(format!("You said: {}", text))
+/// }
+/// ```
+///
+/// **`cron`** — time-based trigger with optional timezone:
+///
+/// ```rust,ignore
+/// #[on(cron = "0 0 9 * * MON-FRI", tz = "America/New_York", target = "#standup")]
+/// async fn morning_standup(&self, ctx: Context) -> Result {
+///     ctx.say("Good morning! Stand-up time.")
+/// }
+/// ```
+///
+/// # Note
+///
+/// `#[on]` is meaningful **only** when placed on a method inside an `#[bot]`
+/// impl block.  Outside that context it is a no-op marker that leaves the item
+/// unchanged.
 #[proc_macro_attribute]
 pub fn on(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item

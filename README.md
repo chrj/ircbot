@@ -176,9 +176,9 @@ async fn echo(&self, ctx: Context, text: String) -> Result {
 
 Optional `target` filter:
 
-```text
+```rust,ignore
 #[command("roll", target = "#dice")]
-async fn roll(&self, ctx: Context) -> Result { … }
+async fn roll(&self, ctx: Context) -> Result { /* ... */ }
 ```
 
 #### `#[on(…)]`
