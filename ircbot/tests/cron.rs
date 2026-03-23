@@ -63,6 +63,7 @@ async fn test_cron_handler_fires_periodically() {
         // "* * * * * *" fires every second — fast enough to observe in a test.
         trigger: Trigger::Cron {
             schedule: "* * * * * *".to_string(),
+            tz: "UTC".to_string(),
             target: None,
         },
         handler,
@@ -125,6 +126,7 @@ async fn test_cron_handler_context_target() {
     let handlers = vec![HandlerEntry {
         trigger: Trigger::Cron {
             schedule: "* * * * * *".to_string(),
+            tz: "UTC".to_string(),
             target: Some("#chan".to_string()),
         },
         handler,

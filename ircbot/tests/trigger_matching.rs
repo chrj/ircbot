@@ -297,6 +297,7 @@ fn glob_literal_dot_does_not_match_any_char() {
 fn cron_trigger_never_matches_privmsg() {
     let trigger = Trigger::Cron {
         schedule: "0 0 * * * *".to_string(),
+        tz: "UTC".to_string(),
         target: None,
     };
     let msg = privmsg("#chan", "hello");
@@ -307,6 +308,7 @@ fn cron_trigger_never_matches_privmsg() {
 fn cron_trigger_never_matches_join() {
     let trigger = Trigger::Cron {
         schedule: "0 0 8-16 * * MON-FRI".to_string(),
+        tz: "UTC".to_string(),
         target: Some("#chan".to_string()),
     };
     let msg = ":nick!u@h JOIN #chan".parse().unwrap();

@@ -35,12 +35,20 @@ pub enum Trigger {
     Mention { target: Option<String> },
     /// Fires on a schedule described by a cron expression.  The expression uses
     /// the 6-field Quartz format: `sec min hour day-of-month month day-of-week`
-    /// with an optional 7th `year` field.  All times are evaluated in UTC.
+    /// with an optional 7th `year` field.  Times are evaluated in `tz`, which
+    /// must be a valid IANA timezone name (e.g. `"America/New_York"`); defaults
+    /// to `"UTC"` when not specified.
     ///
-    /// Example — top of every hour on weekday afternoons:
-    /// `"0 0 8-16 * * MON-FRI"`
+    /// When `target` is `None` the handler's [`Context::target`] is an empty
+    /// string and [`Context::is_channel`] is `false`.  Handlers that need to
+    /// send a message should either specify a `target` or store the destination
+    /// in their bot state.
+    ///
+    /// Example — top of every hour on weekday afternoons (Eastern time):
+    /// `"0 0 8-16 * * MON-FRI"` with `tz = "America/New_York"`
     Cron {
         schedule: String,
+        tz: String,
         target: Option<String>,
     },
 }

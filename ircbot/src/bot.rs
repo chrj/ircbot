@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
-use chrono::Utc;
 use regex::Regex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc;
@@ -118,10 +117,16 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     };
     let mut cron_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     for idx in 0..cron_snapshot.len() {
-        let (schedule_str, cron_target) = match &cron_snapshot[idx].trigger {
-            Trigger::Cron { schedule, target } => {
-                (schedule.clone(), target.clone().unwrap_or_default())
-            }
+        let (schedule_str, tz_str, cron_target) = match &cron_snapshot[idx].trigger {
+            Trigger::Cron {
+                schedule,
+                tz,
+                target,
+            } => (
+                schedule.clone(),
+                tz.clone(),
+                target.clone().unwrap_or_default(),
+            ),
             _ => continue,
         };
         let cron_is_channel = cron_target.is_channel_name();
@@ -138,23 +143,34 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                     return;
                 }
             };
+            let tz: chrono_tz::Tz = match tz_str.parse() {
+                Ok(tz) => tz,
+                Err(e) => {
+                    eprintln!("[ircbot] invalid timezone {tz_str:?}: {e}");
+                    return;
+                }
+            };
             loop {
                 // Compute when the handler should next fire.
-                let Some(next) = schedule.upcoming(Utc).next() else {
+                let now = chrono::Utc::now().with_timezone(&tz);
+                let Some(next) = schedule.upcoming(tz).next() else {
                     eprintln!(
                         "[ircbot] cron schedule {schedule_str:?} has no upcoming occurrences"
                     );
                     return;
                 };
-                let delay = (next - Utc::now()).to_std().unwrap_or(Duration::ZERO);
+                let delay = (next - now).to_std().unwrap_or(Duration::ZERO);
                 tokio::time::sleep(delay).await;
 
-                let raw = ":ircbot!ircbot@ircbot PING :cron"
+                let raw = format!(":{nick}!cron@cron PING :cron", nick = bot_nick_cron)
                     .parse::<Message>()
                     .unwrap_or_else(|_| {
-                        ":ircbot!ircbot@ircbot PRIVMSG #ircbot :cron"
-                            .parse()
-                            .unwrap()
+                        format!(
+                            ":{nick}!cron@cron PRIVMSG #cron :cron",
+                            nick = bot_nick_cron
+                        )
+                        .parse()
+                        .unwrap()
                     });
                 let ctx = Context {
                     tx: write_tx_cron.clone(),
