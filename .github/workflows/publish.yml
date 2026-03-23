@@ -33,7 +33,7 @@ jobs:
           # Update ircbot package version (first occurrence)
           sed -i "0,/^version = \".*\"/s/^version = \".*\"/version = \"$VERSION\"/" ircbot/Cargo.toml
           # Update ircbot-macros dependency version inside ircbot/Cargo.toml
-          sed -i "s/ircbot-macros = { version = \"[^\"]*\" }/ircbot-macros = { version = \"$VERSION\" }/" ircbot/Cargo.toml
+          sed -i "/ircbot-macros/s/version = \"[^\"]*\"/version = \"$VERSION\"/" ircbot/Cargo.toml
           # Regenerate Cargo.lock to match the new versions
           # Use path-based pkgid to avoid ambiguity with the registry version
           cargo update -p "path+file://$(pwd)/ircbot-macros" -p "path+file://$(pwd)/ircbot"

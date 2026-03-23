@@ -16,7 +16,7 @@ integration = []
 tokio = { version = "1", features = ["full"] }
 regex = "1"
 futures = "0.3"
-ircbot-macros = { version = "0.1.0" } 
+ircbot-macros = { path = "../ircbot-macros", version = "0.1.0" }
 irc-proto = { version = "1", default-features = false }
 cron = "0.15"
 chrono = "0.4"
