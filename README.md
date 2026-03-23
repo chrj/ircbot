@@ -159,7 +159,7 @@ Channel names in `channels` are automatically prefixed with `#` if they do not a
 
 #### `#[command("name")]`
 
-Fires when a user sends `!name` (case-insensitive) in any channel or as a private message.  The text that follows `!name` on the same line is available as the first `String` parameter.
+Fires when a user sends `!name` (case-insensitive) in any channel or as a private message.  Accepts an optional `target = "#channel"` filter.  The text that follows `!name` on the same line is available as the first `String` parameter.
 
 ```rust,ignore
 #[command("ping")]
@@ -174,16 +174,11 @@ async fn echo(&self, ctx: Context, text: String) -> Result {
 }
 ```
 
-Optional `target` filter:
-
-```rust,ignore
-#[command("roll", target = "#dice")]
-async fn roll(&self, ctx: Context) -> Result { /* ... */ }
-```
+See [`ircbot::command`](https://docs.rs/ircbot/latest/ircbot/macro.command.html) for full reference.
 
 #### `#[on(…)]`
 
-The general-purpose trigger attribute.  Accepts the following named keys:
+The general-purpose trigger attribute.  Exactly one of `command`, `message`, `event`, `mention`, or `cron` must be present.  `target`, `regex`, and `tz` are optional modifiers.
 
 | Key | Description |
 |-----|-------------|
@@ -191,123 +186,14 @@ The general-purpose trigger attribute.  Accepts the following named keys:
 | `message = "pattern"` | Glob pattern on PRIVMSG text; `*` is a capturing wildcard |
 | `event = "IRC_CMD"` | Any IRC command (e.g. `"JOIN"`, `"PRIVMSG"`, `"PART"`) |
 | `mention` | Fires when a PRIVMSG addresses the bot by name (`"botname: …"` or `"botname, …"`) |
-| `cron = "expr"` | Fires on a cron schedule, independent of any IRC message |
-| `tz = "Timezone"` | IANA timezone for evaluating the cron schedule (default: `"UTC"`; only valid with `cron`) |
-| `target = "#channel"` | Optional channel filter (for any trigger type) |
+| `cron = "expr"` | Fires on a Quartz cron schedule, validated at compile time |
+| `tz = "Timezone"` | IANA timezone for the cron schedule (default: `"UTC"`) |
+| `target = "#channel"` | Optional channel filter (any trigger type) |
 | `regex = "…"` | Optional regex on the message text; capture groups become `String` args |
 
-Exactly one of `command`, `message`, `event`, `mention`, or `cron` must be present. `target` and `regex` are optional modifiers. Trigger precedence when multiple keys are given: `message` > `command` > `event` > `mention` > `cron`.
+Trigger precedence: `message` › `command` › `event` › `mention` › `cron`.
 
-**`message`** — glob pattern on PRIVMSG text.  Each `*` captures the corresponding portion of the text as a `String` parameter:
-
-```rust,ignore
-// Fires on any PRIVMSG that looks like "you are <something>".
-// The captured text is available as `praise`.
-#[on(message = "you are *")]
-async fn praise_me(&self, ctx: Context, praise: String) -> Result {
-    ctx.say(format!("Indeed, I am {}!", praise))
-}
-```
-
-**`event`** — any raw IRC command.  Use this for protocol-level events:
-
-```rust,ignore
-// Fires whenever any user joins any channel.
-#[on(event = "JOIN")]
-async fn on_join(&self, ctx: Context, user: User) -> Result {
-    ctx.say(format!("Welcome, {}!", user.nick))
-}
-```
-
-**`event` + `target`** — restrict to a specific channel:
-
-```rust,ignore
-// Fires only when someone joins #rust.
-#[on(event = "JOIN", target = "#rust")]
-async fn welcome_rust(&self, ctx: Context, user: User) -> Result {
-    ctx.say(format!("Welcome to #rust, {}!", user.nick))
-}
-```
-
-**`event` + `regex`** — filter by a regex applied to the message text.  Capture groups become `String` parameters in the order they appear:
-
-```rust,ignore
-// Fires on PRIVMSG lines that match `!op <nick> <reason>`.
-#[on(event = "PRIVMSG", regex = r"^!op (\S+) (.+)$")]
-async fn op_request(&self, ctx: Context, target_nick: String, reason: String) -> Result {
-    ctx.say(format!("Granting op to {} (reason: {})", target_nick, reason))
-}
-```
-
-**`command`** — command-style shorthand inside `#[on]`, useful when you also need `target`:
-
-```rust,ignore
-#[on(command = "dance", target = "#general")]
-async fn dance(&self, ctx: Context) -> Result {
-    ctx.action("dances!")
-}
-```
-
-**`mention`** — fires when a PRIVMSG directly addresses the bot by name (`"botname: …"` or `"botname, …"`).  The text that follows the prefix is passed as the first `String` parameter:
-
-```rust,ignore
-// Fires when a user writes "mybot: hello there" in a channel.
-#[on(mention)]
-async fn on_mention(&self, ctx: Context, text: String) -> Result {
-    ctx.reply(format!("You said: {}", text))
-}
-
-// Restrict to a specific channel.
-#[on(mention, target = "#rust")]
-async fn on_mention_rust(&self, ctx: Context) -> Result {
-    ctx.notice("I heard you!").await
-}
-```
-
-**`cron`** — fires the handler according to a cron schedule, independent of any IRC message.  The expression uses the **6-field Quartz format** backed by the [`cron`](https://crates.io/crates/cron) crate:
-
-```text
-sec  min  hour  day-of-month  month  day-of-week  [year]
-```
-
-Times are evaluated in UTC by default.  Use `tz` to specify any IANA timezone (backed by [`chrono-tz`](https://crates.io/crates/chrono-tz)).  Both the cron expression and the timezone are **validated at compile time** — a typo is a compile error, not a runtime panic.
-
-```rust,ignore
-// Top of every hour, 8 a.m.–4 p.m. Eastern time, Monday–Friday.
-#[on(cron = "0 0 8-16 * * MON-FRI", tz = "America/New_York", target = "#work")]
-async fn work_hours_reminder(&self, ctx: Context) -> Result {
-    ctx.say("Heads up: stand-up in 5 minutes!")
-}
-
-// Every 15 minutes, UTC (default when `tz` is omitted).
-#[on(cron = "0 */15 * * * *", target = "#general")]
-async fn quarter_hour(&self, ctx: Context) -> Result {
-    ctx.say("15-minute check-in!")
-}
-
-// Every Monday at 9 a.m. Tokyo time.
-#[on(cron = "0 0 9 * * MON", tz = "Asia/Tokyo")]
-async fn weekly_report(&self, ctx: Context) -> Result {
-    // ctx.target is empty when no target is specified;
-    // use ctx.tx directly or store the channel name in bot state.
-    Ok(())
-}
-```
-
-**Quick reference — common expressions:**
-
-| Expression | Meaning |
-|---|---|
-| `"0 0 * * * *"` | Every hour (on the minute) |
-| `"0 0 8-16 * * MON-FRI"` | Top of each hour, 8 a.m.–4 p.m., weekdays |
-| `"0 */15 * * * *"` | Every 15 minutes |
-| `"0 30 9 * * *"` | Every day at 09:30 |
-| `"0 0 9 * * MON"` | Every Monday at 9 a.m. |
-| `"* * * * * *"` | Every second (useful in tests) |
-
-The handler fires for the first time after the next scheduled time is reached (never at bot startup). On reconnect, the schedule is evaluated fresh from the current time.
-
-Cron handlers receive a synthetic [`Context`] whose `sender` is `None` and `captures` is empty.  Use `ctx.say()` to post to the configured `target`.
+See [`ircbot::on`](https://docs.rs/ircbot/latest/ircbot/macro.on.html) for full reference including per-trigger examples and cron quick-reference.
 
 ---
 
