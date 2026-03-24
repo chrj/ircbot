@@ -53,7 +53,12 @@ jobs:
               || echo "Warning: auto-merge could not be enabled. Please merge the PR manually once CI passes."
           fi
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GH_PAT (a personal access token with repo scope) is preferred so that
+          # PR creation works regardless of the "Allow GitHub Actions to create and
+          # approve pull requests" repository setting.  If GH_PAT is not set, the
+          # built-in GITHUB_TOKEN is used instead — which requires that setting to
+          # be enabled in Settings → Actions → General.
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
       - name: Publish ircbot-macros
         run: cargo publish --package ircbot-macros
         env:
@@ -121,7 +126,12 @@ jobs:
             git push origin -f "refs/tags/$GITHUB_REF_NAME"
           fi
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GH_PAT (a personal access token with repo scope) is preferred so that
+          # PR creation works regardless of the "Allow GitHub Actions to create and
+          # approve pull requests" repository setting.  If GH_PAT is not set, the
+          # built-in GITHUB_TOKEN is used instead — which requires that setting to
+          # be enabled in Settings → Actions → General.
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
       - name: Publish ircbot
         run: cargo publish --package ircbot
         env:
