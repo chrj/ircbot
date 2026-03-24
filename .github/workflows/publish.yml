@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 jobs:
-  bump-versions:
-    name: Bump versions
+  bump-and-publish-ircbot-macros:
+    name: Bump and publish ircbot-macros
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -25,63 +25,28 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Update versions in Cargo.toml files
+      - name: Update ircbot-macros version in Cargo.toml
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           # Update ircbot-macros package version
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" ircbot-macros/Cargo.toml
-          # Update ircbot package version (first occurrence)
-          sed -i "0,/^version = \".*\"/s/^version = \".*\"/version = \"$VERSION\"/" ircbot/Cargo.toml
-          # Update ircbot-macros dependency version inside ircbot/Cargo.toml
-          sed -i "s/ircbot-macros = { version = \"[^\"]*\" }/ircbot-macros = { version = \"$VERSION\" }/" ircbot/Cargo.toml
-          # Regenerate Cargo.lock to match the new versions
-          # Use path-based pkgid to avoid ambiguity with the registry version
-          cargo update -p "path+file://$(pwd)/ircbot-macros" -p "path+file://$(pwd)/ircbot"
-      - name: Commit and push version bump
+          # Regenerate Cargo.lock for the workspace member
+          cargo update -p "path+file://$(pwd)/ircbot-macros"
+      - name: Commit and push ircbot-macros version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ircbot-macros/Cargo.toml ircbot/Cargo.toml Cargo.lock
+          git add ircbot-macros/Cargo.toml Cargo.lock
           # Only commit if there are staged changes (version may already be correct)
-          git diff --staged --quiet || git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
+          git diff --staged --quiet || git commit -m "chore: bump ircbot-macros version to ${{ steps.version.outputs.version }}"
           git push origin HEAD:refs/heads/main
-          # Move the tag to point to the new version-bump commit so that the
-          # published crate and the tagged source tree are in sync.
-          git tag -f "$GITHUB_REF_NAME"
-          git push origin -f "refs/tags/$GITHUB_REF_NAME"
-
-  publish-ircbot-macros:
-    name: Publish ircbot-macros
-    runs-on: ubuntu-latest
-    needs: bump-versions
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: main
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Publish ircbot-macros
         run: cargo publish --package ircbot-macros
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-  publish-ircbot:
-    name: Publish ircbot
-    runs-on: ubuntu-latest
-    needs: publish-ircbot-macros
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: main
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Wait for ircbot-macros to be available on crates.io
         run: |
-          VERSION=$(cargo metadata --no-deps --format-version 1 | \
-            python3 -c "import sys,json; pkgs=json.load(sys.stdin)['packages']; \
-              print(next(p['version'] for p in pkgs if p['name']=='ircbot-macros'))")
+          VERSION="${{ steps.version.outputs.version }}"
           echo "Waiting for ircbot-macros $VERSION on crates.io..."
           for i in $(seq 1 20); do  # up to 20 attempts (5 min total)
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -93,6 +58,42 @@ jobs:
             echo "Attempt $i: not yet available (HTTP $STATUS), retrying in 15s..."
             sleep 15  # crates.io index propagation typically takes under a minute
           done
+
+  bump-and-publish-ircbot:
+    name: Bump and publish ircbot
+    runs-on: ubuntu-latest
+    needs: bump-and-publish-ircbot-macros
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Update ircbot version in Cargo.toml
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # Update ircbot package version (first occurrence)
+          sed -i "0,/^version = \".*\"/s/^version = \".*\"/version = \"$VERSION\"/" ircbot/Cargo.toml
+          # Update ircbot-macros dependency version inside ircbot/Cargo.toml
+          sed -i "/ircbot-macros/s/version = \"[^\"]*\"/version = \"$VERSION\"/" ircbot/Cargo.toml
+          # Regenerate Cargo.lock - ircbot-macros $VERSION is now on crates.io so this resolves correctly
+          cargo update -p "path+file://$(pwd)/ircbot"
+      - name: Commit and push ircbot version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ircbot/Cargo.toml Cargo.lock
+          # Only commit if there are staged changes (version may already be correct)
+          git diff --staged --quiet || git commit -m "chore: bump ircbot version to ${{ steps.version.outputs.version }}"
+          git push origin HEAD:refs/heads/main
+          # Move the tag to point to the new version-bump commit so that the
+          # published crate and the tagged source tree are in sync.
+          git tag -f "$GITHUB_REF_NAME"
+          git push origin -f "refs/tags/$GITHUB_REF_NAME"
       - name: Publish ircbot
         run: cargo publish --package ircbot
         env:
