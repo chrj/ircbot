@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -32,14 +33,27 @@ jobs:
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" ircbot-macros/Cargo.toml
           # Regenerate Cargo.lock for the workspace member
           cargo update -p "path+file://$(pwd)/ircbot-macros"
-      - name: Commit and push ircbot-macros version bump
+      - name: Open PR for ircbot-macros version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ircbot-macros/Cargo.toml Cargo.lock
           # Only commit if there are staged changes (version may already be correct)
-          git diff --staged --quiet || git commit -m "chore: bump ircbot-macros version to ${{ steps.version.outputs.version }}"
-          git push origin HEAD:refs/heads/main
+          if ! git diff --staged --quiet; then
+            BRANCH="chore/bump-ircbot-macros-${{ steps.version.outputs.version }}"
+            git checkout -b "$BRANCH"
+            git commit -m "chore: bump ircbot-macros version to ${{ steps.version.outputs.version }}"
+            git push origin "$BRANCH"
+            gh pr create \
+              --title "chore: bump ircbot-macros version to ${{ steps.version.outputs.version }}" \
+              --body "Automated version bump triggered by release \`${{ github.ref_name }}\`." \
+              --base main \
+              --head "$BRANCH"
+            gh pr merge --auto --merge "$BRANCH" \
+              || echo "Warning: auto-merge could not be enabled. Please merge the PR manually once CI passes."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish ircbot-macros
         run: cargo publish --package ircbot-macros
         env:
@@ -65,6 +79,7 @@ jobs:
     needs: bump-and-publish-ircbot-macros
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -82,18 +97,31 @@ jobs:
           sed -i "/ircbot-macros/s/version = \"[^\"]*\"/version = \"$VERSION\"/" ircbot/Cargo.toml
           # Regenerate Cargo.lock - ircbot-macros $VERSION is now on crates.io so this resolves correctly
           cargo update -p "path+file://$(pwd)/ircbot"
-      - name: Commit and push ircbot version bump
+      - name: Open PR for ircbot version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ircbot/Cargo.toml Cargo.lock
           # Only commit if there are staged changes (version may already be correct)
-          git diff --staged --quiet || git commit -m "chore: bump ircbot version to ${{ steps.version.outputs.version }}"
-          git push origin HEAD:refs/heads/main
-          # Move the tag to point to the new version-bump commit so that the
-          # published crate and the tagged source tree are in sync.
-          git tag -f "$GITHUB_REF_NAME"
-          git push origin -f "refs/tags/$GITHUB_REF_NAME"
+          if ! git diff --staged --quiet; then
+            BRANCH="chore/bump-ircbot-${{ steps.version.outputs.version }}"
+            git checkout -b "$BRANCH"
+            git commit -m "chore: bump ircbot version to ${{ steps.version.outputs.version }}"
+            git push origin "$BRANCH"
+            gh pr create \
+              --title "chore: bump ircbot version to ${{ steps.version.outputs.version }}" \
+              --body "Automated version bump triggered by release \`${{ github.ref_name }}\`." \
+              --base main \
+              --head "$BRANCH"
+            gh pr merge --auto --merge "$BRANCH" \
+              || echo "Warning: auto-merge could not be enabled. Please merge the PR manually once CI passes."
+            # Move the tag to the version-bump commit so the published crate
+            # and the tagged source tree are in sync.
+            git tag -f "$GITHUB_REF_NAME"
+            git push origin -f "refs/tags/$GITHUB_REF_NAME"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish ircbot
         run: cargo publish --package ircbot
         env:
