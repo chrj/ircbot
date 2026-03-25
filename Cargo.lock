@@ -392,7 +392,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -939,7 +939,7 @@ dependencies = [
 
 [[package]]
 name = "ircbot"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -947,7 +947,7 @@ dependencies = [
  "futures",
  "irc",
  "irc-proto",
- "ircbot-macros 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ircbot-macros 0.1.5",
  "libc",
  "regex",
  "testcontainers",
@@ -967,9 +967,9 @@ dependencies = [
 
 [[package]]
 name = "ircbot-macros"
-version = "0.1.0"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f79a0c6326d1d90e28a668e8fe03a4dfe0e0a86c57808f026321e8fe565f14d"
+checksum = "34214aec96a2665276c462f10519af8dac5064e623067e39a8ed20b3bfddf597"
 dependencies = [
  "chrono-tz",
  "cron",
@@ -1490,7 +1490,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
