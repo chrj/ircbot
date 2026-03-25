@@ -84,3 +84,16 @@ jobs:
       - run: cargo doc --no-deps --workspace
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+  sync-check:
+    name: Sync check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check duplicated files are in sync
+        run: |
+          diff README.md ircbot/README.md
+          diff ircbot-macros/docs/command.md ircbot/docs/command.md
+          diff ircbot-macros/docs/on.md ircbot/docs/on.md
