@@ -21,3 +21,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 ## README
 
 Any user-facing changes (new features, changed behaviour, updated defaults, new API surface) must be reflected in `README.md`.
+
+The README must be distributed to README.me, ircbot/README.md and ircbot-macros/README.md
+
+## Documentation
+
+Prefer writing documentation over putting things in the README. The README should be short and crisp.
