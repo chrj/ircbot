@@ -65,13 +65,6 @@ tokio  = { version = "1", features = ["full"] }
 
 See the [`basic_bot` example](ircbot/examples/basic_bot.rs) and the [docs](https://docs.rs/ircbot) for the complete API, hot-reload guide, testing helpers, and lower-level `State` / `internal` APIs.
 
-## Running the tests
-
-```sh
-cargo test                                                        # unit tests
-cargo test --features integration -- --test-threads=1            # requires Docker
-```
-
 ## License
 
 MIT
