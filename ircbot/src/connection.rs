@@ -157,9 +157,13 @@ impl State {
             channels_raw.split(',').map(str::to_string).collect()
         };
 
-        // Reconstruct the TcpStream from the raw fd.  Safety: the fd was
-        // inherited from the parent process and is still valid.
-        let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
+        let std_stream = unsafe {
+            // SAFETY: The fd was inherited from the parent process via `exec_reload`,
+            // which cleared FD_CLOEXEC before exec.  The fd is valid, open, and has not
+            // been closed or duplicated since it was written to the environment variable.
+            // We take exclusive ownership here and never use the raw fd again.
+            std::net::TcpStream::from_raw_fd(raw_fd)
+        };
         std_stream.set_nonblocking(true)?;
         let stream = TcpStream::from_std(std_stream)?;
 

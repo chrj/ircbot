@@ -58,3 +58,12 @@ pub struct HandlerEntry<T> {
     pub trigger: Trigger,
     pub handler: HandlerFn<T>,
 }
+
+impl<T> std::fmt::Debug for HandlerEntry<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HandlerEntry")
+            .field("trigger", &self.trigger)
+            .field("handler", &format_args!("<handler fn>"))
+            .finish()
+    }
+}

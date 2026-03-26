@@ -35,13 +35,13 @@ impl MyBot {
     /// Same as above but only in a specific channel.
     #[on(mention, target = "#rust")]
     async fn on_mention_rust(&self, ctx: Context) -> Result {
-        ctx.notice("I heard you!").await
+        ctx.notice("I heard you!")
     }
 
     /// Send a private message to the sender no matter where they wrote from.
     #[command("secret")]
     async fn secret(&self, ctx: Context) -> Result {
-        ctx.whisper("This is just between us.").await
+        ctx.whisper("This is just between us.")
     }
 
     /// Post a reminder to #rust every hour on the hour, on weekdays between
@@ -175,15 +175,15 @@ mod tests {
 
     // ── mention target = "#rust" ──────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn on_mention_rust_sends_notice() {
+    #[test]
+    fn on_mention_rust_sends_notice() {
         let bot = MyBot::default();
         let mut tc = TestContext::builder()
             .target("#rust")
             .is_channel(true)
             .sender_nick("alice")
             .build();
-        bot.on_mention_rust(tc.take_ctx()).await.unwrap();
+        bot.on_mention_rust(tc.take_ctx()).unwrap();
         assert_eq!(
             tc.next_reply(),
             Some("NOTICE #rust :I heard you!\r\n".to_string()),
@@ -192,13 +192,13 @@ mod tests {
 
     // ── !secret ───────────────────────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn secret_whispers_to_sender_regardless_of_channel() {
+    #[test]
+    fn secret_whispers_to_sender_regardless_of_channel() {
         let bot = MyBot::default();
         // Even though the message arrives in a channel, whisper goes to the
         // sender's nick directly.
         let mut tc = TestContext::channel("#test", "alice", "!secret");
-        bot.secret(tc.take_ctx()).await.unwrap();
+        bot.secret(tc.take_ctx()).unwrap();
         assert_eq!(
             tc.next_reply(),
             Some("PRIVMSG alice :This is just between us.\r\n".to_string()),

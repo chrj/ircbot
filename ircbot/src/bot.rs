@@ -97,10 +97,12 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                 tokens -= 1.0;
             }
 
-            if writer.write_all(msg.as_bytes()).await.is_err() {
+            if let Err(e) = writer.write_all(msg.as_bytes()).await {
+                eprintln!("[ircbot] write error: {e}");
                 break;
             }
-            if writer.flush().await.is_err() {
+            if let Err(e) = writer.flush().await {
+                eprintln!("[ircbot] flush error: {e}");
                 break;
             }
         }
@@ -111,11 +113,8 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     // from the cron expression), fires the handler, then repeats.  Tasks are
     // aborted when this connection is torn down and re-spawned on reconnect.
     let bot_nick = nick.clone();
-    let cron_snapshot: Arc<Vec<HandlerEntry<T>>> = {
-        let guard = handlers.read().unwrap_or_else(|e| e.into_inner());
-        Arc::clone(&*guard)
-    };
-    let mut cron_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let cron_snapshot: Arc<Vec<HandlerEntry<T>>> = snapshot_handlers(&handlers);
+    let mut cron_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::with_capacity(cron_snapshot.len());
     for idx in 0..cron_snapshot.len() {
         let (schedule_str, tz_str, cron_target) = match &cron_snapshot[idx].trigger {
             Trigger::Cron {
@@ -299,6 +298,18 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     loop_result
 }
 
+// ─── HandlerSet helpers ───────────────────────────────────────────────────────
+
+/// Snapshot the current handler list under a brief read-lock.
+///
+/// If the lock is poisoned (the writer panicked while holding it) the poison
+/// is recovered so the bot keeps running — the last successfully written
+/// handler list is still valid.
+fn snapshot_handlers<T>(handlers: &HandlerSet<T>) -> Arc<Vec<HandlerEntry<T>>> {
+    let guard = handlers.read().unwrap_or_else(|e| e.into_inner());
+    Arc::clone(&*guard)
+}
+
 // ─── trigger matching ────────────────────────────────────────────────────────
 
 /// Returns `Some(captures)` if `msg` matches `trigger`, `None` otherwise.
@@ -311,7 +322,7 @@ pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option
             };
             // Optional target filter
             if let Some(t) = target {
-                if msg_target.as_str() != t.as_str() {
+                if msg_target != t {
                     return None;
                 }
             }
@@ -334,7 +345,7 @@ pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option
                 return None;
             };
             if let Some(t) = target {
-                if msg_target.as_str() != t.as_str() {
+                if msg_target != t {
                     return None;
                 }
             }
@@ -376,7 +387,7 @@ pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option
                 return None;
             };
             if let Some(t) = target {
-                if msg_target.as_str() != t.as_str() {
+                if msg_target != t {
                     return None;
                 }
             }
@@ -569,10 +580,7 @@ async fn dispatch<T: Send + Sync + 'static>(
 ) {
     // Snapshot the current handler list under a brief read-lock, then release
     // immediately — no lock is held across any `.await` point.
-    let current: Arc<Vec<HandlerEntry<T>>> = {
-        let guard = handlers.read().unwrap_or_else(|e| e.into_inner());
-        Arc::clone(&*guard)
-    };
+    let current: Arc<Vec<HandlerEntry<T>>> = snapshot_handlers(handlers);
 
     let sender = match msg.prefix.as_ref() {
         Some(Prefix::Nickname(nick, user, host)) if !user.is_empty() => Some(User {

@@ -15,10 +15,12 @@ pub struct User {
 }
 
 /// Per-message context passed to every handler.
+#[derive(Debug)]
 pub struct Context {
     pub(crate) tx: UnboundedSender<String>,
     /// The channel or nick this message was directed to.
     pub target: String,
+    /// `true` when the message was directed at a channel, `false` for a private query.
     pub is_channel: bool,
     /// The user who sent the message (if available).
     pub sender: Option<User>,
@@ -100,6 +102,20 @@ fn send_chunked(
 }
 
 impl Context {
+    /// Resolve the target for outgoing `PRIVMSG`/`NOTICE` messages.
+    ///
+    /// In a channel context this is the channel name; in a query context it is
+    /// the sender's nick (falling back to `self.target` when no sender is set).
+    fn effective_target(&self) -> &str {
+        if self.is_channel {
+            &self.target
+        } else {
+            self.sender
+                .as_ref()
+                .map_or(self.target.as_str(), |u| u.nick.as_str())
+        }
+    }
+
     /// Reply to the sender.  In a channel, prefixes the nick; in a query, PMs back.
     ///
     /// If the formatted message would exceed the IRC 512-byte line limit it is
@@ -138,14 +154,7 @@ impl Context {
     /// Returns an error if the write channel is closed.
     pub fn say(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
-        let target = if self.is_channel {
-            self.target.clone()
-        } else {
-            self.sender
-                .as_ref()
-                .map_or_else(|| self.target.clone(), |u| u.nick.clone())
-        };
-        let header = format!("PRIVMSG {target} :");
+        let header = format!("PRIVMSG {} :", self.effective_target());
         send_chunked(&self.tx, &header, &msg, "")
     }
 
@@ -159,15 +168,8 @@ impl Context {
     /// Returns an error if the write channel is closed.
     pub fn action(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
-        let target = if self.is_channel {
-            self.target.clone()
-        } else {
-            self.sender
-                .as_ref()
-                .map_or_else(|| self.target.clone(), |u| u.nick.clone())
-        };
         // CTCP ACTION: header is "PRIVMSG target :\x01ACTION ", suffix is "\x01"
-        let header = format!("PRIVMSG {target} :\x01ACTION ");
+        let header = format!("PRIVMSG {} :\x01ACTION ", self.effective_target());
         send_chunked(&self.tx, &header, &msg, "\x01")
     }
 
@@ -200,17 +202,13 @@ impl Context {
     ///
     /// If the formatted message would exceed the IRC 512-byte line limit it is
     /// automatically split across multiple messages.
-    pub async fn notice(&self, msg: impl std::fmt::Display) -> crate::Result {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write channel is closed.
+    pub fn notice(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
-        let target = if self.is_channel {
-            self.target.clone()
-        } else {
-            self.sender
-                .as_ref()
-                .map(|u| u.nick.clone())
-                .unwrap_or_else(|| self.target.clone())
-        };
-        let header = format!("NOTICE {target} :");
+        let header = format!("NOTICE {} :", self.effective_target());
         send_chunked(&self.tx, &header, &msg, "")
     }
 
@@ -222,7 +220,11 @@ impl Context {
     ///
     /// If the formatted message would exceed the IRC 512-byte line limit it is
     /// automatically split across multiple messages.
-    pub async fn whisper(&self, msg: impl std::fmt::Display) -> crate::Result {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write channel is closed.
+    pub fn whisper(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
         let to = self
             .sender
@@ -344,26 +346,26 @@ mod tests {
 
     // ── notice ───────────────────────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn notice_in_channel_sends_notice_command() {
+    #[test]
+    fn notice_in_channel_sends_notice_command() {
         let (ctx, mut rx) = make_ctx("#chan", true);
-        ctx.notice("status").await.unwrap();
+        ctx.notice("status").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "NOTICE #chan :status\r\n");
     }
 
-    #[tokio::test]
-    async fn notice_in_query_sends_to_sender_nick() {
+    #[test]
+    fn notice_in_query_sends_to_sender_nick() {
         let (ctx, mut rx) = make_ctx("bot", false);
-        ctx.notice("status").await.unwrap();
+        ctx.notice("status").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "NOTICE nick :status\r\n");
     }
 
     // ── whisper ──────────────────────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn whisper_sends_pm_to_sender() {
+    #[test]
+    fn whisper_sends_pm_to_sender() {
         let (ctx, mut rx) = make_ctx("#chan", true);
-        ctx.whisper("secret").await.unwrap();
+        ctx.whisper("secret").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "PRIVMSG nick :secret\r\n");
     }
 }

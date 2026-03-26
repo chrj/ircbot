@@ -406,7 +406,7 @@ fn build_wrapper(method_name: &Ident, extra_args: &[(String, String)]) -> TokenS
         match ty.as_str() {
             "User" => {
                 extractions.push(quote! {
-                    let #ident = ctx.sender.clone().unwrap_or_default();
+                    let #ident = ctx.sender.as_ref().cloned().unwrap_or_default();
                 });
             }
             "String" => {
