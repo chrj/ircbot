@@ -2,131 +2,60 @@
 
 [![ircbot on crates.io](https://img.shields.io/crates/v/ircbot.svg)](https://crates.io/crates/ircbot)
 [![ircbot-macros on crates.io](https://img.shields.io/crates/v/ircbot-macros.svg)](https://crates.io/crates/ircbot-macros)
+[![docs.rs](https://docs.rs/ircbot/badge.svg)](https://docs.rs/ircbot)
 
 An async IRC bot framework for Rust powered by [Tokio](https://tokio.rs/) and procedural macros.
-
-Write clean, declarative bots without boilerplate:
 
 ```rust,ignore
 use ircbot::{bot, Context, User, Result};
 
 #[bot]
 impl MyBot {
-    /// Respond to `!ping` from anywhere.
     #[command("ping")]
     async fn ping(&self, ctx: Context) -> Result {
         ctx.reply("Pong!")
     }
 
-    /// Respond to any message that looks like "you are …".
     #[on(message = "you are *")]
     async fn praise_me(&self, ctx: Context) -> Result {
         ctx.say("Correct.")
     }
 
-    /// Welcome users who join a channel.
     #[on(event = "JOIN")]
     async fn welcome(&self, ctx: Context, user: User) -> Result {
-        ctx.say(format!("Welcome to the void, {}!", user.nick))
+        ctx.say(format!("Welcome, {}!", user.nick))
     }
 
-    /// Log every message posted to #general.
-    #[on(event = "PRIVMSG", target = "#general")]
-    async fn general_chat(&self, ctx: Context, message: String) -> Result {
-        println!("Message in #general: {}", message);
-        Ok(())
-    }
-
-    /// Echo messages matching the regex back to the channel.
-    #[on(event = "PRIVMSG", target = "#general", regex = r"^!echo (.+)$")]
-    async fn echo(&self, ctx: Context, message: String) -> Result {
-        ctx.say(message)
-    }
-
-    /// Respond to `!dance` with a /me action, but only in #general.
-    #[on(command = "dance", target = "#general")]
-    async fn dance(&self, ctx: Context) -> Result {
-        ctx.action("Dancing!")
-    }
-
-    /// Respond when the bot is addressed by name in any channel.
-    #[on(mention)]
-    async fn on_mention(&self, ctx: Context, text: String) -> Result {
-        ctx.reply(format!("You said: {}", text))
-    }
-
-    /// Post a morning reminder to #general every weekday at 9 a.m. UTC.
     #[on(cron = "0 0 9 * * MON-FRI", target = "#general")]
-    async fn morning_reminder(&self, ctx: Context) -> Result {
-        ctx.say("Good morning, everyone!")
-    }
-
-    /// Send a private message directly to the caller, regardless of channel.
-    #[command("secret")]
-    async fn secret(&self, ctx: Context) -> Result {
-        ctx.whisper("This is just between us.").await
+    async fn morning(&self, ctx: Context) -> Result {
+        ctx.say("Good morning!")
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let bot = MyBot::new("mybot", "localhost:6667", ["general"])
+    MyBot::new("mybot", "localhost:6667", ["general"])
+        .await?
+        .main_loop()
         .await
-        .expect("Failed to create bot");
-
-    bot.main_loop().await.expect("Bot encountered an error");
-    Ok(())
 }
 ```
 
----
+## Highlights
 
-## Features
+- **Proc-macro API** — annotate methods with `#[command]` or `#[on]`; `#[bot]` wires everything up.
+- **Flexible triggers** — commands (`!ping`), glob patterns (`"you are *"`), raw IRC events, mention detection, cron schedules — all with optional target-channel and regex filters.
+- **Reply helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, `ctx.whisper()`.
+- **Keepalive & auto-reconnect** — periodic `PING`/`PONG` monitoring; reconnects and re-joins on drop.
+- **Hot reload** (Unix) — `SIGHUP` execs the new binary with the live TCP socket inherited; no reconnect, no missed messages.
+- **Flood protection** — token-bucket rate limiter (default: burst 4, 1 msg / 500 ms).
+- **Auto message splitting** — long messages are word-wrapped and split within the 512-byte IRC limit.
+- **Output sanitization** — `\r`, `\n`, `\0` stripped from every outgoing message.
+- **Unit-testable** — `ircbot::testing::TestContext` lets you test handlers without a live server.
 
-- **Proc-macro API** — annotate handler methods with `#[command]` or `#[on]` and let the `#[bot]` macro wire everything up.
-- **Flexible triggers** — commands (`!ping`), glob message patterns (`"you are *"`), raw IRC events (`JOIN`, `PRIVMSG`, …), bot-mention detection (`"botname: …"`), and **cron-scheduled handlers** (`#[on(cron = "0 0 8-16 * * MON-FRI")]`), all with optional target-channel and regex filters.
-- **Context helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, and `ctx.whisper()` cover the most common reply patterns.
-- **Async / non-blocking** — built on Tokio; every handler is an `async fn`.
-- **Active keepalive** — the bot sends a periodic `PING` to the server (default every 30 s) and reconnects automatically if no `PONG` arrives within the timeout (default 10 s).  Interval and timeout are configurable via `State::with_keepalive()`.
-- **Automatic reconnection** — on TCP drop or keepalive timeout the bot re-dials and re-joins all configured channels, preserving all handler registrations.
-- **Hot reload** — replace the running bot binary without dropping the IRC connection.  On Unix, sending `SIGHUP` execs the new binary with the live TCP socket inherited; no reconnect, no missed messages. See [Hot reload](#hot-reload).
-- **Concurrent write loop** — outgoing messages are serialised through an in-process channel so handlers can send replies without blocking each other.
-- **Flood protection** — a token-bucket rate limiter in the write loop ensures the bot cannot send messages faster than the server allows (default: burst of 4, then 1 message per 500 ms).  Configurable via `State::with_flood_control()`.
-- **Automatic message splitting** — any outgoing message that would exceed the IRC 512-byte line limit is automatically split across multiple lines, with word-boundary awareness and UTF-8 safety.
-- **Output sanitization** — `\r`, `\n`, and `\0` are stripped from every outgoing message, preventing IRC injection attacks.
-
----
-
-## Workspace layout
-
-```text
-ircbot/               ← library crate (public API)
-  src/
-    lib.rs              ← re-exports, type aliases, and internal::run_bot reconnection loop
-    irc.rs              ← RFC 1459 IRC line parser
-    connection.rs       ← TCP connect + NICK/USER/JOIN, State, with_keepalive
-    context.rs          ← Context, User
-    handler.rs          ← Trigger, HandlerEntry type aliases
-    bot.rs              ← run_bot_internal, trigger matching, glob, keepalive ping
-  tests/
-    irc_parsing.rs      ← unit tests (IRC parsing)
-    trigger_matching.rs ← unit tests (trigger dispatch)
-    keepalive.rs        ← unit tests (keepalive timeout, automatic reconnection)
-    cron.rs             ← unit tests (cron/periodic handlers)
-    flood_control.rs    ← unit + integration tests (message splitting, rate limiting)
-  examples/
-    basic_bot.rs        ← minimal demo
-
-ircbot-macros/        ← proc-macro crate
-  src/
-    lib.rs              ← #[bot], #[command], #[on]
-```
-
----
+Full API reference: **[docs.rs/ircbot](https://docs.rs/ircbot)**
 
 ## Getting started
-
-Add `ircbot` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -134,439 +63,7 @@ ircbot = "0.1"
 tokio  = { version = "1", features = ["full"] }
 ```
 
-### Macros
-
-#### `#[bot]`
-
-Placed on an `impl` block.  The macro generates:
-
-- A `struct` definition for the named type with internal connection state.
-- `YourBot::new(nick, server, channels)` — connects to the server, identifies, and joins the given channels.  On Unix, if this process was started via `SIGHUP` hot-reload, the live TCP socket is inherited from the previous binary instead.
-- `YourBot::main_loop(self)` — runs the event loop, reconnecting automatically on TCP drops or keepalive timeouts.  On Unix, also listens for `SIGHUP` and performs a zero-disconnect binary exec-reload.
-
-```rust,ignore
-// Generated signatures (simplified):
-impl YourBot {
-    pub async fn new(
-        nick: impl Into<String>,
-        server: impl AsRef<str>,
-        channels: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>>;
-
-    pub async fn main_loop(self)
-        -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-}
-```
-
-Channel names in `channels` are automatically prefixed with `#` if they do not already start with a channel sigil (`#`, `&`, `+`, `!`).
-
-#### `#[command("name")]`
-
-Fires when a user sends `!name` (case-insensitive) in any channel or as a private message.  Accepts an optional `target = "#channel"` filter.  The text that follows `!name` on the same line is available as the first `String` parameter.
-
-```rust,ignore
-#[command("ping")]
-async fn ping(&self, ctx: Context) -> Result {
-    ctx.reply("Pong!")
-}
-
-// The rest of the line after `!echo` is captured as `text`.
-#[command("echo")]
-async fn echo(&self, ctx: Context, text: String) -> Result {
-    ctx.say(text)
-}
-```
-
-See [`ircbot::command`](https://docs.rs/ircbot/latest/ircbot/macro.command.html) for full reference.
-
-#### `#[on(…)]`
-
-The general-purpose trigger attribute.  Exactly one of `command`, `message`, `event`, `mention`, or `cron` must be present.  `target`, `regex`, and `tz` are optional modifiers.
-
-| Key | Description |
-|-----|-------------|
-| `command = "name"` | Same as `#[command("name")]` |
-| `message = "pattern"` | Glob pattern on PRIVMSG text; `*` is a capturing wildcard |
-| `event = "IRC_CMD"` | Any IRC command (e.g. `"JOIN"`, `"PRIVMSG"`, `"PART"`) |
-| `mention` | Fires when a PRIVMSG addresses the bot by name (`"botname: …"` or `"botname, …"`) |
-| `cron = "expr"` | Fires on a Quartz cron schedule, validated at compile time |
-| `tz = "Timezone"` | IANA timezone for the cron schedule (default: `"UTC"`) |
-| `target = "#channel"` | Optional channel filter (any trigger type) |
-| `regex = "…"` | Optional regex on the message text; capture groups become `String` args |
-
-Trigger precedence: `message` › `command` › `event` › `mention` › `cron`.
-
-See [`ircbot::on`](https://docs.rs/ircbot/latest/ircbot/macro.on.html) for full reference including per-trigger examples and cron quick-reference.
-
----
-
-## Keepalive & reconnection
-
-The bot actively monitors its connection by sending a `PING ircbot-keepalive` to the server at a regular interval. If no matching `PONG` is received within the timeout window, the connection is treated as dead and a new TCP connection is established.
-
-**Defaults:**
-
-| Setting | Value |
-|---------|-------|
-| Keepalive interval | 30 s |
-| PONG response timeout | 10 s |
-| Reconnect delay | 5 s |
-
-`main_loop()` never returns normally — it reconnects automatically whenever the connection is lost (TCP close or keepalive timeout), re-sends `NICK`/`USER`, and re-joins all configured channels.
-
-**Custom intervals** — configure keepalive before starting the bot by calling `State::with_keepalive()`.  When using the `#[bot]` macro, `new()` manages the `State` internally, so custom keepalive settings require the lower-level API:
-
-```rust,ignore
-use std::sync::Arc;
-use std::time::Duration;
-use ircbot::{State, HandlerEntry, internal};
-
-let state = State::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
-    .await?
-    .with_keepalive(Duration::from_secs(60), Duration::from_secs(15));
-
-let handlers: Vec<HandlerEntry<()>> = vec![/* your HandlerEntry values */];
-internal::run_bot(Arc::new(()), state, handlers).await?;
-```
-
----
-
-## Hot reload
-
-Hot reload lets you replace the running bot **binary** without ever dropping the IRC connection — no reconnect, no missed messages, no re-authentication.
-
-### How it works
-
-On Unix, a TCP socket is just a file descriptor.  When a process calls `exec()` the new process image inherits every file descriptor that does **not** have `FD_CLOEXEC` set.  The hot-reload path exploits this:
-
-1. **`SIGHUP` received** — `main_loop()` catches the signal.
-2. **FD prepared** — `FD_CLOEXEC` is cleared on the live TCP socket so it survives `exec`.
-3. **State encoded** — the fd number, nick, server, channels, and keepalive settings are written into environment variables.
-4. **`exec` called** — the current process image is replaced with the new binary at the same path.  The PID is unchanged; the TCP connection is never closed.
-5. **New binary starts** — `new()` detects the env vars, calls `State::try_inherit_from_env()`, and wraps the inherited fd in a Tokio `TcpStream`.  No `NICK`/`USER`/`JOIN` is sent; the IRC session continues seamlessly.
-
-### Using SIGHUP (zero configuration)
-
-When using the `#[bot]` macro, `main_loop()` installs the SIGHUP handler automatically.  The full workflow is:
-
-```sh
-# 1. Build the updated binary.
-cargo build --release
-
-# 2. Send SIGHUP to the running bot.
-kill -HUP $(pidof my_bot)
-
-# 3. The old process execs the new binary.
-#    The IRC connection is never interrupted.
-```
-
-### Lower-level API
-
-For programmatic control call `hot_reload::exec_reload` directly — for example from an IRC admin command:
-
-```rust,ignore
-use ircbot::hot_reload::exec_reload;
-
-// Inside a handler:
-#[command("reload")]
-async fn do_reload(&self, ctx: Context) -> Result {
-    ctx.say("Reloading…")?;
-    // exec_reload only returns if exec itself failed.
-    let err = exec_reload(
-        ctx.raw_fd,          // inherited TCP socket fd
-        &ctx.bot_nick,
-        "irc.libera.chat:6667",
-        &["#rust".to_string()],
-        30_000,              // keepalive interval ms
-        10_000,              // keepalive timeout ms
-    );
-    ctx.say(format!("Reload failed: {err}"))
-}
-```
-
----
-
-## Flood protection
-
-The bot's write loop enforces a **token-bucket rate limiter** to prevent it from
-overwhelming the IRC server with outgoing messages.
-
-**How it works:**
-
-1. The bucket starts full with `burst` tokens.
-2. Each outgoing message consumes one token.
-3. While at least one token is available the message is sent immediately.
-4. Once the bucket is empty the write loop waits until enough time has elapsed
-   for a new token to be added (one token per `rate` interval) before sending
-   the next message.
-
-**Defaults:**
-
-| Setting | Value |
-|---------|-------|
-| Burst (initial token supply) | 4 messages |
-| Rate (token refill interval) | 500 ms |
-| Steady-state throughput | ≈ 2 messages / second |
-
-**Custom flood-control settings** — call `State::with_flood_control()` before
-starting the bot.  When using the `#[bot]` macro, use the lower-level API:
-
-```rust,ignore
-use std::sync::Arc;
-use std::time::Duration;
-use ircbot::{State, HandlerEntry, internal};
-
-let state = State::connect("mybot", "irc.libera.chat:6667", vec!["#rust".into()])
-    .await?
-    .with_flood_control(8, Duration::from_millis(250)); // burst of 8, ≈ 4 msg/s
-
-let handlers: Vec<HandlerEntry<()>> = vec![/* your HandlerEntry values */];
-internal::run_bot(Arc::new(()), state, handlers).await?;
-```
-
----
-
-## Automatic message splitting
-
-IRC limits each protocol line to **512 bytes** (including the trailing `\r\n`).
-Every `Context` reply method (`reply`, `say`, `action`, `notice`, `whisper`)
-automatically splits text that would exceed this limit into multiple messages.
-The splitter:
-
-- Prefers to break at an **ASCII space** (word-wrapping), falling back to a
-  hard byte-limit split when no space is available.
-- Always splits on a valid **UTF-8 character boundary** so multi-byte characters
-  are never corrupted.
-- Accounts for the fixed overhead of the IRC command prefix (e.g.
-  `PRIVMSG #channel :`) and any CTCP suffix when computing the available space.
-
-Splitting happens transparently — your handler code does not need to do
-anything special.
-
----
-
-## Handler signatures
-
-Handlers always start with `&self` and `ctx: Context`.  Additional parameters
-are extracted automatically from the matched message:
-
-```rust,ignore
-// No extra args — most handlers look like this.
-async fn handler(&self, ctx: Context) -> Result
-
-// User — populated from the IRC prefix (JOIN, PART, etc.)
-async fn handler(&self, ctx: Context, user: User) -> Result
-
-// String — message body, or the first regex/glob capture group.
-async fn handler(&self, ctx: Context, message: String) -> Result
-```
-
-### Multiple capture groups
-
-When a `regex` (or a `message` glob with multiple `*`) produces more than one
-capture, each extra `String` parameter receives the next capture in order:
-
-```rust,ignore
-// regex with two capture groups → two String parameters
-#[on(event = "PRIVMSG", regex = r"^!kick (\S+) (.*)$")]
-async fn kick(&self, ctx: Context, target_nick: String, reason: String) -> Result {
-    ctx.say(format!("Kicking {} ({})", target_nick, reason))
-}
-```
-
-If `captures` is empty the first `String` parameter falls back to the full
-message text (`ctx.message_text()`).
-
----
-
-## Unit testing handlers
-
-Handler methods can be tested directly without a live IRC connection using
-`ircbot::testing::TestContext`.
-
-### How it works
-
-1. Create a bot instance with `MyBot::default()` — no connection is made.
-2. Build a fake [`Context`] with `TestContext::channel`, `TestContext::private`,
-   or `TestContext::builder()` for full control.
-3. Extract the context with `tc.take_ctx()` and pass it to the handler.
-4. Assert on the captured outgoing messages with `tc.next_reply()` or
-   `tc.replies()`.
-
-### Quick example
-
-```rust,ignore
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ircbot::testing::TestContext;
-
-    #[tokio::test]
-    async fn ping_replies_pong_in_channel() {
-        let bot = MyBot::default();
-        let mut tc = TestContext::channel("#test", "alice", "!ping");
-        bot.ping(tc.take_ctx()).await.unwrap();
-        assert_eq!(
-            tc.next_reply(),
-            Some("PRIVMSG #test :alice, pong!\r\n".to_string()),
-        );
-    }
-
-    #[tokio::test]
-    async fn ping_replies_pong_in_query() {
-        let bot = MyBot::default();
-        let mut tc = TestContext::private("alice", "!ping");
-        bot.ping(tc.take_ctx()).await.unwrap();
-        assert_eq!(
-            tc.next_reply(),
-            Some("PRIVMSG alice :pong!\r\n".to_string()),
-        );
-    }
-}
-```
-
-### Testing handlers with extra parameters
-
-When a handler takes a `String` capture, pass it directly — the framework's
-extraction code is bypassed in a direct call:
-
-```rust,ignore
-#[tokio::test]
-async fn echo_says_text() {
-    let bot = MyBot::default();
-    let mut tc = TestContext::channel("#test", "alice", "!echo hello world");
-    bot.echo(tc.take_ctx(), "hello world".to_string()).await.unwrap();
-    assert_eq!(
-        tc.next_reply(),
-        Some("PRIVMSG #test :hello world\r\n".to_string()),
-    );
-}
-```
-
-If you want to exercise the full trigger-matching and argument-extraction
-pipeline (including glob/regex captures), use the integration test helpers
-in `tests/` instead.
-
-### Checking multiple replies
-
-`tc.replies()` drains all buffered replies at once:
-
-```rust,ignore
-#[tokio::test]
-async fn handler_sends_two_messages() {
-    let bot = MyBot::default();
-    let mut tc = TestContext::channel("#test", "alice", "!status");
-    bot.status(tc.take_ctx()).await.unwrap();
-    let msgs = tc.replies();
-    assert_eq!(msgs.len(), 2);
-    assert!(msgs[0].contains("online"));
-    assert!(msgs[1].contains("uptime"));
-}
-```
-
-### Advanced: custom context via the builder
-
-Use `TestContext::builder()` for scenarios that `channel`/`private` don't
-cover, such as simulating an event with a specific bot nick or pre-set
-captures:
-
-```rust,ignore
-let mut tc = TestContext::builder()
-    .target("#rust")
-    .is_channel(true)
-    .sender_nick("newuser")
-    .bot_nick("mybot")
-    .captures(vec!["hello".to_string()])
-    .build();
-```
-
-### Best practices
-
-- **One test per behaviour** — keep each test focused on a single observable
-  outcome (e.g. "reply text", "no reply", "two messages").
-- **Test channel *and* query** — `reply()` prefixes the nick in channels but
-  not in queries; verify both when it matters.
-- **Pass capture args directly** — rather than putting capture text in the
-  message body and relying on the framework, pass `String` args directly to
-  the method.  This makes tests faster, clearer, and independent of trigger
-  matching.
-- **Use `tc.replies()` for multi-message handlers** — if a handler may emit
-  more than one message (e.g. long text that gets split), collect with
-  `tc.replies()` and assert on the slice.
-
----
-
-## Context
-
-`Context` is passed to every handler and provides both metadata about the
-incoming message and helper methods for sending replies.
-
-### Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `ctx.target` | `String` | Channel or nick the message was directed to |
-| `ctx.is_channel` | `bool` | `true` when `target` is a channel, `false` for private messages |
-| `ctx.sender` | `Option<User>` | The user who sent the message |
-| `ctx.bot_nick` | `String` | The bot's own IRC nick (useful for self-detection) |
-| `ctx.captures` | `Vec<String>` | Regex or glob capture groups from the matched trigger |
-| `ctx.raw` | `irc_proto::Message` | The underlying parsed IRC message (from the [`irc-proto`](https://docs.rs/irc-proto) crate) |
-
-### Methods
-
-| Method | Behaviour |
-|--------|-----------|
-| `ctx.reply(msg)` | In a channel: `nick, msg`. In a query: `msg` to the sender. Synchronous. |
-| `ctx.say(msg)` | Send `msg` to the current channel or query target, without a nick prefix. Synchronous. |
-| `ctx.action(msg)` | Send a CTCP ACTION (`/me msg`) to the current target. Synchronous. |
-| `ctx.notice(msg)` | Send a `NOTICE` to the current target. NOTICEs must never be replied to automatically (by convention), making them suitable for status messages and one-shot notifications. **Async** — use `.await`. |
-| `ctx.whisper(msg)` | Send a private message directly to the sender's nick, regardless of whether the original message arrived in a channel or a query. **Async** — use `.await`. |
-| `ctx.message_text()` | The raw trailing text of the underlying IRC message. |
-
-## User
-
-`User` represents the nick!user@host prefix on an IRC message.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `user.nick` | `String` | IRC nickname |
-| `user.user` | `String` | IRC username (ident) |
-| `user.host` | `String` | Hostname or IP |
-
----
-
-## Running the example
-
-```sh
-cargo run --example basic_bot
-```
-
-The example prints the API usage and exits cleanly; point it at a real server
-by editing the `main` function.
-
----
-
-## Running the tests
-
-```sh
-cargo test
-```
-
-Unit tests covering IRC parsing, all trigger types, keepalive timeouts, automatic reconnection, message splitting, and rate-limiting.
-
-To also run the handler tests embedded in the example bot:
-
-```sh
-cargo test --example basic_bot
-```
-
-Integration tests (require Docker):
-
-```sh
-cargo test --features integration -- --test-threads=1
-```
-
----
+See the [`basic_bot` example](ircbot/examples/basic_bot.rs) and the [docs](https://docs.rs/ircbot) for the complete API, hot-reload guide, testing helpers, and lower-level `State` / `internal` APIs.
 
 ## License
 
