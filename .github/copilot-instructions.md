@@ -22,7 +22,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 Any user-facing changes (new features, changed behaviour, updated defaults, new API surface) must be reflected in `README.md`.
 
-The README must be distributed to README.me, ircbot/README.md and ircbot-macros/README.md
+The README must be distributed to README.me, ircbot/README.md
 
 ## Documentation
 
