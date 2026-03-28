@@ -174,7 +174,7 @@ dependencies = [
  "log",
  "num",
  "pin-project-lite",
- "rand",
+ "rand 0.9.2",
  "rustls",
  "rustls-native-certs",
  "rustls-pki-types",
@@ -271,7 +271,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6139a8597ed92cf816dfb33f5dd6cf0bb93a6adc938f11039f371bc5bcd26c3"
 dependencies = [
  "chrono",
- "phf",
+ "phf 0.12.1",
 ]
 
 [[package]]
@@ -298,7 +298,19 @@ checksum = "5877d3fbf742507b66bc2a1945106bd30dd8504019d596901ddd012a4dd01740"
 dependencies = [
  "chrono",
  "once_cell",
- "winnow",
+ "winnow 0.6.26",
+]
+
+[[package]]
+name = "cron"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "089df96cf6a25253b4b6b6744d86f91150a3d4df546f31a95def47976b8cba97"
+dependencies = [
+ "chrono",
+ "once_cell",
+ "phf 0.11.3",
+ "winnow 0.7.15",
 ]
 
 [[package]]
@@ -412,7 +424,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb330bbd4cb7a5b9f559427f06f98a4f853a137c8298f3bd3f8ca57663e21986"
 dependencies = [
  "portable-atomic",
- "rand",
+ "rand 0.9.2",
  "web-time",
 ]
 
@@ -943,11 +955,11 @@ version = "0.1.5"
 dependencies = [
  "chrono",
  "chrono-tz",
- "cron",
+ "cron 0.16.0",
  "futures",
  "irc",
  "irc-proto",
- "ircbot-macros 0.1.5",
+ "ircbot-macros 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc",
  "regex",
  "testcontainers",
@@ -956,12 +968,10 @@ dependencies = [
 
 [[package]]
 name = "ircbot-macros"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f79a0c6326d1d90e28a668e8fe03a4dfe0e0a86c57808f026321e8fe565f14d"
+version = "0.1.5"
 dependencies = [
  "chrono-tz",
- "cron",
+ "cron 0.16.0",
  "proc-macro2",
  "quote",
  "syn",
@@ -974,7 +984,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34214aec96a2665276c462f10519af8dac5064e623067e39a8ed20b3bfddf597"
 dependencies = [
  "chrono-tz",
- "cron",
+ "cron 0.15.0",
  "proc-macro2",
  "quote",
  "syn",
@@ -1226,11 +1236,53 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phf"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
+dependencies = [
+ "phf_macros",
+ "phf_shared 0.11.3",
+]
+
+[[package]]
+name = "phf"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
 dependencies = [
- "phf_shared",
+ "phf_shared 0.12.1",
+]
+
+[[package]]
+name = "phf_generator"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
+dependencies = [
+ "phf_shared 0.11.3",
+ "rand 0.8.5",
+]
+
+[[package]]
+name = "phf_macros"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f84ac04429c13a7ff43785d75ad27569f2951ce0ffd30a3321230db2fc727216"
+dependencies = [
+ "phf_generator",
+ "phf_shared 0.11.3",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
+dependencies = [
+ "siphasher",
 ]
 
 [[package]]
@@ -1368,12 +1420,21 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
 name = "rand"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
+dependencies = [
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand"
 version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6db2770f06117d490610c7488547d543617b21bfa07796d7a12f6f1bd53850d1"
 dependencies = [
  "rand_chacha",
- "rand_core",
+ "rand_core 0.9.5",
 ]
 
 [[package]]
@@ -1383,8 +1444,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
 dependencies = [
  "ppv-lite86",
- "rand_core",
+ "rand_core 0.9.5",
 ]
+
+[[package]]
+name = "rand_core"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 
 [[package]]
 name = "rand_core"
@@ -2419,6 +2486,15 @@ name = "winnow"
 version = "0.6.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e90edd2ac1aa278a5c4599b1d89cf03074b610800f866d4026dc199d7929a28"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "winnow"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 dependencies = [
  "memchr",
 ]
