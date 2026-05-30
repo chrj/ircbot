@@ -1,6 +1,6 @@
 [package]
 name = "ircbot"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "An async IRC bot framework for Rust powered by Tokio and procedural macros"
 license = "MIT"
