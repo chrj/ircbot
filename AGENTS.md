@@ -15,9 +15,8 @@ This is a Cargo workspace (`resolver = "2"`) with two published crates:
   plus the validation crates (`cron`, `chrono-tz`) it needs at macro-expansion
   time.
 
-The two crate versions are kept **in lockstep** (both `0.1.5` today). When
-bumping one, bump the other and update the `ircbot-macros` dependency line in
-`ircbot/Cargo.toml`.
+The two crate versions are kept **in lockstep** (both `0.1.6` today). You do not
+bump versions by hand — see [Releasing](#releasing).
 
 ## Before you finish: CI must pass
 
@@ -40,6 +39,22 @@ CI also enforces:
 **Clippy is run with `-D warnings`.** Treat every clippy lint as a hard error,
 including pedantic ones already in use here (`#[must_use]`, `clippy::too_many_lines`).
 Never silence a lint with a blanket `#[allow]` without a clear, local reason.
+
+## Releasing
+
+Releases are automated with [release-plz](https://release-plz.dev) (see
+`release-plz.toml` and `.github/workflows/tag.yml`). **Do not bump versions, edit
+changelogs, or push tags by hand.**
+
+- Every push to `main` runs release-plz, which opens (or updates) a **release PR**
+  that bumps both crate versions in lockstep, updates the `CHANGELOG.md` files, and
+  rewrites the `ircbot-macros` dependency requirement in `ircbot/Cargo.toml`.
+- Merging that release PR publishes both crates to crates.io in dependency order
+  (`ircbot-macros`, then `ircbot`) and creates the `v{version}` git tag and GitHub
+  release for `ircbot`. `ircbot-macros` is published silently (no tag/release).
+- Lockstep is enforced by a shared `version_group` in `release-plz.toml`.
+
+This requires the `CARGO_REGISTRY_TOKEN` and `RELEASE_PLZ_TOKEN` repository secrets.
 
 ## Documentation discipline
 

@@ -1,0 +1,21 @@
+# release-plz drives versioning, changelogs, crates.io publishing, git tags, and
+# GitHub releases for this workspace. See AGENTS.md ("Releasing") for the flow.
+#
+# Both crates are kept in lockstep via a shared `version_group`, and `ircbot` is
+# the headline crate: it owns the git tag and GitHub release. `ircbot-macros` is
+# published to crates.io but gets no tag/release of its own. release-plz publishes
+# the crates in dependency order (ircbot-macros first) and rewrites the
+# `ircbot-macros` dependency requirement inside `ircbot/Cargo.toml` automatically.
+
+[[package]]
+name = "ircbot"
+# Keep the existing tag style (current published tags are vX.Y.Z).
+git_tag_name = "v{{ version }}"
+version_group = "ircbot"
+
+[[package]]
+name = "ircbot-macros"
+# Published to crates.io, but no tag/release of its own.
+git_tag_enable = false
+git_release_enable = false
+version_group = "ircbot"
