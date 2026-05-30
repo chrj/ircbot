@@ -366,4 +366,113 @@ mod tests {
         ctx.whisper("secret").await.unwrap();
         assert_eq!(rx.try_recv().unwrap(), "PRIVMSG nick :secret\r\n");
     }
+
+    // ── sender-less contexts ───────────────────────────────────────────────────
+
+    /// Build a `Context` with no known sender (e.g. a server-origin message or
+    /// a cron-fired context).
+    fn make_ctx_no_sender(
+        target: &str,
+        is_channel: bool,
+    ) -> (Context, mpsc::UnboundedReceiver<String>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let raw = ":server PRIVMSG #chan :hello"
+            .parse::<irc_proto::Message>()
+            .unwrap();
+        let ctx = Context {
+            tx,
+            target: target.to_string(),
+            is_channel,
+            sender: None,
+            raw,
+            bot_nick: "bot".to_string(),
+            captures: vec![],
+        };
+        (ctx, rx)
+    }
+
+    #[test]
+    fn reply_in_channel_without_sender_omits_prefix() {
+        let (ctx, mut rx) = make_ctx_no_sender("#chan", true);
+        ctx.reply("pong").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "PRIVMSG #chan :pong\r\n");
+    }
+
+    #[test]
+    fn reply_in_query_without_sender_uses_target() {
+        let (ctx, mut rx) = make_ctx_no_sender("someone", false);
+        ctx.reply("pong").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "PRIVMSG someone :pong\r\n");
+    }
+
+    #[test]
+    fn say_in_query_without_sender_uses_target() {
+        let (ctx, mut rx) = make_ctx_no_sender("someone", false);
+        ctx.say("hi").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "PRIVMSG someone :hi\r\n");
+    }
+
+    #[test]
+    fn action_in_query_without_sender_uses_target() {
+        let (ctx, mut rx) = make_ctx_no_sender("someone", false);
+        ctx.action("waves").unwrap();
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            "PRIVMSG someone :\x01ACTION waves\x01\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn notice_in_query_without_sender_uses_target() {
+        let (ctx, mut rx) = make_ctx_no_sender("someone", false);
+        ctx.notice("status").await.unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "NOTICE someone :status\r\n");
+    }
+
+    #[tokio::test]
+    async fn whisper_without_sender_uses_target() {
+        let (ctx, mut rx) = make_ctx_no_sender("someone", false);
+        ctx.whisper("secret").await.unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "PRIVMSG someone :secret\r\n");
+    }
+
+    #[test]
+    fn action_in_query_with_sender_targets_sender_nick() {
+        let (ctx, mut rx) = make_ctx("bot", false);
+        ctx.action("waves").unwrap();
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            "PRIVMSG nick :\x01ACTION waves\x01\r\n"
+        );
+    }
+
+    // ── automatic splitting through the public API ─────────────────────────────
+
+    #[test]
+    fn say_splits_long_message_across_multiple_lines() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        // Well over the 510-byte line limit → must be split.
+        let text = "a".repeat(1_200);
+        ctx.say(&text).unwrap();
+
+        let mut lines = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            lines.push(line);
+        }
+        assert!(lines.len() >= 2, "expected the message to be split");
+        for line in &lines {
+            assert!(line.len() <= 512, "line exceeds 512 bytes: {}", line.len());
+            assert!(line.ends_with("\r\n"));
+        }
+        // Reassembling the bodies reproduces the original text.
+        let recovered: String = lines
+            .iter()
+            .map(|l| {
+                l.strip_prefix("PRIVMSG #chan :")
+                    .unwrap()
+                    .trim_end_matches("\r\n")
+            })
+            .collect();
+        assert_eq!(recovered, text);
+    }
 }
