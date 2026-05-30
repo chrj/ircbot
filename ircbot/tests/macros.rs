@@ -198,7 +198,10 @@ async fn string_arg_filled_from_captures_when_present() {
         .target("#test")
         .captures(vec!["world".to_string()])
         .build();
-    assert_eq!(invoke(entry, tc).await, Some("PRIVMSG #test :hi world\r\n".to_string()));
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :hi world\r\n".to_string())
+    );
 }
 
 #[tokio::test]
@@ -208,7 +211,10 @@ async fn string_arg_falls_back_to_message_text_when_no_captures() {
         .target("#test")
         .text("raw body")
         .build();
-    assert_eq!(invoke(entry, tc).await, Some("PRIVMSG #test :hi raw body\r\n".to_string()));
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :hi raw body\r\n".to_string())
+    );
 }
 
 #[tokio::test]
@@ -218,7 +224,10 @@ async fn two_string_args_pull_successive_captures() {
         .target("#test")
         .captures(vec!["foo".to_string(), "bar".to_string()])
         .build();
-    assert_eq!(invoke(entry, tc).await, Some("PRIVMSG #test :foo-bar\r\n".to_string()));
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :foo-bar\r\n".to_string())
+    );
 }
 
 #[tokio::test]
@@ -228,5 +237,8 @@ async fn user_arg_filled_from_sender() {
         .target("#test")
         .sender_nick("zaphod")
         .build();
-    assert_eq!(invoke(entry, tc).await, Some("PRIVMSG #test :zaphod\r\n".to_string()));
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :zaphod\r\n".to_string())
+    );
 }

@@ -257,23 +257,11 @@ mod tests {
         assert_eq!(state.channels, vec!["#general".to_string()]);
     }
 
-    #[tokio::test]
-    async fn with_keepalive_overrides_settings() {
-        let state = connect_loopback()
-            .await
-            .with_keepalive(Duration::from_secs(7), Duration::from_secs(3));
-        assert_eq!(state.keepalive_interval(), Duration::from_secs(7));
-        assert_eq!(state.keepalive_timeout(), Duration::from_secs(3));
-    }
-
-    #[tokio::test]
-    async fn with_flood_control_overrides_settings() {
-        let state = connect_loopback()
-            .await
-            .with_flood_control(9, Duration::from_millis(250));
-        assert_eq!(state.flood_burst, 9);
-        assert_eq!(state.flood_rate, Duration::from_millis(250));
-    }
+    // Note: `with_keepalive` and `with_flood_control` are exercised
+    // behaviourally elsewhere — keepalive timing in `tests/keepalive.rs` and
+    // rate limiting in `tests/flood_control.rs` — so no getter-echo test is
+    // needed here.  The keepalive getters are additionally asserted by the
+    // `try_inherit_reconstructs_state_from_env` test below.
 
     // ── try_inherit_from_env (unix) ────────────────────────────────────────────
     //

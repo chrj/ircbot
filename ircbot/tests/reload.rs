@@ -102,9 +102,11 @@ fn say_handler(pattern: &str, text: &'static str) -> HandlerEntry<()> {
             pattern: pattern.to_string(),
             target: None,
         },
-        handler: Box::new(move |_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
-            Box::pin(async move { ctx.say(text) })
-        }) as HandlerFn<()>,
+        handler: Box::new(
+            move |_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
+                Box::pin(async move { ctx.say(text) })
+            },
+        ) as HandlerFn<()>,
     }
 }
 

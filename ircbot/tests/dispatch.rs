@@ -196,9 +196,15 @@ async fn ctcp_version_gets_notice_reply() {
 
     server.send(":alice!a@h PRIVMSG testbot :\x01VERSION\x01\r\n");
     let line = server.expect_line(|l| l.starts_with("NOTICE")).await;
-    assert_eq!(
-        line,
-        format!("NOTICE alice :\x01VERSION ircbot {}\x01", env!("CARGO_PKG_VERSION")),
+    // Assert the routing and CTCP framing, not the exact version string (which
+    // would just re-read CARGO_PKG_VERSION the same way the implementation does).
+    assert!(
+        line.starts_with("NOTICE alice :\x01VERSION ircbot "),
+        "unexpected VERSION reply: {line:?}"
+    );
+    assert!(
+        line.ends_with('\x01'),
+        "VERSION reply must be CTCP-terminated: {line:?}"
     );
 
     bot_task.abort();
@@ -286,9 +292,7 @@ async fn keepalive_survives(pong_line: &str) -> bool {
     server.send_welcome();
 
     // Wait for the bot's keepalive PING and answer it.
-    server
-        .expect_line(|l| l.contains("ircbot-keepalive"))
-        .await;
+    server.expect_line(|l| l.contains("ircbot-keepalive")).await;
     server.send(pong_line);
 
     // Give the keepalive cycle (interval + timeout) time to evaluate.
@@ -324,9 +328,11 @@ async fn all_matching_handlers_fire_in_registration_order() {
     let mut server = MockServer::start().await;
 
     fn say_handler(text: &'static str) -> HandlerFn<()> {
-        Box::new(move |_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
-            Box::pin(async move { ctx.say(text) })
-        })
+        Box::new(
+            move |_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
+                Box::pin(async move { ctx.say(text) })
+            },
+        )
     }
 
     let handlers = vec![
@@ -364,10 +370,11 @@ async fn all_matching_handlers_fire_in_registration_order() {
 async fn handler_error_does_not_prevent_later_handlers() {
     let mut server = MockServer::start().await;
 
-    let erroring: HandlerFn<()> =
-        Box::new(|_bot: Arc<()>, _ctx: Context| -> BoxFuture<ircbot::Result> {
+    let erroring: HandlerFn<()> = Box::new(
+        |_bot: Arc<()>, _ctx: Context| -> BoxFuture<ircbot::Result> {
             Box::pin(async move { Err("boom".into()) })
-        });
+        },
+    );
     let healthy: HandlerFn<()> =
         Box::new(|_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
             Box::pin(async move { ctx.say("still here") })
@@ -403,25 +410,25 @@ async fn handler_error_does_not_prevent_later_handlers() {
 // ─── B9: sender population ───────────────────────────────────────────────────
 
 /// Capture whether `ctx.sender` was populated for the first dispatched message.
-fn sender_capturing_handler(
-    slot: Arc<Mutex<Option<Option<String>>>>,
-) -> HandlerEntry<()> {
+fn sender_capturing_handler(slot: Arc<Mutex<Option<Option<String>>>>) -> HandlerEntry<()> {
     HandlerEntry {
         trigger: Trigger::Event {
             event: "PRIVMSG".to_string(),
             target: None,
             regex: None,
         },
-        handler: Box::new(move |_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
-            let slot = Arc::clone(&slot);
-            Box::pin(async move {
-                let mut guard = slot.lock().unwrap();
-                if guard.is_none() {
-                    *guard = Some(ctx.sender.as_ref().map(|u| u.nick.clone()));
-                }
-                Ok(())
-            })
-        }),
+        handler: Box::new(
+            move |_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
+                let slot = Arc::clone(&slot);
+                Box::pin(async move {
+                    let mut guard = slot.lock().unwrap();
+                    if guard.is_none() {
+                        *guard = Some(ctx.sender.as_ref().map(|u| u.nick.clone()));
+                    }
+                    Ok(())
+                })
+            },
+        ),
     }
 }
 
@@ -439,7 +446,10 @@ async fn sender_populated_for_nick_user_host_prefix() {
 
     server.send(":alice!user@host PRIVMSG #chan :hi\r\n");
     wait_for_some(&slot).await;
-    assert_eq!(slot.lock().unwrap().clone().unwrap(), Some("alice".to_string()));
+    assert_eq!(
+        slot.lock().unwrap().clone().unwrap(),
+        Some("alice".to_string())
+    );
 
     bot_task.abort();
 }

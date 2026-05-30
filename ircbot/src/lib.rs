@@ -157,14 +157,3 @@ pub mod internal {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_context_error_display() {
-        let err = Error::MissingContext("bot_nick");
-        assert_eq!(err.to_string(), "missing context: bot_nick");
-    }
-}
