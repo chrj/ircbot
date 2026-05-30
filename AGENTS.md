@@ -49,12 +49,16 @@ changelogs, or push tags by hand.**
 - Every push to `main` runs release-plz, which opens (or updates) a **release PR**
   that bumps both crate versions in lockstep, updates the `CHANGELOG.md` files, and
   rewrites the `ircbot-macros` dependency requirement in `ircbot/Cargo.toml`.
-- Merging that release PR publishes both crates to crates.io in dependency order
+- Merge the release PR with a **squash merge** (the `main` ruleset requires linear
+  history). That publishes both crates to crates.io in dependency order
   (`ircbot-macros`, then `ircbot`) and creates the `v{version}` git tag and GitHub
   release for `ircbot`. `ircbot-macros` is published silently (no tag/release).
 - Lockstep is enforced by a shared `version_group` in `release-plz.toml`.
 
-This requires the `CARGO_REGISTRY_TOKEN` and `RELEASE_PLZ_TOKEN` repository secrets.
+The `v*` tags are protected by the `Versions` ruleset, so the workflow
+authenticates as a GitHub App (the ruleset's bypass actor) to create them. This
+requires the `APP_ID`, `APP_PRIVATE_KEY`, and `CARGO_REGISTRY_TOKEN` repository
+secrets.
 
 ## Documentation discipline
 
