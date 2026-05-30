@@ -25,6 +25,7 @@ chrono-tz = "0.10"
 [dev-dependencies]
 testcontainers = "0.27"
 irc = { version = "1", default-features = false }
+trybuild = "1.0"
 
 [[example]]
 name = "basic_bot"

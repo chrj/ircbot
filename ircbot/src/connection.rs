@@ -213,3 +213,179 @@ impl State {
         self.keepalive_timeout
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+
+    // ── normalise_channel ──────────────────────────────────────────────────────
+
+    #[test]
+    fn normalise_channel_prefixes_bare_name() {
+        assert_eq!(State::normalise_channel("general".to_string()), "#general");
+    }
+
+    #[test]
+    fn normalise_channel_keeps_existing_prefixes() {
+        for ch in ["#rust", "&local", "+modeless", "!network"] {
+            assert_eq!(State::normalise_channel(ch.to_string()), ch);
+        }
+    }
+
+    // ── builders / getters ─────────────────────────────────────────────────────
+
+    /// Connect to an in-process loopback listener so a real `State` can be built
+    /// without an external IRC server.
+    async fn connect_loopback() -> State {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        // Accept (and hold) the connection so the NICK/USER handshake write
+        // succeeds.
+        tokio::spawn(async move {
+            let _sock = listener.accept().await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        State::connect("tester".to_string(), &addr, vec!["general".to_string()])
+            .await
+            .expect("loopback connect failed")
+    }
+
+    #[tokio::test]
+    async fn connect_normalises_channels() {
+        let state = connect_loopback().await;
+        assert_eq!(state.channels, vec!["#general".to_string()]);
+    }
+
+    // Note: `with_keepalive` and `with_flood_control` are exercised
+    // behaviourally elsewhere — keepalive timing in `tests/keepalive.rs` and
+    // rate limiting in `tests/flood_control.rs` — so no getter-echo test is
+    // needed here.  The keepalive getters are additionally asserted by the
+    // `try_inherit_reconstructs_state_from_env` test below.
+
+    // ── try_inherit_from_env (unix) ────────────────────────────────────────────
+    //
+    // These tests mutate process-global environment variables, so they are
+    // serialised behind a shared mutex to avoid racing each other.
+
+    #[cfg(unix)]
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(unix)]
+    fn clear_inherit_env() {
+        use crate::hot_reload::{
+            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_SERVER,
+        };
+        for var in [
+            ENV_FD,
+            ENV_NICK,
+            ENV_SERVER,
+            ENV_CHANNELS,
+            ENV_KA_INTERVAL,
+            ENV_KA_TIMEOUT,
+        ] {
+            std::env::remove_var(var);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn try_inherit_returns_none_on_normal_startup() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_inherit_env();
+        let result = State::try_inherit_from_env().expect("should not error");
+        assert!(result.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn try_inherit_errors_on_malformed_fd() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_inherit_env();
+        std::env::set_var(crate::hot_reload::ENV_FD, "notanint");
+        let result = State::try_inherit_from_env();
+        clear_inherit_env();
+        assert!(result.is_err(), "malformed fd should yield an error");
+    }
+
+    /// Full happy path: a live loopback fd plus all metadata env vars is
+    /// reconstructed into a `State` with the channels parsed and keepalive
+    /// settings restored — the same path taken after `exec_reload`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn try_inherit_reconstructs_state_from_env() {
+        use std::os::unix::io::IntoRawFd;
+
+        use crate::hot_reload::{
+            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_SERVER,
+        };
+
+        // A real connected loopback socket whose fd we can inherit.  All async
+        // setup happens *before* the env lock so the guard never spans an
+        // `.await` (`try_inherit_from_env` itself is synchronous).
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _sock = listener.accept().await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let std_stream = std::net::TcpStream::connect(&addr).expect("connect failed");
+        let raw_fd = std_stream.into_raw_fd();
+
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_inherit_env();
+        std::env::set_var(ENV_FD, raw_fd.to_string());
+        std::env::set_var(ENV_NICK, "inheritbot");
+        std::env::set_var(ENV_SERVER, &addr);
+        std::env::set_var(ENV_CHANNELS, "#a,#b");
+        std::env::set_var(ENV_KA_INTERVAL, "12000");
+        std::env::set_var(ENV_KA_TIMEOUT, "4000");
+
+        let state = State::try_inherit_from_env()
+            .expect("inherit should succeed")
+            .expect("env vars present → Some(State)");
+
+        assert_eq!(state.nick, "inheritbot");
+        assert_eq!(state.server, addr);
+        assert_eq!(state.channels, vec!["#a".to_string(), "#b".to_string()]);
+        assert_eq!(state.keepalive_interval(), Duration::from_millis(12000));
+        assert_eq!(state.keepalive_timeout(), Duration::from_millis(4000));
+
+        // try_inherit_from_env clears the env vars once consumed.
+        assert!(std::env::var(ENV_FD).is_err());
+    }
+
+    /// An empty `IRCBOT_CHANNELS` must yield an empty channel list (not `[""]`).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn try_inherit_parses_empty_channels() {
+        use std::os::unix::io::IntoRawFd;
+
+        use crate::hot_reload::{
+            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_SERVER,
+        };
+
+        // Async setup before the env lock (see sibling test for rationale).
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _sock = listener.accept().await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let raw_fd = std::net::TcpStream::connect(&addr)
+            .expect("connect failed")
+            .into_raw_fd();
+
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_inherit_env();
+        std::env::set_var(ENV_FD, raw_fd.to_string());
+        std::env::set_var(ENV_NICK, "inheritbot");
+        std::env::set_var(ENV_SERVER, &addr);
+        std::env::set_var(ENV_CHANNELS, "");
+        std::env::set_var(ENV_KA_INTERVAL, "30000");
+        std::env::set_var(ENV_KA_TIMEOUT, "10000");
+
+        let state = State::try_inherit_from_env().unwrap().unwrap();
+        assert!(state.channels.is_empty());
+    }
+}

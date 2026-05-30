@@ -351,3 +351,76 @@ fn event_trigger_invalid_regex_returns_none() {
     let msg = privmsg("#chan", "hello");
     assert!(check_trigger(&trigger, &msg, "bot").is_none());
 }
+
+// ─── check_trigger: Event over other command kinds ────────────────────────────
+//
+// These exercise the `command_name`, `trailing_param` and `target_param`
+// helpers for command variants beyond PRIVMSG/JOIN.
+
+#[test]
+fn event_notice_regex_matches_trailing_param() {
+    let trigger = Trigger::Event {
+        event: "NOTICE".to_string(),
+        target: None,
+        regex: Some(r"(\w+) back".to_string()),
+    };
+    let msg: Message = ":nick!u@h NOTICE #chan :ping back".parse().unwrap();
+    let caps = check_trigger(&trigger, &msg, "bot").unwrap();
+    assert_eq!(caps, vec!["ping"]);
+}
+
+#[test]
+fn event_topic_target_filter_and_trailing_regex() {
+    let trigger = Trigger::Event {
+        event: "TOPIC".to_string(),
+        target: Some("#chan".to_string()),
+        regex: Some(r"new (.+)".to_string()),
+    };
+    let msg: Message = ":nick!u@h TOPIC #chan :new topic here".parse().unwrap();
+    let caps = check_trigger(&trigger, &msg, "bot").unwrap();
+    assert_eq!(caps, vec!["topic here"]);
+
+    // Wrong channel is filtered out via target_param.
+    let other: Message = ":nick!u@h TOPIC #other :new topic here".parse().unwrap();
+    assert!(check_trigger(&trigger, &other, "bot").is_none());
+}
+
+#[test]
+fn event_kick_target_filter_and_reason_regex() {
+    let trigger = Trigger::Event {
+        event: "KICK".to_string(),
+        target: Some("#chan".to_string()),
+        regex: Some(r"(spam)".to_string()),
+    };
+    let msg: Message = ":op!u@h KICK #chan baduser :spam".parse().unwrap();
+    let caps = check_trigger(&trigger, &msg, "bot").unwrap();
+    assert_eq!(caps, vec!["spam"]);
+}
+
+#[test]
+fn event_invite_target_filter_uses_channel_param() {
+    let trigger = Trigger::Event {
+        event: "INVITE".to_string(),
+        target: Some("#secret".to_string()),
+        regex: None,
+    };
+    let msg: Message = ":nick!u@h INVITE testbot #secret".parse().unwrap();
+    assert!(check_trigger(&trigger, &msg, "bot").is_some());
+
+    let wrong: Message = ":nick!u@h INVITE testbot #public".parse().unwrap();
+    assert!(check_trigger(&trigger, &wrong, "bot").is_none());
+}
+
+#[test]
+fn event_raw_command_matches_name_target_and_trailing() {
+    // An unknown command parses to `Command::Raw`, exercising the `Raw` arms of
+    // command_name / target_param / trailing_param.
+    let trigger = Trigger::Event {
+        event: "FOOBAR".to_string(),
+        target: Some("#chan".to_string()),
+        regex: Some(r"hello (\w+)".to_string()),
+    };
+    let msg: Message = ":serv FOOBAR #chan :hello world".parse().unwrap();
+    let caps = check_trigger(&trigger, &msg, "bot").unwrap();
+    assert_eq!(caps, vec!["world"]);
+}

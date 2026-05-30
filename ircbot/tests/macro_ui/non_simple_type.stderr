@@ -1,0 +1,7 @@
+error: custom attribute panicked
+ --> tests/macro_ui/non_simple_type.rs:4:1
+  |
+4 | #[bot]
+  | ^^^^^^
+  |
+  = help: message: #[bot] expects a simple struct name
