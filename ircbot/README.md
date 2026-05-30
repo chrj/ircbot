@@ -68,3 +68,8 @@ See the [`basic_bot` example](ircbot/examples/basic_bot.rs) and the [docs](https
 ## License
 
 MIT
+
+## AI Disclaimer
+
+This project was written primarily by AI, orchestrated, supervised and reviewed by a human (me).
+Feel free to use any AI tool for contributions to this project.
