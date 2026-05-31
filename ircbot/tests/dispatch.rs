@@ -272,6 +272,61 @@ async fn joins_all_channels_on_welcome_once() {
     bot_task.abort();
 }
 
+// ─── A5b: nick-in-use negotiation (433 / 437) ────────────────────────────────
+
+#[tokio::test]
+async fn nick_in_use_retries_with_underscore_suffixes() {
+    let mut server = MockServer::start().await;
+    let bot_task = spawn_bot(&server.addr, Arc::new(()), no_handlers()).await;
+
+    // The bot sends its initial `NICK testbot` on connect; the server rejects
+    // it as already in use. The bot should retry with an underscore suffix.
+    server.send(":server 433 * testbot :Nickname is already in use\r\n");
+    let first = server.expect_line(|l| l == "NICK testbot_").await;
+    assert_eq!(first, "NICK testbot_");
+
+    // Reject the fallback too → a second underscore (the base nick, not the
+    // last candidate, drives the suffix count).
+    server.send(":server 433 * testbot_ :Nickname is already in use\r\n");
+    let second = server.expect_line(|l| l == "NICK testbot__").await;
+    assert_eq!(second, "NICK testbot__");
+
+    bot_task.abort();
+}
+
+#[tokio::test]
+async fn unavailresource_437_also_triggers_nick_retry() {
+    let mut server = MockServer::start().await;
+    let bot_task = spawn_bot(&server.addr, Arc::new(()), no_handlers()).await;
+
+    // 437 (ERR_UNAVAILRESOURCE) during registration is treated like 433.
+    server.send(":server 437 * testbot :Nick/channel is temporarily unavailable\r\n");
+    let line = server.expect_line(|l| l == "NICK testbot_").await;
+    assert_eq!(line, "NICK testbot_");
+
+    bot_task.abort();
+}
+
+#[tokio::test]
+async fn nick_in_use_after_welcome_does_not_renegotiate() {
+    let mut server = MockServer::start().await;
+    let bot_task = spawn_bot(&server.addr, Arc::new(()), no_handlers()).await;
+
+    server.send_welcome();
+    // A 433 arriving after registration completes (e.g. a later voluntary NICK
+    // change) must NOT trigger the registration-time fallback. The initial
+    // `NICK testbot` has no underscore suffix, so matching `NICK testbot_`
+    // isolates any (incorrect) fallback attempt.
+    server.send(":server 433 * testbot :Nickname is already in use\r\n");
+    server
+        .expect_no_line(Duration::from_millis(400), |l| {
+            l.starts_with("NICK testbot_")
+        })
+        .await;
+
+    bot_task.abort();
+}
+
 // ─── A6: keepalive PONG token positions ──────────────────────────────────────
 
 /// Drive one keepalive cycle: wait for the bot's keepalive PING, reply with
