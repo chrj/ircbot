@@ -289,6 +289,47 @@ impl Context {
             .map_err(|e| Box::new(e) as crate::BoxError)?;
         Ok(())
     }
+
+    /// Set the topic of the current channel ([`Context::target`]).
+    ///
+    /// Sends a `TOPIC` command for the channel this message arrived in,
+    /// mirroring how [`Context::say`] and [`Context::reply`] act on the
+    /// current target.  The topic text is sanitized to strip the `\r`, `\n`,
+    /// and `\0` injection characters.  It is sent as a single line; topics
+    /// longer than the 512-byte protocol limit may be truncated by the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write channel is closed.
+    pub fn set_topic(&self, topic: impl std::fmt::Display) -> crate::Result {
+        let topic = sanitize(&topic.to_string());
+        self.tx
+            .send(format!("TOPIC {} :{topic}\r\n", self.target))
+            .map_err(|e| Box::new(e) as crate::BoxError)?;
+        Ok(())
+    }
+
+    /// Kick `nick` from the current channel ([`Context::target`]) with `reason`.
+    ///
+    /// Sends a `KICK` command for the channel this message arrived in.  Both
+    /// `nick` and `reason` are sanitized to strip the `\r`, `\n`, and `\0`
+    /// injection characters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write channel is closed.
+    pub fn kick(
+        &self,
+        nick: impl std::fmt::Display,
+        reason: impl std::fmt::Display,
+    ) -> crate::Result {
+        let nick = sanitize(&nick.to_string());
+        let reason = sanitize(&reason.to_string());
+        self.tx
+            .send(format!("KICK {} {nick} :{reason}\r\n", self.target))
+            .map_err(|e| Box::new(e) as crate::BoxError)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -570,5 +611,35 @@ mod tests {
         let (ctx, mut rx) = make_ctx("#chan", true);
         ctx.raw("MODE #chan +o nick\r\nQUIT").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "MODE #chan +o nickQUIT\r\n");
+    }
+
+    // ── set_topic / kick ───────────────────────────────────────────────────────
+
+    #[test]
+    fn set_topic_sends_topic_for_current_channel() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.set_topic("welcome all").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "TOPIC #chan :welcome all\r\n");
+    }
+
+    #[test]
+    fn set_topic_strips_injection_characters() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.set_topic("hi\r\nQUIT").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "TOPIC #chan :hiQUIT\r\n");
+    }
+
+    #[test]
+    fn kick_sends_kick_for_current_channel() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.kick("baduser", "spamming").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "KICK #chan baduser :spamming\r\n");
+    }
+
+    #[test]
+    fn kick_strips_injection_characters_from_nick_and_reason() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.kick("bad\r\nuser", "be\r\nnice").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "KICK #chan baduser :benice\r\n");
     }
 }
