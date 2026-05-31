@@ -6,3 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.1.8](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.1.7...ircbot-macros-v0.1.8) - 2026-05-31
+
+### Added
+
+- *(context)* add raw escape hatch ([#71](https://github.com/chrj/ircbot/pull/71))
+- *(context)* add join and part helpers ([#70](https://github.com/chrj/ircbot/pull/70))
