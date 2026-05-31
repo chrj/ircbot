@@ -232,6 +232,40 @@ impl Context {
         let header = format!("PRIVMSG {to} :");
         send_chunked(&self.tx, &header, &msg, "")
     }
+
+    /// Make the bot join `channel`.
+    ///
+    /// Sends a raw `JOIN` command.  The channel name is sanitized to strip the
+    /// `\r`, `\n`, and `\0` characters that could be used for command
+    /// injection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write channel is closed.
+    pub fn join(&self, channel: impl std::fmt::Display) -> crate::Result {
+        let channel = sanitize(&channel.to_string());
+        self.tx
+            .send(format!("JOIN {channel}\r\n"))
+            .map_err(|e| Box::new(e) as crate::BoxError)?;
+        Ok(())
+    }
+
+    /// Make the bot leave `channel`.
+    ///
+    /// Sends a raw `PART` command.  The channel name is sanitized to strip the
+    /// `\r`, `\n`, and `\0` characters that could be used for command
+    /// injection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write channel is closed.
+    pub fn part(&self, channel: impl std::fmt::Display) -> crate::Result {
+        let channel = sanitize(&channel.to_string());
+        self.tx
+            .send(format!("PART {channel}\r\n"))
+            .map_err(|e| Box::new(e) as crate::BoxError)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -474,5 +508,28 @@ mod tests {
             })
             .collect();
         assert_eq!(recovered, text);
+    }
+
+    // ── join / part ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn join_sends_join_command() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.join("#other").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "JOIN #other\r\n");
+    }
+
+    #[test]
+    fn part_sends_part_command() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.part("#other").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "PART #other\r\n");
+    }
+
+    #[test]
+    fn join_strips_injection_characters() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.join("#evil\r\nQUIT").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "JOIN #evilQUIT\r\n");
     }
 }
