@@ -123,6 +123,13 @@ pub mod internal {
         let flood_burst = state.flood_burst;
         let flood_rate = state.flood_rate;
 
+        // Record the flood-control settings so a SIGHUP hot-reload can carry
+        // them to the successor process (the `#[bot]` macro doesn't forward
+        // them to `exec_reload` itself). Keepalive timings are forwarded by the
+        // macro directly; these are not.
+        #[cfg(unix)]
+        crate::hot_reload::record_flood_settings(flood_burst, flood_rate.as_millis() as u64);
+
         let mut current_state = state;
 
         loop {

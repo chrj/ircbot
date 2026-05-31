@@ -123,7 +123,8 @@ impl State {
         use std::os::unix::io::{FromRawFd, RawFd};
 
         use crate::hot_reload::{
-            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_SERVER,
+            ENV_CHANNELS, ENV_FD, ENV_FLOOD_BURST, ENV_FLOOD_RATE, ENV_KA_INTERVAL, ENV_KA_TIMEOUT,
+            ENV_NICK, ENV_SERVER,
         };
 
         let fd_str = match std::env::var(ENV_FD) {
@@ -137,6 +138,17 @@ impl State {
         let channels_raw = std::env::var(ENV_CHANNELS)?;
         let ka_interval_ms: u64 = std::env::var(ENV_KA_INTERVAL)?.parse()?;
         let ka_timeout_ms: u64 = std::env::var(ENV_KA_TIMEOUT)?.parse()?;
+        // Flood-control settings are restored too, falling back to the defaults
+        // if absent or malformed — e.g. when the binary that called
+        // `exec_reload` predates flood-control serialisation.
+        let flood_burst = std::env::var(ENV_FLOOD_BURST)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_FLOOD_BURST);
+        let flood_rate = std::env::var(ENV_FLOOD_RATE)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map_or(DEFAULT_FLOOD_RATE, Duration::from_millis);
 
         // Clear the env vars so they are not accidentally inherited by any
         // child processes the bot might spawn.
@@ -147,6 +159,8 @@ impl State {
             ENV_CHANNELS,
             ENV_KA_INTERVAL,
             ENV_KA_TIMEOUT,
+            ENV_FLOOD_BURST,
+            ENV_FLOOD_RATE,
         ] {
             std::env::remove_var(var);
         }
@@ -172,8 +186,8 @@ impl State {
             server,
             keepalive_interval: Duration::from_millis(ka_interval_ms),
             keepalive_timeout: Duration::from_millis(ka_timeout_ms),
-            flood_burst: DEFAULT_FLOOD_BURST,
-            flood_rate: DEFAULT_FLOOD_RATE,
+            flood_burst,
+            flood_rate,
             reader,
             write_half,
             raw_fd,
@@ -211,6 +225,17 @@ impl State {
     /// Returns the configured keepalive timeout.
     pub fn keepalive_timeout(&self) -> Duration {
         self.keepalive_timeout
+    }
+
+    /// Returns the configured flood-control burst size.
+    pub fn flood_burst(&self) -> usize {
+        self.flood_burst
+    }
+
+    /// Returns the configured minimum interval between messages once the burst
+    /// budget is exhausted.
+    pub fn flood_rate(&self) -> Duration {
+        self.flood_rate
     }
 }
 
@@ -274,7 +299,8 @@ mod tests {
     #[cfg(unix)]
     fn clear_inherit_env() {
         use crate::hot_reload::{
-            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_SERVER,
+            ENV_CHANNELS, ENV_FD, ENV_FLOOD_BURST, ENV_FLOOD_RATE, ENV_KA_INTERVAL, ENV_KA_TIMEOUT,
+            ENV_NICK, ENV_SERVER,
         };
         for var in [
             ENV_FD,
@@ -283,6 +309,8 @@ mod tests {
             ENV_CHANNELS,
             ENV_KA_INTERVAL,
             ENV_KA_TIMEOUT,
+            ENV_FLOOD_BURST,
+            ENV_FLOOD_RATE,
         ] {
             std::env::remove_var(var);
         }
@@ -340,6 +368,8 @@ mod tests {
         std::env::set_var(ENV_CHANNELS, "#a,#b");
         std::env::set_var(ENV_KA_INTERVAL, "12000");
         std::env::set_var(ENV_KA_TIMEOUT, "4000");
+        std::env::set_var(crate::hot_reload::ENV_FLOOD_BURST, "9");
+        std::env::set_var(crate::hot_reload::ENV_FLOOD_RATE, "750");
 
         let state = State::try_inherit_from_env()
             .expect("inherit should succeed")
@@ -350,9 +380,50 @@ mod tests {
         assert_eq!(state.channels, vec!["#a".to_string(), "#b".to_string()]);
         assert_eq!(state.keepalive_interval(), Duration::from_millis(12000));
         assert_eq!(state.keepalive_timeout(), Duration::from_millis(4000));
+        // Flood-control settings survive the reload rather than resetting to default.
+        assert_eq!(state.flood_burst(), 9);
+        assert_eq!(state.flood_rate(), Duration::from_millis(750));
 
         // try_inherit_from_env clears the env vars once consumed.
         assert!(std::env::var(ENV_FD).is_err());
+        assert!(std::env::var(crate::hot_reload::ENV_FLOOD_BURST).is_err());
+        assert!(std::env::var(crate::hot_reload::ENV_FLOOD_RATE).is_err());
+    }
+
+    /// When the flood-control env vars are absent (e.g. the binary that called
+    /// `exec_reload` predates flood serialisation), the defaults are restored.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn try_inherit_defaults_flood_when_env_absent() {
+        use std::os::unix::io::IntoRawFd;
+
+        use crate::hot_reload::{
+            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_SERVER,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _sock = listener.accept().await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let raw_fd = std::net::TcpStream::connect(&addr)
+            .expect("connect failed")
+            .into_raw_fd();
+
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_inherit_env();
+        std::env::set_var(ENV_FD, raw_fd.to_string());
+        std::env::set_var(ENV_NICK, "inheritbot");
+        std::env::set_var(ENV_SERVER, &addr);
+        std::env::set_var(ENV_CHANNELS, "");
+        std::env::set_var(ENV_KA_INTERVAL, "30000");
+        std::env::set_var(ENV_KA_TIMEOUT, "10000");
+        // Deliberately do NOT set the flood env vars.
+
+        let state = State::try_inherit_from_env().unwrap().unwrap();
+        assert_eq!(state.flood_burst(), DEFAULT_FLOOD_BURST);
+        assert_eq!(state.flood_rate(), DEFAULT_FLOOD_RATE);
     }
 
     /// An empty `IRCBOT_CHANNELS` must yield an empty channel list (not `[""]`).
