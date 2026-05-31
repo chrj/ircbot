@@ -72,12 +72,23 @@ pub fn make_messages(header: &str, text: &str, suffix: &str) -> Vec<String> {
         while end > 0 && !remaining.is_char_boundary(end) {
             end -= 1;
         }
+        // If not even one character fits in `available` (the leading character
+        // is wider than the budget), advance to the end of the first character
+        // anyway. This overshoots the budget by a few bytes for that one line
+        // but guarantees forward progress on a valid char boundary — without it
+        // the `end.max(1)` fallback below would slice mid-character and panic.
+        if end == 0 {
+            end = remaining
+                .char_indices()
+                .nth(1)
+                .map_or(remaining.len(), |(i, _)| i);
+        }
 
         // Prefer breaking at a space; fall back to the hard limit.
         let split_at = remaining[..end]
             .rfind(' ')
             .filter(|&p| p > 0)
-            .unwrap_or(end.max(1));
+            .unwrap_or(end);
 
         messages.push(format!("{header}{}{suffix}\r\n", &remaining[..split_at]));
         remaining = remaining[split_at..].trim_start_matches(' ');
@@ -605,6 +616,22 @@ mod tests {
                     .unwrap()
                     .trim_end_matches("\r\n")
             })
+            .collect();
+        assert_eq!(recovered, text);
+    }
+
+    #[test]
+    fn make_messages_handles_leading_char_wider_than_budget() {
+        // A header long enough to leave only a 1-byte text budget, with leading
+        // multibyte characters that cannot fit. Must not panic, must split on
+        // valid UTF-8 boundaries, and must preserve the full text.
+        let header = format!("PRIVMSG {} :", "a".repeat(497)); // → available == 1
+        let text = "é한hello"; // 2-byte + 3-byte leading chars
+        let msgs = make_messages(&header, text, "");
+
+        let recovered: String = msgs
+            .iter()
+            .map(|l| l.strip_prefix(&header).unwrap().trim_end_matches("\r\n"))
             .collect();
         assert_eq!(recovered, text);
     }
