@@ -266,6 +266,29 @@ impl Context {
             .map_err(|e| Box::new(e) as crate::BoxError)?;
         Ok(())
     }
+
+    /// Send a raw IRC protocol line.
+    ///
+    /// This is a low-level escape hatch for commands the framework does not
+    /// wrap with a dedicated helper (`KICK`, `MODE`, `INVITE`, `WHOIS`, …).
+    /// `line` is sanitized to strip the `\r`, `\n`, and `\0` characters — so a
+    /// caller cannot smuggle additional lines — and a single trailing `\r\n` is
+    /// appended.
+    ///
+    /// The caller is responsible for the command's IRC syntax and for keeping
+    /// the line within the 512-byte protocol limit; unlike [`Context::say`],
+    /// `raw` does not split or wrap its argument.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write channel is closed.
+    pub fn raw(&self, line: impl std::fmt::Display) -> crate::Result {
+        let line = sanitize(&line.to_string());
+        self.tx
+            .send(format!("{line}\r\n"))
+            .map_err(|e| Box::new(e) as crate::BoxError)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -531,5 +554,21 @@ mod tests {
         let (ctx, mut rx) = make_ctx("#chan", true);
         ctx.join("#evil\r\nQUIT").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "JOIN #evilQUIT\r\n");
+    }
+
+    // ── raw ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn raw_sends_the_exact_line_with_crlf() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.raw("MODE #chan +o nick").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "MODE #chan +o nick\r\n");
+    }
+
+    #[test]
+    fn raw_strips_injection_characters() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        ctx.raw("MODE #chan +o nick\r\nQUIT").unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "MODE #chan +o nickQUIT\r\n");
     }
 }
