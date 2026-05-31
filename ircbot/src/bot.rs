@@ -22,6 +22,11 @@ const CMD_PREFIX: char = '!';
 /// The token sent in our client-initiated keepalive `PING`.
 const KEEPALIVE_TOKEN: &str = "ircbot-keepalive";
 
+/// How many alternate nicks to try when the requested nick is already in use
+/// before giving up on registration.  Each `ERR_NICKNAMEINUSE` (433) /
+/// `ERR_UNAVAILRESOURCE` (437) reply triggers one further attempt.
+const MAX_NICK_ATTEMPTS: u32 = 8;
+
 /// A shareable, atomically-swappable set of handler entries.
 ///
 /// The outer [`Arc`] allows the handle to be cloned cheaply.  The [`RwLock`]
@@ -110,7 +115,10 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     // trigger.  Each task sleeps until the next scheduled occurrence (computed
     // from the cron expression), fires the handler, then repeats.  Tasks are
     // aborted when this connection is torn down and re-spawned on reconnect.
-    let bot_nick = nick.clone();
+    // `nick` is the originally-requested nick and stays fixed as the base for
+    // generating fallbacks; `bot_nick` tracks the nick we are actually using and
+    // is updated if the server reports the requested one is taken.
+    let mut bot_nick = nick.clone();
     let cron_snapshot: Arc<Vec<HandlerEntry<T>>> = {
         let guard = handlers.read().unwrap_or_else(|e| e.into_inner());
         Arc::clone(&*guard)
@@ -221,6 +229,8 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     });
 
     let mut joined = false;
+    // Number of alternate-nick attempts made so far (after the initial NICK).
+    let mut nick_attempt = 0u32;
     let mut lines = reader.lines();
     let mut keepalive_fail_rx = keepalive_fail_rx;
 
@@ -258,6 +268,37 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                         if let Err(e) = write_tx.send(format!("JOIN {ch}\r\n")) {
                                             eprintln!("[ircbot] failed to send JOIN {ch}: {e}");
                                         }
+                                    }
+                                }
+                                dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
+                            }
+                            Command::Response(
+                                Response::ERR_NICKNAMEINUSE | Response::ERR_UNAVAILRESOURCE,
+                                _,
+                            ) => {
+                                // Only renegotiate before registration completes.
+                                // A 433/437 after we've joined refers to a later
+                                // NICK-change attempt and is left for handlers.
+                                if !joined {
+                                    nick_attempt += 1;
+                                    if nick_attempt <= MAX_NICK_ATTEMPTS {
+                                        let candidate = fallback_nick(&nick, nick_attempt);
+                                        eprintln!(
+                                            "[ircbot] nick {bot_nick:?} unavailable — retrying as {candidate:?}"
+                                        );
+                                        if let Err(e) =
+                                            write_tx.send(format!("NICK {candidate}\r\n"))
+                                        {
+                                            eprintln!(
+                                                "[ircbot] failed to send NICK {candidate}: {e}"
+                                            );
+                                        }
+                                        bot_nick = candidate;
+                                    } else {
+                                        eprintln!(
+                                            "[ircbot] giving up on registration after \
+                                             {MAX_NICK_ATTEMPTS} nick attempts"
+                                        );
                                     }
                                 }
                                 dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
@@ -396,6 +437,24 @@ pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option
             })?;
             Some(if rest.is_empty() { vec![] } else { vec![rest] })
         }
+    }
+}
+
+// ─── nick fallback ───────────────────────────────────────────────────────────
+
+/// Generate a fallback nick from `base` for the given 1-based `attempt`, used
+/// to recover from `ERR_NICKNAMEINUSE` / `ERR_UNAVAILRESOURCE` during
+/// registration.
+///
+/// The first three attempts append underscores (`base_`, `base__`, `base___`);
+/// later attempts append the attempt number (`base4`, `base5`, …) so the
+/// candidates stay bounded in length while remaining distinct.
+#[must_use]
+fn fallback_nick(base: &str, attempt: u32) -> String {
+    if attempt <= 3 {
+        format!("{base}{}", "_".repeat(attempt as usize))
+    } else {
+        format!("{base}{attempt}")
     }
 }
 
@@ -601,6 +660,37 @@ async fn dispatch<T: Send + Sync + 'static>(
             if let Err(e) = fut.await {
                 eprintln!("[ircbot] handler error: {e}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── fallback_nick ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn fallback_nick_appends_underscores_for_early_attempts() {
+        assert_eq!(fallback_nick("bot", 1), "bot_");
+        assert_eq!(fallback_nick("bot", 2), "bot__");
+        assert_eq!(fallback_nick("bot", 3), "bot___");
+    }
+
+    #[test]
+    fn fallback_nick_appends_number_for_later_attempts() {
+        assert_eq!(fallback_nick("bot", 4), "bot4");
+        assert_eq!(fallback_nick("bot", 8), "bot8");
+    }
+
+    #[test]
+    fn fallback_nick_candidates_are_distinct_across_all_attempts() {
+        let mut seen = std::collections::HashSet::new();
+        for attempt in 1..=MAX_NICK_ATTEMPTS {
+            assert!(
+                seen.insert(fallback_nick("bot", attempt)),
+                "duplicate fallback nick at attempt {attempt}"
+            );
         }
     }
 }
