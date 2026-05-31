@@ -192,6 +192,41 @@ impl Context {
         }
     }
 
+    /// The nick of the user who sent this message, if known.
+    ///
+    /// Returns `None` for server-origin or cron-fired contexts that have no
+    /// associated [`Context::sender`].
+    #[must_use]
+    pub fn nick(&self) -> Option<&str> {
+        self.sender.as_ref().map(|u| u.nick.as_str())
+    }
+
+    /// Whether this message originated from the bot itself.
+    ///
+    /// Compares the sender's nick against the bot's own nick
+    /// ([`Context::bot_nick`]).  The comparison is ASCII-case-insensitive,
+    /// which covers the common case; it does not implement the full RFC 1459
+    /// nick-casemapping (where `{}|^` fold to `[]\~`).  Useful for ignoring the
+    /// bot's own echoes so a handler doesn't reply to itself.
+    #[must_use]
+    pub fn is_from_self(&self) -> bool {
+        self.nick()
+            .is_some_and(|n| n.eq_ignore_ascii_case(&self.bot_nick))
+    }
+
+    /// Whether the message text mentions the bot's nick anywhere.
+    ///
+    /// Performs an ASCII-case-insensitive substring search of
+    /// [`Context::message_text`] for [`Context::bot_nick`].  Unlike the
+    /// `#[on(mention)]` trigger — which only fires when the bot is addressed at
+    /// the *start* of the line — this matches the nick in any position.
+    #[must_use]
+    pub fn mentions_me(&self) -> bool {
+        self.message_text()
+            .to_ascii_lowercase()
+            .contains(&self.bot_nick.to_ascii_lowercase())
+    }
+
     /// Send an IRC NOTICE to the channel / private target.
     ///
     /// NOTICEs are typically displayed without triggering audible alerts and
@@ -641,5 +676,62 @@ mod tests {
         let (ctx, mut rx) = make_ctx("#chan", true);
         ctx.kick("bad\r\nuser", "be\r\nnice").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "KICK #chan baduser :benice\r\n");
+    }
+
+    // ── nick / is_from_self / mentions_me ──────────────────────────────────────
+
+    #[test]
+    fn nick_returns_sender_nick() {
+        let (ctx, _rx) = make_ctx("#chan", true);
+        assert_eq!(ctx.nick(), Some("nick"));
+    }
+
+    #[test]
+    fn nick_returns_none_without_sender() {
+        let (ctx, _rx) = make_ctx_no_sender("#chan", true);
+        assert_eq!(ctx.nick(), None);
+    }
+
+    #[test]
+    fn is_from_self_true_when_sender_matches_bot_nick() {
+        let (mut ctx, _rx) = make_ctx("#chan", true);
+        ctx.bot_nick = "nick".to_string(); // sender nick is "nick"
+        assert!(ctx.is_from_self());
+    }
+
+    #[test]
+    fn is_from_self_is_ascii_case_insensitive() {
+        let (mut ctx, _rx) = make_ctx("#chan", true);
+        ctx.bot_nick = "NICK".to_string();
+        assert!(ctx.is_from_self());
+    }
+
+    #[test]
+    fn is_from_self_false_for_other_user() {
+        let (ctx, _rx) = make_ctx("#chan", true);
+        // sender nick is "nick", bot_nick is "bot"
+        assert!(!ctx.is_from_self());
+    }
+
+    #[test]
+    fn is_from_self_false_without_sender() {
+        let (ctx, _rx) = make_ctx_no_sender("#chan", true);
+        assert!(!ctx.is_from_self());
+    }
+
+    #[test]
+    fn mentions_me_true_when_text_contains_bot_nick() {
+        let (mut ctx, _rx) = make_ctx("#chan", true);
+        ctx.raw = ":nick!u@h PRIVMSG #chan :hey Bot, how are you"
+            .parse::<irc_proto::Message>()
+            .unwrap(); // bot_nick is "bot"
+        assert!(ctx.mentions_me());
+    }
+
+    #[test]
+    fn mentions_me_false_when_text_does_not_contain_bot_nick() {
+        let (ctx, _rx) = make_ctx("#chan", true);
+        // message_text is "hello", bot_nick is "bot"
+        assert!(!ctx.mentions_me());
     }
 }
