@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Proc-macro API** — annotate methods with `#[command]` or `#[on]`; `#[bot]` wires everything up.
 - **Flexible triggers** — commands (`!ping`), glob patterns (`"you are *"`), raw IRC events, mention detection, cron schedules — all with optional target-channel and regex filters.
 - **Reply helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, `ctx.whisper()`.
+- **Channel control** — `ctx.join()` and `ctx.part()` to make the bot enter or leave channels from a handler.
 - **Keepalive & auto-reconnect** — periodic `PING`/`PONG` monitoring; reconnects and re-joins on drop.
 - **Hot reload** (Unix) — `SIGHUP` execs the new binary with the live TCP socket inherited; no reconnect, no missed messages.
 - **Flood protection** — token-bucket rate limiter (default: burst 4, 1 msg / 500 ms).
