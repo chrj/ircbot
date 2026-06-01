@@ -28,6 +28,10 @@ pub struct State {
     pub(crate) flood_burst: usize,
     /// Minimum interval between messages once the burst budget is exhausted.
     pub(crate) flood_rate: Duration,
+    /// Custom CTCP `VERSION` reply. When `None`, the framework answers with
+    /// `ircbot <crate-version>`; when `Some`, it answers with this string
+    /// verbatim. Set via [`State::with_ctcp_version`].
+    pub(crate) ctcp_version: Option<String>,
     pub(crate) reader: tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
     /// The raw write half; `run_bot_internal` wraps this in a buffered writer and a
     /// dedicated write-loop task.
@@ -95,6 +99,7 @@ impl State {
             keepalive_timeout: DEFAULT_KEEPALIVE_TIMEOUT,
             flood_burst: DEFAULT_FLOOD_BURST,
             flood_rate: DEFAULT_FLOOD_RATE,
+            ctcp_version: None,
             reader,
             write_half,
             #[cfg(unix)]
@@ -188,6 +193,9 @@ impl State {
             keepalive_timeout: Duration::from_millis(ka_timeout_ms),
             flood_burst,
             flood_rate,
+            // Re-applied by the bot builder on the re-exec'd process, so it need
+            // not be carried through the hot-reload environment.
+            ctcp_version: None,
             reader,
             write_half,
             raw_fd,
@@ -214,6 +222,16 @@ impl State {
     pub fn with_flood_control(mut self, burst: usize, rate: Duration) -> Self {
         self.flood_burst = burst;
         self.flood_rate = rate;
+        self
+    }
+
+    /// Set a custom CTCP `VERSION` reply.
+    ///
+    /// By default the bot answers a CTCP `VERSION` request with
+    /// `ircbot <crate-version>`. Call this (before starting the bot) to reply
+    /// with your own identifier instead, e.g. `"mybot 1.2.3"`.
+    pub fn with_ctcp_version(mut self, version: impl Into<String>) -> Self {
+        self.ctcp_version = Some(version.into());
         self
     }
 
