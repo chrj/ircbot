@@ -12,6 +12,36 @@ use syn::{
 
 // ─── Custom parsers ──────────────────────────────────────────────────────────
 
+/// Parses the `#[bot(...)]` attribute arguments.
+///
+/// Currently the only recognised argument is `state = <Type>`; an empty
+/// attribute (`#[bot]`) yields `state: None`.
+struct BotArgs {
+    state: Option<Type>,
+}
+
+impl syn::parse::Parse for BotArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut state = None;
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+            let _: syn::Token![=] = input.parse()?;
+            if key == "state" {
+                state = Some(input.parse::<Type>()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("unknown #[bot] argument `{key}` (expected `state`)"),
+                ));
+            }
+            if input.peek(syn::Token![,]) {
+                let _: syn::Token![,] = input.parse()?;
+            }
+        }
+        Ok(BotArgs { state })
+    }
+}
+
 /// Parses `#[command("name")]` or `#[command("name", target = "...")]`
 struct CommandArgs {
     name: String,
@@ -45,13 +75,49 @@ impl syn::parse::Parse for CommandArgs {
 
 /// Derive-like attribute that turns an `impl` block into a runnable IRC bot.
 ///
+/// # Custom state
+///
+/// Pass `state = SomeType` to give the bot a public `state` field your handlers
+/// can read:
+///
+/// ```ignore
+/// #[derive(Default)]
+/// struct Counter { hits: std::sync::atomic::AtomicUsize }
+///
+/// #[bot(state = Counter)]
+/// impl MyBot {
+///     #[command("ping")]
+///     async fn ping(&self, ctx: ircbot::Context) -> ircbot::Result {
+///         let n = self.state.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+///         ctx.reply(format!("pong #{n}"))
+///     }
+/// }
+/// ```
+///
+/// The state type must implement [`Default`] (it is initialised with
+/// `Default::default()` by both `MyBot::default()` and `MyBot::new`) and must be
+/// `Send + Sync + 'static` (the bot is shared across tasks as an `Arc`; that
+/// bound is checked at `main_loop`). Because handlers receive `&self`, mutating
+/// state requires interior mutability — an `AtomicUsize`, a `Mutex<…>`, etc. To
+/// start from a non-default value, assign the public field after constructing:
+/// `let mut bot = MyBot::new(…).await?; bot.state = …;`.
+///
+/// Note: a `SIGHUP` hot-reload re-execs the binary, so in-memory `state` is
+/// reconstructed via `Default` and is **not** carried across the reload.
+///
+/// This is sugar over the lower-level API: a bot is any
+/// `Arc<T: Send + Sync + 'static>` passed to `ircbot::internal::run_bot` with a
+/// hand-built `Vec<ircbot::HandlerEntry<T>>`, which you can use directly when you
+/// want full control over the bot type.
+///
 /// # Panics
 ///
 /// Panics at compile time if the annotated `impl` block does not use a simple
 /// (non-generic, non-path) type name, e.g. `impl MyBot { … }`.
 #[allow(clippy::too_many_lines)]
 #[proc_macro_attribute]
-pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as BotArgs);
     let input = parse_macro_input!(item as ItemImpl);
 
     let self_ty = &input.self_ty;
@@ -275,14 +341,28 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
+    // Optional user state field. When `state = Type` is absent both fragments are
+    // empty, so the generated tokens are identical to the no-state case. The init
+    // fragment carries a leading comma because the `__state` field in the struct
+    // literals below has no trailing comma.
+    let state_field_decl = match &args.state {
+        Some(ty) => quote! { pub state: #ty, },
+        None => quote! {},
+    };
+    let state_field_init = match &args.state {
+        Some(_) => quote! { , state: std::default::Default::default() },
+        None => quote! {},
+    };
+
     quote! {
         pub struct #struct_name {
             __state: std::option::Option<ircbot::State>,
+            #state_field_decl
         }
 
         impl Default for #struct_name {
             fn default() -> Self {
-                #struct_name { __state: std::option::Option::None }
+                #struct_name { __state: std::option::Option::None #state_field_init }
             }
         }
 
@@ -302,7 +382,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 #[cfg(unix)]
                 if let Some(state) = ircbot::State::try_inherit_from_env()? {
                     eprintln!("[ircbot] hot-reload: resumed on inherited connection");
-                    return Ok(#struct_name { __state: Some(state) });
+                    return Ok(#struct_name { __state: Some(state) #state_field_init });
                 }
 
                 let state = ircbot::State::connect(
@@ -310,7 +390,7 @@ pub fn bot(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     server.as_ref(),
                     channels.into_iter().map(|c| c.into()).collect(),
                 ).await?;
-                Ok(#struct_name { __state: Some(state) })
+                Ok(#struct_name { __state: Some(state) #state_field_init })
             }
 
             /// Run the bot's main event loop.
