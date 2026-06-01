@@ -1014,25 +1014,12 @@ dependencies = [
  "futures",
  "irc",
  "irc-proto",
- "ircbot-macros 0.1.6",
+ "ircbot-macros",
  "libc",
  "regex",
  "testcontainers",
  "tokio",
  "trybuild",
-]
-
-[[package]]
-name = "ircbot-macros"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07961d5e5772bbc5990db285539c7e742f409b080b924b13c84978534023596a"
-dependencies = [
- "chrono-tz",
- "cron",
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
