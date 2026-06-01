@@ -25,6 +25,65 @@
 //!     );
 //! }
 //! ```
+//!
+//! # Constructing the bot under test
+//!
+//! A handler test needs a bot instance, but never a live connection — replies
+//! are captured by the [`TestContext`], not sent over a socket. The `#[bot]`
+//! macro gives you two connection-free constructors:
+//!
+//! * [`Default::default`] — for a stateless bot, or one whose state's `Default`
+//!   is cheap and side-effect-free.
+//! * `from_state(state)` — generated only when the bot declares
+//!   `#[bot(state = T)]`. Use it whenever `T::default()` does real work
+//!   (opens a database, reads config from the environment, dials a service).
+//!   Building such a bot with `Default::default` would run that work — and
+//!   often panic — inside your unit test. `from_state` lets you inject a
+//!   purpose-built state instead.
+//!
+//! ```rust,no_run
+//! # use ircbot::{bot, Context, Result};
+//! # use ircbot::testing::TestContext;
+//! #[derive(Default)]
+//! struct State { greeting: String }
+//!
+//! #[bot(state = State)]
+//! impl Greeter {
+//!     #[on(mention)]
+//!     async fn hello(&self, ctx: Context, _text: String) -> Result {
+//!         ctx.reply(self.state.greeting.clone())
+//!     }
+//! }
+//!
+//! #[tokio::test]
+//! async fn greets_with_configured_text() {
+//!     // Inject a known state rather than going through `Default`.
+//!     let bot = Greeter::from_state(State { greeting: "hi!".into() });
+//!     let mut tc = TestContext::channel("#test", "alice", "greeter: yo");
+//!     bot.hello(tc.take_ctx(), "yo".into()).await.unwrap();
+//!     // `reply` prefixes the sender's nick in a channel.
+//!     assert_eq!(tc.next_reply().as_deref(), Some("PRIVMSG #test :alice, hi!\r\n"));
+//! }
+//! ```
+//!
+//! # Best practices
+//!
+//! * **Test handlers, not the framework.** Call the handler method directly
+//!   with a [`TestContext`]-built [`Context`]; the macro's dispatch, matching,
+//!   and connection handling are covered by the crate's own tests.
+//! * **Build real, isolated state.** Prefer a genuine state value over mocks —
+//!   an in-memory store, or a temp-dir fixture (e.g. via the `tempfile` crate)
+//!   for file-backed state, created fresh per test so cases don't interleave.
+//! * **Assert on the wire bytes.** [`TestContext::next_reply`] and
+//!   [`TestContext::replies`] return complete IRC lines including the trailing
+//!   `\r\n`; assert against those exact strings to catch formatting changes.
+//! * **Drive one handler per test.** Each `#[on(...)]` method is independent;
+//!   testing them in isolation keeps failures pinpointed. Use
+//!   [`TestContext::channel`], [`TestContext::private`], or
+//!   [`TestContext::builder`] to reproduce the scenario each handler expects.
+//! * **Cover the silent paths.** A handler that filters or ignores some input
+//!   should produce no reply — assert that `next_reply()` returns `None`, not
+//!   just that the happy path works.
 
 use tokio::sync::mpsc;
 
