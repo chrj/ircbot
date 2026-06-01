@@ -69,6 +69,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         keepalive_timeout,
         flood_burst,
         flood_rate,
+        ctcp_version,
         reader,
         write_half,
         #[cfg(unix)]
@@ -246,6 +247,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                     &handlers,
                                     &msg,
                                     &bot_nick,
+                                    ctcp_version.as_deref(),
                                     write_tx.clone(),
                                 )
                                 .await;
@@ -631,6 +633,7 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
     handlers: &HandlerSet<T>,
     msg: &Message,
     bot_nick: &str,
+    ctcp_version: Option<&str>,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
     let Command::PRIVMSG(_, text) = &msg.command else {
@@ -654,10 +657,13 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
             }
             "VERSION" => {
                 if let Some(sender) = msg.source_nickname() {
-                    let reply = format!(
-                        "NOTICE {sender} :\x01VERSION ircbot {}\x01\r\n",
-                        env!("CARGO_PKG_VERSION"),
+                    // Use the caller-supplied version string if set, else the
+                    // framework default of `ircbot <crate-version>`.
+                    let version = ctcp_version.map_or_else(
+                        || format!("ircbot {}", env!("CARGO_PKG_VERSION")),
+                        ToString::to_string,
                     );
+                    let reply = format!("NOTICE {sender} :\x01VERSION {version}\x01\r\n");
                     if let Err(e) = tx.send(reply) {
                         eprintln!("[ircbot] failed to send CTCP VERSION reply: {e}");
                     }
@@ -743,5 +749,40 @@ mod tests {
                 "duplicate fallback nick at attempt {attempt}"
             );
         }
+    }
+
+    // ── CTCP VERSION ───────────────────────────────────────────────────────────
+
+    /// Drive `handle_privmsg` with a CTCP VERSION request and return the line
+    /// the bot would send back.
+    async fn ctcp_version_reply(custom: Option<&str>) -> String {
+        let bot = std::sync::Arc::new(());
+        let handlers = crate::internal::make_handler_set::<()>(vec![]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let msg = ":alice!u@h PRIVMSG mybot :\x01VERSION\x01"
+            .parse::<Message>()
+            .unwrap();
+        handle_privmsg(&bot, &handlers, &msg, "mybot", custom, tx).await;
+        rx.try_recv().expect("a CTCP VERSION reply was sent")
+    }
+
+    #[tokio::test]
+    async fn ctcp_version_uses_custom_string_when_set() {
+        assert_eq!(
+            ctcp_version_reply(Some("rustbutler 1.2.3")).await,
+            "NOTICE alice :\x01VERSION rustbutler 1.2.3\x01\r\n",
+        );
+    }
+
+    #[tokio::test]
+    async fn ctcp_version_defaults_to_ircbot_crate_version() {
+        let reply = ctcp_version_reply(None).await;
+        assert_eq!(
+            reply,
+            format!(
+                "NOTICE alice :\x01VERSION ircbot {}\x01\r\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+        );
     }
 }

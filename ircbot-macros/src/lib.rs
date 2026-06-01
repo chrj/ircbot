@@ -393,6 +393,20 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                 Ok(#struct_name { __state: Some(state) #state_field_init })
             }
 
+            /// Set a custom CTCP `VERSION` reply.
+            ///
+            /// By default the bot answers CTCP `VERSION` with
+            /// `ircbot <crate-version>`. Call this (before `main_loop`) to reply
+            /// with your own identifier instead. The value is re-applied on a
+            /// `SIGHUP` hot-reload, since the builder runs again on startup.
+            #[must_use]
+            pub fn with_ctcp_version(mut self, version: impl Into<String>) -> Self {
+                if let Some(state) = self.__state.take() {
+                    self.__state = Some(state.with_ctcp_version(version));
+                }
+                self
+            }
+
             /// Run the bot's main event loop.
             ///
             /// On Unix, listens for `SIGHUP`.  When received, the current
