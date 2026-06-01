@@ -68,6 +68,14 @@ impl<T> ReloadHandle<T> {
     ///
     /// Takes effect on the next incoming IRC message; the connection is not
     /// interrupted.
+    ///
+    /// Cron handlers are honoured too: the cron supervisor re-reads the live
+    /// set every cycle, so replaced or removed `#[on(cron = …)]` handlers take
+    /// effect at their next scheduled tick. The one exception is a cron handler
+    /// **added** when the previous set had no cron handlers at all — the idle
+    /// supervisor only re-scans periodically, so it can take up to a minute to
+    /// fire for the first time. Body swaps and additions alongside an existing
+    /// cron handler are picked up promptly.
     pub fn reload(&self, new_handlers: Vec<HandlerEntry<T>>) {
         if let Ok(mut guard) = self.handlers.write() {
             *guard = std::sync::Arc::new(new_handlers);
@@ -122,6 +130,13 @@ pub mod internal {
         let keepalive_timeout = state.keepalive_timeout;
         let flood_burst = state.flood_burst;
         let flood_rate = state.flood_rate;
+
+        // Record the flood-control settings so a SIGHUP hot-reload can carry
+        // them to the successor process (the `#[bot]` macro doesn't forward
+        // them to `exec_reload` itself). Keepalive timings are forwarded by the
+        // macro directly; these are not.
+        #[cfg(unix)]
+        crate::hot_reload::record_flood_settings(flood_burst, flood_rate.as_millis() as u64);
 
         let mut current_state = state;
 

@@ -27,6 +27,12 @@ const KEEPALIVE_TOKEN: &str = "ircbot-keepalive";
 /// `ERR_UNAVAILRESOURCE` (437) reply triggers one further attempt.
 const MAX_NICK_ATTEMPTS: u32 = 8;
 
+/// Upper bound on how long the cron supervisor sleeps in one cycle.  When the
+/// next scheduled fire is further away than this (or there are no cron handlers
+/// at all), the supervisor still wakes to re-read the live handler set, so a
+/// cron handler added by a hot-reload is picked up within this window.
+const CRON_RESCAN_INTERVAL: Duration = Duration::from_secs(60);
+
 /// A shareable, atomically-swappable set of handler entries.
 ///
 /// The outer [`Arc`] allows the handle to be cloned cheaply.  The [`RwLock`]
@@ -111,92 +117,23 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         }
     });
 
-    // Snapshot the handler list once and spawn a scheduled task for each Cron
-    // trigger.  Each task sleeps until the next scheduled occurrence (computed
-    // from the cron expression), fires the handler, then repeats.  Tasks are
-    // aborted when this connection is torn down and re-spawned on reconnect.
+    // Spawn a single supervisor task that fires Cron-triggered handlers on
+    // schedule.  Unlike a per-handler snapshot, it re-reads the live handler set
+    // on every cycle, so cron handlers added, removed, or replaced via
+    // [`crate::ReloadHandle::reload`] take effect without waiting for a
+    // reconnect.  The task is aborted when this connection is torn down and
+    // re-spawned on reconnect.
+    //
     // `nick` is the originally-requested nick and stays fixed as the base for
     // generating fallbacks; `bot_nick` tracks the nick we are actually using and
     // is updated if the server reports the requested one is taken.
     let mut bot_nick = nick.clone();
-    let cron_snapshot: Arc<Vec<HandlerEntry<T>>> = {
-        let guard = handlers.read().unwrap_or_else(|e| e.into_inner());
-        Arc::clone(&*guard)
-    };
-    let mut cron_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-    for idx in 0..cron_snapshot.len() {
-        let (schedule_str, tz_str, cron_target) = match &cron_snapshot[idx].trigger {
-            Trigger::Cron {
-                schedule,
-                tz,
-                target,
-            } => (
-                schedule.clone(),
-                tz.clone(),
-                target.clone().unwrap_or_default(),
-            ),
-            _ => continue,
-        };
-        let cron_is_channel = cron_target.is_channel_name();
-        let bot_cron = Arc::clone(&bot);
-        let write_tx_cron = write_tx.clone();
-        let bot_nick_cron = bot_nick.clone();
-        let snapshot_cron = Arc::clone(&cron_snapshot);
-
-        let task = tokio::spawn(async move {
-            let schedule: cron::Schedule = match schedule_str.parse() {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("[ircbot] invalid cron expression {schedule_str:?}: {e}");
-                    return;
-                }
-            };
-            let tz: chrono_tz::Tz = match tz_str.parse() {
-                Ok(tz) => tz,
-                Err(e) => {
-                    eprintln!("[ircbot] invalid timezone {tz_str:?}: {e}");
-                    return;
-                }
-            };
-            loop {
-                // Compute when the handler should next fire.
-                let now = chrono::Utc::now().with_timezone(&tz);
-                let Some(next) = schedule.upcoming(tz).next() else {
-                    eprintln!(
-                        "[ircbot] cron schedule {schedule_str:?} has no upcoming occurrences"
-                    );
-                    return;
-                };
-                let delay = (next - now).to_std().unwrap_or(Duration::ZERO);
-                tokio::time::sleep(delay).await;
-
-                let raw = format!(":{nick}!cron@cron PING :cron", nick = bot_nick_cron)
-                    .parse::<Message>()
-                    .unwrap_or_else(|_| {
-                        format!(
-                            ":{nick}!cron@cron PRIVMSG #cron :cron",
-                            nick = bot_nick_cron
-                        )
-                        .parse()
-                        .unwrap()
-                    });
-                let ctx = Context {
-                    tx: write_tx_cron.clone(),
-                    target: cron_target.clone(),
-                    is_channel: cron_is_channel,
-                    sender: None,
-                    raw,
-                    bot_nick: bot_nick_cron.clone(),
-                    captures: vec![],
-                };
-                let fut = (snapshot_cron[idx].handler)(Arc::clone(&bot_cron), ctx);
-                if let Err(e) = fut.await {
-                    eprintln!("[ircbot] cron handler error: {e}");
-                }
-            }
-        });
-        cron_tasks.push(task);
-    }
+    let cron_task = tokio::spawn(run_cron_supervisor(
+        Arc::clone(&bot),
+        Arc::clone(&handlers),
+        write_tx.clone(),
+        bot_nick.clone(),
+    ));
 
     // Keepalive: set to `true` on startup (no ping pending) and whenever we
     // receive a matching PONG.  The keepalive task resets it to `false` before
@@ -331,13 +268,127 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
 
     // Always clean up the keepalive, cron, and write tasks before returning.
     keepalive_task.abort();
-    for task in &cron_tasks {
-        task.abort();
-    }
+    cron_task.abort();
     drop(write_tx);
     let _ = write_task.await;
 
     loop_result
+}
+
+// ─── cron supervisor ─────────────────────────────────────────────────────────
+
+/// Drive every [`Trigger::Cron`] handler in `handlers`.
+///
+/// Each cycle re-reads the live handler set, so cron handlers added, removed,
+/// or replaced via [`crate::ReloadHandle::reload`] take effect immediately,
+/// then sleeps until the earliest upcoming occurrence (capped at
+/// [`CRON_RESCAN_INTERVAL`]) and fires every handler that is due.  Due handlers
+/// run sequentially, mirroring the message-dispatch path.
+async fn run_cron_supervisor<T: Send + Sync + 'static>(
+    bot: Arc<T>,
+    handlers: HandlerSet<T>,
+    tx: mpsc::UnboundedSender<String>,
+    bot_nick: String,
+) {
+    loop {
+        // Reference instant for this cycle.  All "next occurrence" computations
+        // are relative to it, so the pre-sleep and post-sleep views agree.
+        let now = chrono::Utc::now();
+
+        // Earliest upcoming fire across all cron handlers in the live set.
+        let fire_at = {
+            let live = snapshot(&handlers);
+            live.iter()
+                .filter_map(|e| next_cron_fire(&e.trigger, &now))
+                .min()
+        };
+
+        // Sleep until that fire, capped so reloads are noticed within a bounded
+        // window (and so we idle gracefully when there are no cron handlers).
+        let wait = fire_at.map_or(CRON_RESCAN_INTERVAL, |at| {
+            (at - now)
+                .to_std()
+                .unwrap_or(Duration::ZERO)
+                .min(CRON_RESCAN_INTERVAL)
+        });
+        tokio::time::sleep(wait).await;
+
+        let Some(fire_at) = fire_at else { continue };
+        if chrono::Utc::now() < fire_at {
+            // Woken by the rescan cap before the fire was due — re-evaluate.
+            continue;
+        }
+
+        // Re-read the live set so reloaded handler bodies fire, then run every
+        // cron handler whose next occurrence after `now` has now arrived.
+        let live = snapshot(&handlers);
+        let now2 = chrono::Utc::now();
+        for entry in live.iter() {
+            let Trigger::Cron { target, .. } = &entry.trigger else {
+                continue;
+            };
+            let Some(next) = next_cron_fire(&entry.trigger, &now) else {
+                continue;
+            };
+            if next > now2 {
+                continue; // not due yet
+            }
+            let cron_target = target.clone().unwrap_or_default();
+            let ctx = Context {
+                tx: tx.clone(),
+                is_channel: cron_target.is_channel_name(),
+                target: cron_target,
+                sender: None,
+                raw: synthesize_cron_message(&bot_nick),
+                bot_nick: bot_nick.clone(),
+                captures: vec![],
+            };
+            if let Err(e) = (entry.handler)(Arc::clone(&bot), ctx).await {
+                eprintln!("[ircbot] cron handler error: {e}");
+            }
+        }
+    }
+}
+
+/// Snapshot the live handler list with a single cheap `Arc::clone`, holding the
+/// read lock only momentarily.
+fn snapshot<T>(handlers: &HandlerSet<T>) -> Arc<Vec<HandlerEntry<T>>> {
+    let guard = handlers.read().unwrap_or_else(|e| e.into_inner());
+    Arc::clone(&*guard)
+}
+
+/// The next fire time (in UTC) strictly after `after` for a [`Trigger::Cron`],
+/// or `None` for any other trigger or an unparseable schedule/timezone.
+///
+/// The `#[on(cron = …)]` macro validates the expression and timezone at compile
+/// time; only the lower-level manual API can produce an invalid one, which
+/// simply never fires.
+fn next_cron_fire(
+    trigger: &Trigger,
+    after: &chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let Trigger::Cron { schedule, tz, .. } = trigger else {
+        return None;
+    };
+    let schedule: cron::Schedule = schedule.parse().ok()?;
+    let tz: chrono_tz::Tz = tz.parse().ok()?;
+    schedule
+        .after(&after.with_timezone(&tz))
+        .next()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+}
+
+/// Build the synthetic [`Message`] used as the `raw` field of a cron-fired
+/// [`Context`].  Cron handlers have no originating IRC message, so a benign one
+/// tagged with a `cron` pseudo-source is fabricated.
+fn synthesize_cron_message(bot_nick: &str) -> Message {
+    format!(":{bot_nick}!cron@cron PING :cron")
+        .parse::<Message>()
+        .unwrap_or_else(|_| {
+            format!(":{bot_nick}!cron@cron PRIVMSG #cron :cron")
+                .parse()
+                .unwrap()
+        })
 }
 
 // ─── trigger matching ────────────────────────────────────────────────────────

@@ -110,6 +110,22 @@ fn say_handler(pattern: &str, text: &'static str) -> HandlerEntry<()> {
     }
 }
 
+/// A cron handler firing every second that says `text` to `target`.
+fn cron_say(target: &str, text: &'static str) -> HandlerEntry<()> {
+    HandlerEntry {
+        trigger: Trigger::Cron {
+            schedule: "* * * * * *".to_string(),
+            tz: "UTC".to_string(),
+            target: Some(target.to_string()),
+        },
+        handler: Box::new(
+            move |_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
+                Box::pin(async move { ctx.say(text) })
+            },
+        ) as HandlerFn<()>,
+    }
+}
+
 // ─── C10: reload swaps the live handler set ──────────────────────────────────
 
 #[tokio::test]
@@ -139,6 +155,63 @@ async fn reload_swaps_live_handler_set() {
     server.send(":alice!a@h PRIVMSG #chan :go\r\n");
     let line = server.expect_line(|l| l.starts_with("PRIVMSG")).await;
     assert_eq!(line, "PRIVMSG #chan :reloaded");
+
+    bot_task.abort();
+}
+
+// ─── C10b: reload is honoured by the cron supervisor ─────────────────────────
+
+#[tokio::test]
+async fn reload_swaps_live_cron_handler_body() {
+    let mut server = MockServer::start().await;
+
+    // Initial per-second cron says "old".
+    let set = ircbot::internal::make_handler_set(vec![cron_say("#chan", "old")]);
+    let handle = ReloadHandle::new(Arc::clone(&set));
+
+    let state = State::connect("testbot".to_string(), &server.addr, vec![])
+        .await
+        .expect("connect failed");
+    let bot_task = tokio::spawn(run_bot_internal(Arc::new(()), state, Arc::clone(&set)));
+    server.send_welcome();
+
+    // The original cron body fires.
+    server.expect_line(|l| l == "PRIVMSG #chan :old").await;
+
+    // Hot-swap the cron handler's body without reconnecting.
+    handle.reload(vec![cron_say("#chan", "new")]);
+
+    // The *reloaded* body fires on a subsequent tick (skipping any in-flight
+    // "old" line that may already have been queued).
+    let line = server.expect_line(|l| l == "PRIVMSG #chan :new").await;
+    assert_eq!(line, "PRIVMSG #chan :new");
+
+    bot_task.abort();
+}
+
+#[tokio::test]
+async fn reload_adds_cron_handler_while_running() {
+    let mut server = MockServer::start().await;
+
+    // Start with a single per-second cron so the supervisor is already active
+    // (and thus re-scans every tick).
+    let set = ircbot::internal::make_handler_set(vec![cron_say("#chan", "tick")]);
+    let handle = ReloadHandle::new(Arc::clone(&set));
+
+    let state = State::connect("testbot".to_string(), &server.addr, vec![])
+        .await
+        .expect("connect failed");
+    let bot_task = tokio::spawn(run_bot_internal(Arc::new(()), state, Arc::clone(&set)));
+    server.send_welcome();
+
+    server.expect_line(|l| l == "PRIVMSG #chan :tick").await;
+
+    // Add a second cron handler targeting a different channel.
+    handle.reload(vec![cron_say("#chan", "tick"), cron_say("#other", "added")]);
+
+    // The newly added handler fires without a reconnect.
+    let line = server.expect_line(|l| l == "PRIVMSG #other :added").await;
+    assert_eq!(line, "PRIVMSG #other :added");
 
     bot_task.abort();
 }
