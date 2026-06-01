@@ -68,6 +68,14 @@ impl<T> ReloadHandle<T> {
     ///
     /// Takes effect on the next incoming IRC message; the connection is not
     /// interrupted.
+    ///
+    /// Cron handlers are honoured too: the cron supervisor re-reads the live
+    /// set every cycle, so replaced or removed `#[on(cron = …)]` handlers take
+    /// effect at their next scheduled tick. The one exception is a cron handler
+    /// **added** when the previous set had no cron handlers at all — the idle
+    /// supervisor only re-scans periodically, so it can take up to a minute to
+    /// fire for the first time. Body swaps and additions alongside an existing
+    /// cron handler are picked up promptly.
     pub fn reload(&self, new_handlers: Vec<HandlerEntry<T>>) {
         if let Ok(mut guard) = self.handlers.write() {
             *guard = std::sync::Arc::new(new_handlers);
