@@ -1,6 +1,6 @@
 [package]
 name = "ircbot"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 description = "An async IRC bot framework for Rust powered by Tokio and procedural macros"
 license = "MIT"
@@ -16,7 +16,7 @@ integration = []
 tokio = { version = "1", features = ["full"] }
 regex = "1"
 futures = "0.3"
-ircbot-macros = { version = "0.1.8", path = "../ircbot-macros" }
+ircbot-macros = { version = "0.1.9", path = "../ircbot-macros" }
 irc-proto = { version = "1", default-features = false }
 cron = "0.15"
 chrono = "0.4"

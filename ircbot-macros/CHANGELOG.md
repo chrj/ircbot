@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.1.8...ircbot-macros-v0.1.9) - 2026-06-02
+
+### Added
+
+- *(macro)* generate `from_state` constructor for unit-testing handlers ([#84](https://github.com/chrj/ircbot/pull/84))
+- configurable CTCP VERSION reply ([#82](https://github.com/chrj/ircbot/pull/82))
+
 ## [0.1.8](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.1.7...ircbot-macros-v0.1.8) - 2026-06-01
 
 ### Added
