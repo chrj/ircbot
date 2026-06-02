@@ -353,6 +353,61 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
         Some(_) => quote! { , state: std::default::Default::default() },
         None => quote! {},
     };
+    // A constructor that takes a pre-built state and attaches no live
+    // connection. Only meaningful when the bot has a `state` field, so it is
+    // emitted solely in the `state = Type` case. This is the supported entry
+    // point for unit-testing handlers (see `ircbot::testing`): it bypasses the
+    // `Default` impl, which would build state via `Default::default()` — wrong
+    // for any state that opens files, sockets, or other real resources.
+    let from_state_method = match &args.state {
+        Some(ty) => quote! {
+            /// Construct the bot from a pre-built `state`, with no live IRC
+            /// connection attached.
+            ///
+            /// This is the intended way to unit-test handlers. Handlers take
+            /// `&self` and reach the connection only when they send a reply,
+            /// which in tests is captured by a
+            /// [`TestContext`](ircbot::testing::TestContext) instead — so a bot
+            /// built this way can drive handlers directly without ever touching
+            /// the network.
+            ///
+            /// Prefer this over [`Default::default`] whenever your state type's
+            /// `Default` does real work (opening a database, reading config,
+            /// connecting to a service): `from_state` lets the test build a
+            /// purpose-made state — an in-memory store, a temp-dir fixture —
+            /// and inject it directly.
+            ///
+            /// # Example
+            ///
+            /// ```rust,no_run
+            /// # use ircbot::{bot, Context, Result};
+            /// # use ircbot::testing::TestContext;
+            /// #[derive(Default)]
+            /// struct State { greeting: String }
+            ///
+            /// #[bot(state = State)]
+            /// impl Greeter {
+            ///     #[on(mention)]
+            ///     async fn hello(&self, ctx: Context, _text: String) -> Result {
+            ///         ctx.reply(self.state.greeting.clone())
+            ///     }
+            /// }
+            ///
+            /// #[tokio::test]
+            /// async fn replies_with_configured_greeting() {
+            ///     let bot = Greeter::from_state(State { greeting: "hi!".into() });
+            ///     let mut tc = TestContext::channel("#test", "alice", "greeter: yo");
+            ///     bot.hello(tc.take_ctx(), "yo".into()).await.unwrap();
+            ///     // `reply` prefixes the sender's nick in a channel.
+            ///     assert_eq!(tc.next_reply().as_deref(), Some("PRIVMSG #test :alice, hi!\r\n"));
+            /// }
+            /// ```
+            pub fn from_state(state: #ty) -> Self {
+                #struct_name { __state: std::option::Option::None, state }
+            }
+        },
+        None => quote! {},
+    };
 
     quote! {
         pub struct #struct_name {
@@ -392,6 +447,8 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                 ).await?;
                 Ok(#struct_name { __state: Some(state) #state_field_init })
             }
+
+            #from_state_method
 
             /// Set a custom CTCP `VERSION` reply.
             ///

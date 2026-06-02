@@ -242,3 +242,48 @@ async fn user_arg_filled_from_sender() {
         Some("PRIVMSG #test :zaphod\r\n".to_string())
     );
 }
+
+// ─── from_state constructor ────────────────────────────────────────────────────
+
+/// State whose `Default` is *not* test-safe: it records whether it was built
+/// the easy way, so a test can prove `from_state` skipped `Default`.
+struct StateBotState {
+    greeting: String,
+    from_default: bool,
+}
+
+impl Default for StateBotState {
+    fn default() -> Self {
+        // Stand-in for real work (opening a DB, reading the environment, …)
+        // that a unit test must not trigger.
+        StateBotState {
+            greeting: "default".to_string(),
+            from_default: true,
+        }
+    }
+}
+
+#[bot(state = StateBotState)]
+impl StateBot {
+    #[on(mention)]
+    async fn hello(&self, ctx: Context, _text: String) -> Result {
+        ctx.reply(self.state.greeting.clone())
+    }
+}
+
+#[tokio::test]
+async fn from_state_injects_given_state_and_skips_default() {
+    let bot = StateBot::from_state(StateBotState {
+        greeting: "hi!".to_string(),
+        from_default: false,
+    });
+    // The injected state is used verbatim — `Default` never ran.
+    assert!(!bot.state.from_default);
+
+    let mut tc = TestContext::channel("#test", "alice", "statebot: yo");
+    bot.hello(tc.take_ctx(), "yo".to_string()).await.unwrap();
+    assert_eq!(
+        tc.next_reply(),
+        Some("PRIVMSG #test :alice, hi!\r\n".to_string())
+    );
+}
