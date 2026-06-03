@@ -35,13 +35,13 @@ impl MyBot {
     /// Same as above but only in a specific channel.
     #[on(mention, target = "#rust")]
     async fn on_mention_rust(&self, ctx: Context) -> Result {
-        ctx.notice("I heard you!").await
+        ctx.notice("I heard you!")
     }
 
     /// Send a private message to the sender no matter where they wrote from.
     #[command("secret")]
     async fn secret(&self, ctx: Context) -> Result {
-        ctx.whisper("This is just between us.").await
+        ctx.whisper("This is just between us.")
     }
 
     /// Post a reminder to #rust every hour on the hour, on weekdays between

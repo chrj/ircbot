@@ -246,7 +246,11 @@ impl Context {
     ///
     /// If the formatted message would exceed the IRC 512-byte line limit it is
     /// automatically split across multiple messages.
-    pub async fn notice(&self, msg: impl std::fmt::Display) -> crate::Result {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write channel is closed.
+    pub fn notice(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
         let target = if self.is_channel {
             self.target.clone()
@@ -268,7 +272,11 @@ impl Context {
     ///
     /// If the formatted message would exceed the IRC 512-byte line limit it is
     /// automatically split across multiple messages.
-    pub async fn whisper(&self, msg: impl std::fmt::Display) -> crate::Result {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the write channel is closed.
+    pub fn whisper(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
         let to = self
             .sender
@@ -491,14 +499,14 @@ mod tests {
     #[tokio::test]
     async fn notice_in_channel_sends_notice_command() {
         let (ctx, mut rx) = make_ctx("#chan", true);
-        ctx.notice("status").await.unwrap();
+        ctx.notice("status").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "NOTICE #chan :status\r\n");
     }
 
     #[tokio::test]
     async fn notice_in_query_sends_to_sender_nick() {
         let (ctx, mut rx) = make_ctx("bot", false);
-        ctx.notice("status").await.unwrap();
+        ctx.notice("status").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "NOTICE nick :status\r\n");
     }
 
@@ -507,7 +515,7 @@ mod tests {
     #[tokio::test]
     async fn whisper_sends_pm_to_sender() {
         let (ctx, mut rx) = make_ctx("#chan", true);
-        ctx.whisper("secret").await.unwrap();
+        ctx.whisper("secret").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "PRIVMSG nick :secret\r\n");
     }
 
@@ -569,14 +577,14 @@ mod tests {
     #[tokio::test]
     async fn notice_in_query_without_sender_uses_target() {
         let (ctx, mut rx) = make_ctx_no_sender("someone", false);
-        ctx.notice("status").await.unwrap();
+        ctx.notice("status").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "NOTICE someone :status\r\n");
     }
 
     #[tokio::test]
     async fn whisper_without_sender_uses_target() {
         let (ctx, mut rx) = make_ctx_no_sender("someone", false);
-        ctx.whisper("secret").await.unwrap();
+        ctx.whisper("secret").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "PRIVMSG someone :secret\r\n");
     }
 

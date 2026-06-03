@@ -88,7 +88,7 @@ async fn on_mention(&self, ctx: Context, text: String) -> Result {
 // Restrict to a specific channel.
 #[on(mention, target = "#rust")]
 async fn on_mention_rust(&self, ctx: Context) -> Result {
-    ctx.notice("I heard you!").await
+    ctx.notice("I heard you!")
 }
 ```
 
