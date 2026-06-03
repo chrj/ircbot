@@ -7,6 +7,7 @@ pub mod handler;
 pub mod hot_reload;
 pub mod irc;
 pub mod testing;
+pub mod types;
 
 pub use bot::HandlerSet;
 pub use connection::{
@@ -21,6 +22,7 @@ pub use ircbot_macros::bot;
 pub use ircbot_macros::command;
 #[doc = include_str!("../docs/on.md")]
 pub use ircbot_macros::on;
+pub use types::{Channel, Nick};
 
 /// The standard error type used throughout the crate.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;

@@ -88,6 +88,7 @@
 use tokio::sync::mpsc;
 
 use crate::context::{Context, User};
+use crate::types::Nick;
 
 // ─── TestContext ──────────────────────────────────────────────────────────────
 
@@ -297,12 +298,12 @@ impl TestContextBuilder {
             target: self.target,
             is_channel: self.is_channel,
             sender: Some(User {
-                nick: self.sender_nick,
+                nick: Nick::from(self.sender_nick),
                 user: self.sender_user,
                 host: self.sender_host,
             }),
             raw,
-            bot_nick: self.bot_nick,
+            bot_nick: Nick::from(self.bot_nick),
             captures: self.captures,
         };
         TestContext { ctx: Some(ctx), rx }

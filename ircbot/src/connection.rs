@@ -4,6 +4,8 @@ use irc_proto::chan::ChannelExt;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
 
+use crate::types::{Channel, Nick};
+
 /// Default interval between client-initiated keepalive pings.
 pub const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// Default time to wait for a pong before treating the connection as dead.
@@ -17,8 +19,8 @@ pub const DEFAULT_FLOOD_RATE: Duration = Duration::from_millis(500);
 
 /// Holds the established connection to an IRC server plus join-on-connect metadata.
 pub struct State {
-    pub nick: String,
-    pub channels: Vec<String>,
+    pub nick: Nick,
+    pub channels: Vec<Channel>,
     /// Server address used when reconnecting (e.g. `"irc.example.net:6667"`).
     pub server: String,
     pub(crate) keepalive_interval: Duration,
@@ -45,11 +47,11 @@ pub struct State {
 impl State {
     /// Normalise a channel name: if it doesn't start with a recognised IRC
     /// channel prefix (`#`, `&`, `+`, `!`) a `#` is prepended automatically.
-    fn normalise_channel(ch: String) -> String {
+    fn normalise_channel(ch: &str) -> Channel {
         if ch.is_channel_name() {
-            ch
+            Channel::from(ch)
         } else {
-            format!("#{ch}")
+            Channel::from(format!("#{ch}"))
         }
     }
 
@@ -63,11 +65,15 @@ impl State {
     ///
     /// Returns an error if the TCP connection or initial handshake fails.
     pub async fn connect(
-        nick: String,
+        nick: impl Into<Nick>,
         server: &str,
-        channels: Vec<String>,
+        channels: Vec<Channel>,
     ) -> Result<State, Box<dyn std::error::Error + Send + Sync>> {
-        let channels: Vec<String> = channels.into_iter().map(Self::normalise_channel).collect();
+        let nick = nick.into();
+        let channels: Vec<Channel> = channels
+            .iter()
+            .map(|c| Self::normalise_channel(c.as_str()))
+            .collect();
         let stream = TcpStream::connect(server).await?;
 
         #[cfg(unix)]
@@ -170,10 +176,10 @@ impl State {
             std::env::remove_var(var);
         }
 
-        let channels: Vec<String> = if channels_raw.is_empty() {
+        let channels: Vec<Channel> = if channels_raw.is_empty() {
             vec![]
         } else {
-            channels_raw.split(',').map(str::to_string).collect()
+            channels_raw.split(',').map(Channel::from).collect()
         };
 
         // Reconstruct the TcpStream from the raw fd.  Safety: the fd was
@@ -186,7 +192,7 @@ impl State {
         let reader = tokio::io::BufReader::new(read_half);
 
         Ok(Some(State {
-            nick,
+            nick: Nick::from(nick),
             channels,
             server,
             keepalive_interval: Duration::from_millis(ka_interval_ms),
@@ -266,13 +272,13 @@ mod tests {
 
     #[test]
     fn normalise_channel_prefixes_bare_name() {
-        assert_eq!(State::normalise_channel("general".to_string()), "#general");
+        assert_eq!(State::normalise_channel("general"), "#general");
     }
 
     #[test]
     fn normalise_channel_keeps_existing_prefixes() {
         for ch in ["#rust", "&local", "+modeless", "!network"] {
-            assert_eq!(State::normalise_channel(ch.to_string()), ch);
+            assert_eq!(State::normalise_channel(ch), ch);
         }
     }
 
@@ -289,7 +295,7 @@ mod tests {
             let _sock = listener.accept().await;
             tokio::time::sleep(Duration::from_secs(5)).await;
         });
-        State::connect("tester".to_string(), &addr, vec!["general".to_string()])
+        State::connect("tester".to_string(), &addr, vec![Channel::from("general")])
             .await
             .expect("loopback connect failed")
     }
@@ -297,7 +303,7 @@ mod tests {
     #[tokio::test]
     async fn connect_normalises_channels() {
         let state = connect_loopback().await;
-        assert_eq!(state.channels, vec!["#general".to_string()]);
+        assert_eq!(state.channels, vec![Channel::from("#general")]);
     }
 
     // Note: `with_keepalive` and `with_flood_control` are exercised
@@ -395,7 +401,10 @@ mod tests {
 
         assert_eq!(state.nick, "inheritbot");
         assert_eq!(state.server, addr);
-        assert_eq!(state.channels, vec!["#a".to_string(), "#b".to_string()]);
+        assert_eq!(
+            state.channels,
+            vec![Channel::from("#a"), Channel::from("#b")]
+        );
         assert_eq!(state.keepalive_interval(), Duration::from_millis(12000));
         assert_eq!(state.keepalive_timeout(), Duration::from_millis(4000));
         // Flood-control settings survive the reload rather than resetting to default.
