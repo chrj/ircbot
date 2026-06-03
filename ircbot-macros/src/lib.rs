@@ -443,7 +443,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let state = ircbot::State::connect(
                     nick.into(),
                     server.as_ref(),
-                    channels.into_iter().map(|c| c.into()).collect(),
+                    channels.into_iter().map(|c| ircbot::Channel::from(c.into())).collect(),
                 ).await?;
                 Ok(#struct_name { __state: Some(state) #state_field_init })
             }
@@ -477,9 +477,9 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let (raw_fd, reload_nick, reload_server, reload_channels,
                      reload_ka_interval_ms, reload_ka_timeout_ms) = (
                     state.raw_fd,
-                    state.nick.clone(),
+                    state.nick.as_str().to_string(),
                     state.server.clone(),
-                    state.channels.clone(),
+                    state.channels.iter().map(|c| c.as_str().to_string()).collect::<std::vec::Vec<String>>(),
                     state.keepalive_interval().as_millis() as u64,
                     state.keepalive_timeout().as_millis() as u64,
                 );

@@ -13,6 +13,7 @@ use crate::{
     context::{Context, User},
     handler::{HandlerEntry, Trigger},
     irc::{ChannelExt, CtcpMessage, Message},
+    types::Nick,
     BoxError,
 };
 use irc_proto::{prefix::Prefix, Command, Response};
@@ -213,7 +214,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                 if !joined {
                                     nick_attempt += 1;
                                     if nick_attempt <= MAX_NICK_ATTEMPTS {
-                                        let candidate = fallback_nick(&nick, nick_attempt);
+                                        let candidate = fallback_nick(nick.as_str(), nick_attempt);
                                         eprintln!(
                                             "[ircbot] nick {bot_nick:?} unavailable — retrying as {candidate:?}"
                                         );
@@ -224,7 +225,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                                 "[ircbot] failed to send NICK {candidate}: {e}"
                                             );
                                         }
-                                        bot_nick = candidate;
+                                        bot_nick = Nick::from(candidate);
                                     } else {
                                         eprintln!(
                                             "[ircbot] giving up on registration after \
@@ -283,7 +284,7 @@ async fn run_cron_supervisor<T: Send + Sync + 'static>(
     bot: Arc<T>,
     handlers: HandlerSet<T>,
     tx: mpsc::UnboundedSender<String>,
-    bot_nick: String,
+    bot_nick: Nick,
 ) {
     loop {
         // Reference instant for this cycle.  All "next occurrence" computations
@@ -334,7 +335,7 @@ async fn run_cron_supervisor<T: Send + Sync + 'static>(
                 is_channel: cron_target.is_channel_name(),
                 target: cron_target,
                 sender: None,
-                raw: synthesize_cron_message(&bot_nick),
+                raw: synthesize_cron_message(bot_nick.as_str()),
                 bot_nick: bot_nick.clone(),
                 captures: vec![],
             };
@@ -625,7 +626,7 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
     bot: &Arc<T>,
     handlers: &HandlerSet<T>,
     msg: &Message,
-    bot_nick: &str,
+    bot_nick: &Nick,
     ctcp_version: Option<&str>,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
@@ -673,7 +674,7 @@ async fn dispatch<T: Send + Sync + 'static>(
     bot: &Arc<T>,
     handlers: &HandlerSet<T>,
     msg: &Message,
-    bot_nick: &str,
+    bot_nick: &Nick,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
     // Snapshot the current handler list under a brief read-lock, then release
@@ -685,7 +686,7 @@ async fn dispatch<T: Send + Sync + 'static>(
 
     let sender = match msg.prefix.as_ref() {
         Some(Prefix::Nickname(nick, user, host)) if !user.is_empty() => Some(User {
-            nick: nick.clone(),
+            nick: Nick::from(nick.clone()),
             user: user.clone(),
             host: host.clone(),
         }),
@@ -695,14 +696,14 @@ async fn dispatch<T: Send + Sync + 'static>(
     let is_channel = target.is_channel_name();
 
     for entry in current.iter() {
-        if let Some(captures) = check_trigger(&entry.trigger, msg, bot_nick) {
+        if let Some(captures) = check_trigger(&entry.trigger, msg, bot_nick.as_str()) {
             let ctx = Context {
                 tx: tx.clone(),
                 target: target.clone(),
                 is_channel,
                 sender: sender.clone(),
                 raw: msg.clone(),
-                bot_nick: bot_nick.to_string(),
+                bot_nick: bot_nick.clone(),
                 captures,
             };
             let bot_clone = Arc::clone(bot);
@@ -755,7 +756,7 @@ mod tests {
         let msg = ":alice!u@h PRIVMSG mybot :\x01VERSION\x01"
             .parse::<Message>()
             .unwrap();
-        handle_privmsg(&bot, &handlers, &msg, "mybot", custom, tx).await;
+        handle_privmsg(&bot, &handlers, &msg, &Nick::from("mybot"), custom, tx).await;
         rx.try_recv().expect("a CTCP VERSION reply was sent")
     }
 

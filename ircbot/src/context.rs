@@ -1,6 +1,8 @@
 use irc_proto::Message;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::types::Nick;
+
 /// IRC mandates that no message line (including the trailing `\r\n`) may
 /// exceed 512 bytes.  We budget 2 bytes for `\r\n`, leaving 510 bytes for
 /// the command text itself.
@@ -9,7 +11,7 @@ const MAX_IRC_LINE: usize = 510;
 /// A user on IRC (nick!user@host).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct User {
-    pub nick: String,
+    pub nick: Nick,
     pub user: String,
     pub host: String,
 }
@@ -25,7 +27,7 @@ pub struct Context {
     /// The underlying parsed IRC message.
     pub raw: Message,
     /// The bot's own nick (for self-detection).
-    pub bot_nick: String,
+    pub bot_nick: Nick,
     /// Wildcard or regex captures from the matched trigger pattern.
     pub captures: Vec<String>,
 }
@@ -154,7 +156,7 @@ impl Context {
         } else {
             self.sender
                 .as_ref()
-                .map_or_else(|| self.target.clone(), |u| u.nick.clone())
+                .map_or_else(|| self.target.clone(), |u| u.nick.to_string())
         };
         let header = format!("PRIVMSG {target} :");
         send_chunked(&self.tx, &header, &msg, "")
@@ -175,7 +177,7 @@ impl Context {
         } else {
             self.sender
                 .as_ref()
-                .map_or_else(|| self.target.clone(), |u| u.nick.clone())
+                .map_or_else(|| self.target.clone(), |u| u.nick.to_string())
         };
         // CTCP ACTION: header is "PRIVMSG target :\x01ACTION ", suffix is "\x01"
         let header = format!("PRIVMSG {target} :\x01ACTION ");
@@ -222,7 +224,7 @@ impl Context {
     #[must_use]
     pub fn is_from_self(&self) -> bool {
         self.nick()
-            .is_some_and(|n| n.eq_ignore_ascii_case(&self.bot_nick))
+            .is_some_and(|n| n.eq_ignore_ascii_case(self.bot_nick.as_str()))
     }
 
     /// Whether the message text mentions the bot's nick anywhere.
@@ -235,7 +237,7 @@ impl Context {
     pub fn mentions_me(&self) -> bool {
         self.message_text()
             .to_ascii_lowercase()
-            .contains(&self.bot_nick.to_ascii_lowercase())
+            .contains(&self.bot_nick.as_str().to_ascii_lowercase())
     }
 
     /// Send an IRC NOTICE to the channel / private target.
@@ -257,7 +259,7 @@ impl Context {
         } else {
             self.sender
                 .as_ref()
-                .map(|u| u.nick.clone())
+                .map(|u| u.nick.to_string())
                 .unwrap_or_else(|| self.target.clone())
         };
         let header = format!("NOTICE {target} :");
@@ -402,12 +404,12 @@ mod tests {
             target: target.to_string(),
             is_channel,
             sender: Some(User {
-                nick: "nick".to_string(),
+                nick: Nick::from("nick"),
                 user: "u".to_string(),
                 host: "h".to_string(),
             }),
             raw,
-            bot_nick: "bot".to_string(),
+            bot_nick: Nick::from("bot"),
             captures: vec![],
         };
         (ctx, rx)
@@ -537,7 +539,7 @@ mod tests {
             is_channel,
             sender: None,
             raw,
-            bot_nick: "bot".to_string(),
+            bot_nick: Nick::from("bot"),
             captures: vec![],
         };
         (ctx, rx)
@@ -730,14 +732,14 @@ mod tests {
     #[test]
     fn is_from_self_true_when_sender_matches_bot_nick() {
         let (mut ctx, _rx) = make_ctx("#chan", true);
-        ctx.bot_nick = "nick".to_string(); // sender nick is "nick"
+        ctx.bot_nick = Nick::from("nick"); // sender nick is "nick"
         assert!(ctx.is_from_self());
     }
 
     #[test]
     fn is_from_self_is_ascii_case_insensitive() {
         let (mut ctx, _rx) = make_ctx("#chan", true);
-        ctx.bot_nick = "NICK".to_string();
+        ctx.bot_nick = Nick::from("NICK");
         assert!(ctx.is_from_self());
     }
 
