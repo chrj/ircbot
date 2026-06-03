@@ -144,9 +144,13 @@ async fn spawn_bot_with<T: Send + Sync + 'static>(
     bot: Arc<T>,
     handlers: Vec<HandlerEntry<T>>,
 ) -> tokio::task::JoinHandle<Result<(), ircbot::BoxError>> {
-    let mut state = State::connect("testbot".to_string(), addr, channels)
-        .await
-        .expect("failed to connect to mock server");
+    let mut state = State::connect(
+        "testbot".to_string(),
+        addr,
+        channels.into_iter().map(ircbot::Channel::from).collect(),
+    )
+    .await
+    .expect("failed to connect to mock server");
     if let Some((interval, timeout)) = keepalive {
         state = state.with_keepalive(interval, timeout);
     }
@@ -478,7 +482,7 @@ fn sender_capturing_handler(slot: Arc<Mutex<Option<Option<String>>>>) -> Handler
                 Box::pin(async move {
                     let mut guard = slot.lock().unwrap();
                     if guard.is_none() {
-                        *guard = Some(ctx.sender.as_ref().map(|u| u.nick.clone()));
+                        *guard = Some(ctx.sender.as_ref().map(|u| u.nick.to_string()));
                     }
                     Ok(())
                 })
