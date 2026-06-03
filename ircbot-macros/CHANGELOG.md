@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.1.9...ircbot-macros-v0.2.0) - 2026-06-03
+
+### Other
+
+- align doc comments with the Target enum and is_channel method ([#93](https://github.com/chrj/ircbot/pull/93))
+- *(types)* [**breaking**] introduce Nick and Channel newtypes ([#90](https://github.com/chrj/ircbot/pull/90))
+- *(context)* [**breaking**] make notice and whisper synchronous ([#89](https://github.com/chrj/ircbot/pull/89))
+
 ## [0.1.9](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.1.8...ircbot-macros-v0.1.9) - 2026-06-02
 
 ### Added
