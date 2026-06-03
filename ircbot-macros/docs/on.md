@@ -121,7 +121,7 @@ async fn quarter_hour(&self, ctx: Context) -> Result {
 // Every Monday at 9 a.m. Tokyo time.
 #[on(cron = "0 0 9 * * MON", tz = "Asia/Tokyo")]
 async fn weekly_report(&self, ctx: Context) -> Result {
-    // ctx.target is empty when no target is specified;
+    // ctx.target.as_str() is empty when no target is specified;
     // use ctx.tx directly or store the channel name in bot state.
     Ok(())
 }

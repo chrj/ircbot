@@ -131,7 +131,7 @@ impl TestContext {
     ///
     /// `target` is the channel name (e.g. `"#test"`), `sender_nick` is the
     /// IRC nick that sent the message, and `text` is the message body.
-    /// [`Context::is_channel`] is set to `true`.
+    /// [`Context::is_channel`] returns `true`.
     pub fn channel(target: &str, sender_nick: &str, text: &str) -> Self {
         TestContextBuilder::new()
             .target(target)
@@ -145,7 +145,7 @@ impl TestContext {
     /// the bot.
     ///
     /// `sender_nick` is the IRC nick that sent the message, and `text` is the
-    /// message body.  [`Context::is_channel`] is set to `false`.
+    /// message body.  [`Context::is_channel`] returns `false`.
     pub fn private(sender_nick: &str, text: &str) -> Self {
         TestContextBuilder::new()
             .target(sender_nick)
