@@ -116,7 +116,7 @@ async fn test_cron_handler_context_target() {
             Box::pin(async move {
                 let mut guard = sc.lock().unwrap();
                 if guard.is_none() {
-                    *guard = Some((ctx.target.clone(), ctx.is_channel));
+                    *guard = Some((ctx.target.as_str().to_string(), ctx.is_channel()));
                 }
                 Ok(())
             })
