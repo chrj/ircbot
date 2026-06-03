@@ -29,20 +29,11 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type Result = std::result::Result<(), BoxError>;
 
 /// Errors specific to the bot framework.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("missing context: {0}")]
     MissingContext(&'static str),
 }
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::MissingContext(ctx) => write!(f, "missing context: {ctx}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 // ─── ReloadHandle ─────────────────────────────────────────────────────────────
 

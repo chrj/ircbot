@@ -1019,6 +1019,7 @@ dependencies = [
  "libc",
  "regex",
  "testcontainers",
+ "thiserror 2.0.18",
  "tokio",
  "trybuild",
 ]
