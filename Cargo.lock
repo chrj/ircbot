@@ -1015,6 +1015,7 @@ dependencies = [
  "irc",
  "irc-proto",
  "ircbot-macros",
+ "leaky-bucket",
  "libc",
  "regex",
  "testcontainers",
@@ -1056,6 +1057,17 @@ checksum = "b49715b7073f385ba4bc528e5747d02e66cb39c6146efb66b781f131f0fb399c"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "leaky-bucket"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a396bb213c2d09ed6c5495fd082c991b6ab39c9daf4fff59e6727f85c73e4c5"
+dependencies = [
+ "parking_lot",
+ "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]

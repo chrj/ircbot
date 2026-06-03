@@ -21,6 +21,7 @@ irc-proto = { version = "1", default-features = false }
 cron = "0.15"
 chrono = "0.4"
 chrono-tz = "0.10"
+leaky-bucket = "1"
 
 [dev-dependencies]
 testcontainers = "0.27"
