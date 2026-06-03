@@ -1,7 +1,7 @@
 use irc_proto::Message;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::types::Nick;
+use crate::types::{Nick, Target};
 
 /// IRC mandates that no message line (including the trailing `\r\n`) may
 /// exceed 512 bytes.  We budget 2 bytes for `\r\n`, leaving 510 bytes for
@@ -19,9 +19,8 @@ pub struct User {
 /// Per-message context passed to every handler.
 pub struct Context {
     pub(crate) tx: UnboundedSender<String>,
-    /// The channel or nick this message was directed to.
-    pub target: String,
-    pub is_channel: bool,
+    /// The channel or user this message was directed to.
+    pub target: Target,
     /// The user who sent the message (if available).
     pub sender: Option<User>,
     /// The underlying parsed IRC message.
@@ -113,6 +112,26 @@ fn send_chunked(
 }
 
 impl Context {
+    /// Whether this message was directed to a channel (rather than a private
+    /// query). Convenience for `self.target.is_channel()`.
+    #[must_use]
+    pub fn is_channel(&self) -> bool {
+        self.target.is_channel()
+    }
+
+    /// The concrete destination for a non-reply send: the channel name when the
+    /// message arrived in a channel, otherwise the sender's nick (falling back
+    /// to the query target when there is no sender, e.g. a cron context).
+    fn send_target(&self) -> &str {
+        match &self.target {
+            Target::Channel(chan) => chan.as_str(),
+            Target::User(nick) => self
+                .sender
+                .as_ref()
+                .map_or(nick.as_str(), |u| u.nick.as_str()),
+        }
+    }
+
     /// Reply to the sender.  In a channel, prefixes the nick; in a query, PMs back.
     ///
     /// If the formatted message would exceed the IRC 512-byte line limit it is
@@ -123,21 +142,24 @@ impl Context {
     /// Returns an error if the write channel is closed.
     pub fn reply(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
-        if self.is_channel {
-            let prefix = self
-                .sender
-                .as_ref()
-                .map(|u| format!("{}, ", u.nick))
-                .unwrap_or_default();
-            let header = format!("PRIVMSG {} :{prefix}", self.target);
-            send_chunked(&self.tx, &header, &msg, "")
-        } else {
-            let to = self
-                .sender
-                .as_ref()
-                .map_or(self.target.as_str(), |u| u.nick.as_str());
-            let header = format!("PRIVMSG {to} :");
-            send_chunked(&self.tx, &header, &msg, "")
+        match &self.target {
+            Target::Channel(chan) => {
+                let prefix = self
+                    .sender
+                    .as_ref()
+                    .map(|u| format!("{}, ", u.nick))
+                    .unwrap_or_default();
+                let header = format!("PRIVMSG {chan} :{prefix}");
+                send_chunked(&self.tx, &header, &msg, "")
+            }
+            Target::User(nick) => {
+                let to = self
+                    .sender
+                    .as_ref()
+                    .map_or(nick.as_str(), |u| u.nick.as_str());
+                let header = format!("PRIVMSG {to} :");
+                send_chunked(&self.tx, &header, &msg, "")
+            }
         }
     }
 
@@ -151,14 +173,7 @@ impl Context {
     /// Returns an error if the write channel is closed.
     pub fn say(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
-        let target = if self.is_channel {
-            self.target.clone()
-        } else {
-            self.sender
-                .as_ref()
-                .map_or_else(|| self.target.clone(), |u| u.nick.to_string())
-        };
-        let header = format!("PRIVMSG {target} :");
+        let header = format!("PRIVMSG {} :", self.send_target());
         send_chunked(&self.tx, &header, &msg, "")
     }
 
@@ -172,15 +187,8 @@ impl Context {
     /// Returns an error if the write channel is closed.
     pub fn action(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
-        let target = if self.is_channel {
-            self.target.clone()
-        } else {
-            self.sender
-                .as_ref()
-                .map_or_else(|| self.target.clone(), |u| u.nick.to_string())
-        };
         // CTCP ACTION: header is "PRIVMSG target :\x01ACTION ", suffix is "\x01"
-        let header = format!("PRIVMSG {target} :\x01ACTION ");
+        let header = format!("PRIVMSG {} :\x01ACTION ", self.send_target());
         send_chunked(&self.tx, &header, &msg, "\x01")
     }
 
@@ -254,15 +262,7 @@ impl Context {
     /// Returns an error if the write channel is closed.
     pub fn notice(&self, msg: impl std::fmt::Display) -> crate::Result {
         let msg = sanitize(&msg.to_string());
-        let target = if self.is_channel {
-            self.target.clone()
-        } else {
-            self.sender
-                .as_ref()
-                .map(|u| u.nick.to_string())
-                .unwrap_or_else(|| self.target.clone())
-        };
-        let header = format!("NOTICE {target} :");
+        let header = format!("NOTICE {} :", self.send_target());
         send_chunked(&self.tx, &header, &msg, "")
     }
 
@@ -391,7 +391,17 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Channel;
     use tokio::sync::mpsc;
+
+    /// Build a [`Target`] from a name plus an explicit channel/query flag.
+    fn make_target(target: &str, is_channel: bool) -> Target {
+        if is_channel {
+            Target::Channel(Channel::from(target))
+        } else {
+            Target::User(Nick::from(target))
+        }
+    }
 
     /// Build a `Context` wired to an in-process channel for easy inspection.
     fn make_ctx(target: &str, is_channel: bool) -> (Context, mpsc::UnboundedReceiver<String>) {
@@ -401,8 +411,7 @@ mod tests {
             .unwrap();
         let ctx = Context {
             tx,
-            target: target.to_string(),
-            is_channel,
+            target: make_target(target, is_channel),
             sender: Some(User {
                 nick: Nick::from("nick"),
                 user: "u".to_string(),
@@ -535,8 +544,7 @@ mod tests {
             .unwrap();
         let ctx = Context {
             tx,
-            target: target.to_string(),
-            is_channel,
+            target: make_target(target, is_channel),
             sender: None,
             raw,
             bot_nick: Nick::from("bot"),

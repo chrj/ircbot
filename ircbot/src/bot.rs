@@ -12,8 +12,8 @@ use crate::{
     connection::State,
     context::{Context, User},
     handler::{HandlerEntry, Trigger},
-    irc::{ChannelExt, CtcpMessage, Message},
-    types::Nick,
+    irc::{CtcpMessage, Message},
+    types::{Nick, Target},
     BoxError,
 };
 use irc_proto::{prefix::Prefix, Command, Response};
@@ -332,8 +332,7 @@ async fn run_cron_supervisor<T: Send + Sync + 'static>(
             let cron_target = target.clone().unwrap_or_default();
             let ctx = Context {
                 tx: tx.clone(),
-                is_channel: cron_target.is_channel_name(),
-                target: cron_target,
+                target: Target::from_raw(&cron_target),
                 sender: None,
                 raw: synthesize_cron_message(bot_nick.as_str()),
                 bot_nick: bot_nick.clone(),
@@ -692,15 +691,13 @@ async fn dispatch<T: Send + Sync + 'static>(
         }),
         _ => None,
     };
-    let target = target_param(msg).unwrap_or("").to_string();
-    let is_channel = target.is_channel_name();
+    let target = Target::from_raw(target_param(msg).unwrap_or(""));
 
     for entry in current.iter() {
         if let Some(captures) = check_trigger(&entry.trigger, msg, bot_nick.as_str()) {
             let ctx = Context {
                 tx: tx.clone(),
                 target: target.clone(),
-                is_channel,
                 sender: sender.clone(),
                 raw: msg.clone(),
                 bot_nick: bot_nick.clone(),
