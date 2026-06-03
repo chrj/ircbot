@@ -29,7 +29,7 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type Result = std::result::Result<(), BoxError>;
 
 /// Errors specific to the bot framework.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     #[error("missing context: {0}")]
     MissingContext(&'static str),

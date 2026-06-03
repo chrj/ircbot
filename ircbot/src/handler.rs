@@ -11,7 +11,7 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 pub type HandlerFn<T> = Box<dyn Fn(Arc<T>, Context) -> BoxFuture<crate::Result> + Send + Sync>;
 
 /// What causes a handler to fire.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trigger {
     /// Fires when the user sends `!<name>` (optionally in a specific channel).
     Command {
