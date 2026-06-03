@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
+use leaky_bucket::RateLimiter;
 use regex::Regex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc;
@@ -85,29 +86,21 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     let write_task = tokio::spawn(async move {
         let mut writer = BufWriter::new(write_half);
 
-        // Token-bucket state.
-        let max_tokens = flood_burst as f64;
-        let mut tokens = max_tokens;
-        // How fast tokens regenerate: one token per `flood_rate`.
-        let token_rate = 1.0 / flood_rate.as_secs_f64(); // tokens per second
-        let mut last_refill = tokio::time::Instant::now();
+        // Token-bucket flood control: start with a full burst budget and refill
+        // one token every `flood_rate`. `acquire_one` returns immediately while
+        // the budget lasts, then waits for the next refill once it is exhausted,
+        // so the bot never sends faster than the server allows.  `max` is
+        // clamped to at least 1 (a 0 burst rate-limits from the very first
+        // message, which is honoured by the empty `initial` budget below).
+        let limiter = RateLimiter::builder()
+            .max(flood_burst.max(1))
+            .initial(flood_burst)
+            .refill(1)
+            .interval(flood_rate)
+            .build();
 
         while let Some(msg) = write_rx.recv().await {
-            // Refill tokens based on time elapsed since the last send.
-            let now = tokio::time::Instant::now();
-            let elapsed = (now - last_refill).as_secs_f64();
-            tokens = (tokens + elapsed * token_rate).min(max_tokens);
-            last_refill = now;
-
-            // If the bucket is empty, wait until a token becomes available.
-            if tokens < 1.0 {
-                let wait = Duration::from_secs_f64((1.0 - tokens) / token_rate);
-                tokio::time::sleep(wait).await;
-                tokens = 0.0;
-                last_refill = tokio::time::Instant::now();
-            } else {
-                tokens -= 1.0;
-            }
+            limiter.acquire_one().await;
 
             if writer.write_all(msg.as_bytes()).await.is_err() {
                 break;
