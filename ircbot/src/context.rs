@@ -7,7 +7,7 @@ use tokio::sync::mpsc::UnboundedSender;
 const MAX_IRC_LINE: usize = 510;
 
 /// A user on IRC (nick!user@host).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct User {
     pub nick: String,
     pub user: String,

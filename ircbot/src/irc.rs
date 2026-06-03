@@ -14,7 +14,7 @@ pub use irc_proto::response::Response;
 ///
 /// CTCP messages are delimited by `\x01` bytes:
 /// `\x01COMMAND [optional args]\x01`
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CtcpMessage {
     /// The CTCP command in uppercase (e.g. `"PING"`, `"VERSION"`, `"ACTION"`).
     pub command: String,
