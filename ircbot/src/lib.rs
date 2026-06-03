@@ -22,7 +22,7 @@ pub use ircbot_macros::bot;
 pub use ircbot_macros::command;
 #[doc = include_str!("../docs/on.md")]
 pub use ircbot_macros::on;
-pub use types::{Channel, Nick};
+pub use types::{Channel, Nick, Target};
 
 /// The standard error type used throughout the crate.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;

@@ -88,7 +88,7 @@
 use tokio::sync::mpsc;
 
 use crate::context::{Context, User};
-use crate::types::Nick;
+use crate::types::{Channel, Nick, Target};
 
 // ─── TestContext ──────────────────────────────────────────────────────────────
 
@@ -293,10 +293,14 @@ impl TestContextBuilder {
         let raw = raw_line
             .parse::<irc_proto::Message>()
             .unwrap_or_else(|_| ":test!t@h PRIVMSG #test :test".parse().unwrap());
+        let target = if self.is_channel {
+            Target::Channel(Channel::from(self.target))
+        } else {
+            Target::User(Nick::from(self.target))
+        };
         let ctx = Context {
             tx,
-            target: self.target,
-            is_channel: self.is_channel,
+            target,
             sender: Some(User {
                 nick: Nick::from(self.sender_nick),
                 user: self.sender_user,
@@ -319,13 +323,13 @@ mod tests {
     #[test]
     fn channel_sets_is_channel_true() {
         let mut tc = TestContext::channel("#rust", "alice", "hello");
-        assert!(tc.take_ctx().is_channel);
+        assert!(tc.take_ctx().is_channel());
     }
 
     #[test]
     fn channel_sets_target() {
         let mut tc = TestContext::channel("#rust", "alice", "hello");
-        assert_eq!(tc.take_ctx().target, "#rust");
+        assert_eq!(tc.take_ctx().target.as_str(), "#rust");
     }
 
     #[test]
@@ -346,13 +350,13 @@ mod tests {
     #[test]
     fn private_sets_is_channel_false() {
         let mut tc = TestContext::private("alice", "hey bot");
-        assert!(!tc.take_ctx().is_channel);
+        assert!(!tc.take_ctx().is_channel());
     }
 
     #[test]
     fn private_sets_target_to_sender_nick() {
         let mut tc = TestContext::private("alice", "hey bot");
-        assert_eq!(tc.take_ctx().target, "alice");
+        assert_eq!(tc.take_ctx().target.as_str(), "alice");
     }
 
     #[test]
@@ -368,7 +372,7 @@ mod tests {
     fn take_ctx_returns_context() {
         let mut tc = TestContext::channel("#test", "nick", "msg");
         let ctx = tc.take_ctx();
-        assert_eq!(ctx.target, "#test");
+        assert_eq!(ctx.target.as_str(), "#test");
     }
 
     #[test]
@@ -450,13 +454,13 @@ mod tests {
     #[test]
     fn builder_default_target_is_test_channel() {
         let mut tc = TestContextBuilder::new().build();
-        assert_eq!(tc.take_ctx().target, "#test");
+        assert_eq!(tc.take_ctx().target.as_str(), "#test");
     }
 
     #[test]
     fn builder_default_is_channel_true() {
         let mut tc = TestContextBuilder::new().build();
-        assert!(tc.take_ctx().is_channel);
+        assert!(tc.take_ctx().is_channel());
     }
 
     #[test]
@@ -483,13 +487,13 @@ mod tests {
     #[test]
     fn builder_target_overrides_default() {
         let mut tc = TestContextBuilder::new().target("#general").build();
-        assert_eq!(tc.take_ctx().target, "#general");
+        assert_eq!(tc.take_ctx().target.as_str(), "#general");
     }
 
     #[test]
     fn builder_is_channel_false_overrides_default() {
         let mut tc = TestContextBuilder::new().is_channel(false).build();
-        assert!(!tc.take_ctx().is_channel);
+        assert!(!tc.take_ctx().is_channel());
     }
 
     #[test]
