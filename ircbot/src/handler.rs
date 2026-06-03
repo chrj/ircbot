@@ -39,10 +39,11 @@ pub enum Trigger {
     /// must be a valid IANA timezone name (e.g. `"America/New_York"`); defaults
     /// to `"UTC"` when not specified.
     ///
-    /// When `target` is `None` the handler's [`Context::target`] is an empty
-    /// string and [`Context::is_channel`] is `false`.  Handlers that need to
-    /// send a message should either specify a `target` or store the destination
-    /// in their bot state.
+    /// When `target` is `None` the handler's [`Context::target`] is a
+    /// [`Target::User`](crate::Target::User) with an empty name (so its
+    /// `as_str()` is empty) and [`Context::is_channel`] returns `false`.
+    /// Handlers that need to send a message should either specify a `target` or
+    /// store the destination in their bot state.
     ///
     /// Example — top of every hour on weekday afternoons (Eastern time):
     /// `"0 0 8-16 * * MON-FRI"` with `tz = "America/New_York"`
