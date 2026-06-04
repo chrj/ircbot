@@ -6,10 +6,11 @@ pub mod context;
 pub mod handler;
 pub mod hot_reload;
 pub mod irc;
+pub mod logging;
 pub mod testing;
 pub mod types;
 
-pub use bot::{HandlerSet, PROTOCOL_LOG_TARGET};
+pub use bot::HandlerSet;
 pub use connection::{
     State, DEFAULT_FLOOD_BURST, DEFAULT_FLOOD_RATE, DEFAULT_KEEPALIVE_INTERVAL,
     DEFAULT_KEEPALIVE_TIMEOUT,
@@ -22,6 +23,7 @@ pub use ircbot_macros::bot;
 pub use ircbot_macros::command;
 #[doc = include_str!("../docs/on.md")]
 pub use ircbot_macros::on;
+pub use logging::PROTOCOL_LOG_TARGET;
 pub use types::{Channel, Nick, Target};
 
 /// The standard error type used throughout the crate.

@@ -13,6 +13,7 @@ use crate::{
     context::{Context, User},
     handler::{HandlerEntry, Trigger},
     irc::{CtcpMessage, Message},
+    logging::PROTOCOL_LOG_TARGET,
     types::{Nick, Target},
     BoxError,
 };
@@ -20,18 +21,6 @@ use irc_proto::{prefix::Prefix, Command, Response};
 
 /// Command prefix recognised by the bot (e.g. `!ping`).
 const CMD_PREFIX: char = '!';
-
-/// Tracing target for raw IRC protocol lines.
-///
-/// Every line read from or written to the server is emitted at the `TRACE`
-/// level on this target, tagged with a `dir` field (`"recv"` or `"send"`).
-/// Protocol logging is therefore **opt-in**: it stays silent unless your
-/// subscriber enables this target at `TRACE`, e.g. with the environment filter
-/// `ircbot::protocol=trace`.
-///
-/// Note that these lines contain the full, unredacted message content; only
-/// enable them when debugging.
-pub const PROTOCOL_LOG_TARGET: &str = "ircbot::protocol";
 
 /// The token sent in our client-initiated keepalive `PING`.
 const KEEPALIVE_TOKEN: &str = "ircbot-keepalive";
