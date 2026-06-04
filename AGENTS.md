@@ -78,6 +78,8 @@ secrets.
 
   Edit **all** copies together. These `.md` files are pulled into rustdoc via
   `#[doc = include_str!(...)]`, so they are real API docs, not just notes.
+- After every code change, evaluate if any documentation needs to be updated,
+  including `AGENTS.md` or `README.md`.
 
 ## Error handling
 
@@ -227,5 +229,3 @@ This crate talks to a hostile network; treat all wire input as untrusted.
 - Platform-specific deps are gated (`[target.'cfg(unix)'.dependencies] libc`), and
   the corresponding code is behind `#[cfg(unix)]` with a documented non-Unix
   fallback.
-</content>
-</invoke>
