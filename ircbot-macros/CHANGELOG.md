@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.2.0...ircbot-macros-v0.2.1) - 2026-06-04
+
+### Added
+
+- structured logging via tracing with opt-in protocol logs ([#96](https://github.com/chrj/ircbot/pull/96))
+
+### Other
+
+- Bump crate version in README.md, add agent instructions. ([#94](https://github.com/chrj/ircbot/pull/94))
+
 ## [0.2.0](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.1.9...ircbot-macros-v0.2.0) - 2026-06-03
 
 ### Other
