@@ -27,6 +27,12 @@ impl CounterBot {
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Route the framework's `tracing` logs to stderr; the filter comes from
+    // `RUST_LOG`. Add `ircbot::protocol=trace` to also see raw IRC traffic.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     // As with `basic_bot`, we don't connect here — just show the API compiles.
     println!("stateful_bot example compiled successfully.");
     println!("To start a non-default state, assign the field after `new()`:");

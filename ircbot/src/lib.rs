@@ -6,6 +6,7 @@ pub mod context;
 pub mod handler;
 pub mod hot_reload;
 pub mod irc;
+pub mod logging;
 pub mod testing;
 pub mod types;
 
@@ -22,6 +23,7 @@ pub use ircbot_macros::bot;
 pub use ircbot_macros::command;
 #[doc = include_str!("../docs/on.md")]
 pub use ircbot_macros::on;
+pub use logging::PROTOCOL_LOG_TARGET;
 pub use types::{Channel, Nick, Target};
 
 /// The standard error type used throughout the crate.
@@ -138,15 +140,12 @@ pub mod internal {
                 crate::bot::run_bot_internal(Arc::clone(&bot), current_state, Arc::clone(&handlers))
                     .await
             {
-                eprintln!("[ircbot] connection error: {e}");
+                tracing::error!(%server, error = %e, "connection error");
             } else {
-                eprintln!("[ircbot] disconnected from {server}");
+                tracing::warn!(%server, "disconnected");
             }
 
-            eprintln!(
-                "[ircbot] reconnecting to {server} in {:.0?}…",
-                RECONNECT_DELAY
-            );
+            tracing::info!(%server, delay = ?RECONNECT_DELAY, "reconnecting");
             tokio::time::sleep(RECONNECT_DELAY).await;
 
             match State::connect(nick.clone(), &server, channels.clone()).await {
@@ -158,7 +157,7 @@ pub mod internal {
                     current_state = new_state;
                 }
                 Err(e) => {
-                    eprintln!("[ircbot] failed to reconnect to {server}: {e}");
+                    tracing::error!(%server, error = %e, "failed to reconnect");
                     return Err(e);
                 }
             }

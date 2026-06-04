@@ -86,12 +86,17 @@ impl State {
         let reader = tokio::io::BufReader::new(read_half);
         let mut writer = BufWriter::new(write_half);
 
-        writer
-            .write_all(format!("NICK {nick}\r\n").as_bytes())
-            .await?;
-        writer
-            .write_all(format!("USER {nick} 0 * :{nick}\r\n").as_bytes())
-            .await?;
+        let nick_line = format!("NICK {nick}\r\n");
+        let user_line = format!("USER {nick} 0 * :{nick}\r\n");
+        for line in [&nick_line, &user_line] {
+            tracing::trace!(
+                target: crate::PROTOCOL_LOG_TARGET,
+                dir = "send",
+                line = %line.trim_end_matches(['\r', '\n']),
+            );
+        }
+        writer.write_all(nick_line.as_bytes()).await?;
+        writer.write_all(user_line.as_bytes()).await?;
         writer.flush().await?;
 
         // Recover the inner write half from the BufWriter.

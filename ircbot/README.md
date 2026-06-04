@@ -57,6 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Auto message splitting** — long messages are word-wrapped and split within the 512-byte IRC limit.
 - **Output sanitization** — `\r`, `\n`, `\0` stripped from every outgoing message.
 - **Unit-testable** — `ircbot::testing::TestContext` lets you test handlers without a live server.
+- **Structured logging** — diagnostics are emitted through [`tracing`](https://docs.rs/tracing); you pick the subscriber, level, and format. Raw IRC traffic is available opt-in on the `ircbot::protocol` target.
 
 Full API reference: **[docs.rs/ircbot](https://docs.rs/ircbot)**
 
@@ -69,6 +70,16 @@ tokio  = { version = "1", features = ["full"] }
 ```
 
 See the [`basic_bot` example](ircbot/examples/basic_bot.rs) and the [docs](https://docs.rs/ircbot) for the complete API, hot-reload guide, testing helpers, and lower-level `State` / `internal` APIs.
+
+## Logging
+
+The framework emits structured [`tracing`](https://docs.rs/tracing) events and
+installs no subscriber of its own, so verbosity, format, and destination are
+yours to configure. Raw IRC traffic is available opt-in on the `ircbot::protocol`
+target.
+
+See the [`logging` module docs](https://docs.rs/ircbot/latest/ircbot/logging/)
+for subscriber setup and the raw-protocol opt-in.
 
 ## License
 

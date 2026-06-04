@@ -92,7 +92,7 @@ secrets.
 - **Never `unwrap()`/`expect()` on fallible runtime paths.** Lock poisoning is
   handled deliberately with `.unwrap_or_else(|e| e.into_inner())` so a panicked
   handler can't take down the dispatch loop. Background tasks log and continue
-  (`eprintln!("[ircbot] ...")`) rather than panicking.
+  (`tracing::error!(...)`) rather than panicking.
 - `unwrap()`/`expect()` are acceptable in **tests**, in **macro code** (compile-time,
   with a helpful message), and for genuinely-impossible invariants — but always
   with an explanatory message (`expect("bot already started")`).
@@ -102,7 +102,13 @@ secrets.
   `Error::MissingContext`) rather than pulling in a derive macro dependency. The
   crate keeps its dependency surface deliberately small — don't add `thiserror`/
   `anyhow` without a strong reason.
-- Log lines from the framework are prefixed `[ircbot]` and go to `stderr`.
+- Framework diagnostics go through the [`tracing`](https://docs.rs/tracing) facade,
+  not `println!`/`eprintln!`. Lifecycle and failure events use `error!`/`warn!`/`info!`
+  with structured fields (`error = %e`, `%server`, …) rather than a `[ircbot]` text
+  prefix. Raw IRC traffic (inbound and outbound) is logged at `trace!` on the
+  `ircbot::protocol` target (`PROTOCOL_LOG_TARGET`) with a `dir = "recv"|"send"`
+  field, so it is opt-in via the subscriber's filter. The crate installs no
+  subscriber — that is the application's (and the examples') responsibility.
 
 ## Async & concurrency
 
@@ -223,9 +229,13 @@ This crate talks to a hostile network; treat all wire input as untrusted.
 ## Dependencies
 
 - Keep the dependency tree small and the surface minimal (`irc-proto` is pulled in
-  with `default-features = false`; no `anyhow`/`thiserror`). `cargo audit` runs in
-  CI, and Dependabot is configured — prefer well-maintained crates and avoid adding
-  new dependencies for things the std library or an existing dep already covers.
+  with `default-features = false`). `cargo audit` runs in CI, and Dependabot is
+  configured — prefer well-maintained crates and avoid adding new dependencies for
+  things the std library or an existing dep already covers.
+- `tracing` is the single sanctioned logging dependency: the library depends only
+  on the lightweight facade and emits events; it never pulls in a subscriber.
+  `tracing-subscriber` is a **dev-dependency** only (used by the examples). Choosing
+  and installing a subscriber is the downstream application's job.
 - Platform-specific deps are gated (`[target.'cfg(unix)'.dependencies] libc`), and
   the corresponding code is behind `#[cfg(unix)]` with a documented non-Unix
   fallback.

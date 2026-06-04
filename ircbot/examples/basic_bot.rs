@@ -59,6 +59,16 @@ impl MyBot {
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Install a tracing subscriber so the framework's logs are printed. The
+    // library itself installs none, leaving the choice of level, format, and
+    // destination entirely up to you. The filter is read from `RUST_LOG`; to
+    // also see the raw IRC traffic, opt in to the protocol target, e.g.:
+    //
+    //     RUST_LOG=ircbot=info,ircbot::protocol=trace cargo run --example basic_bot
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     // In a real scenario you'd point this at an actual IRC server.
     // Attempting to connect to 127.0.0.1:6667 will fail unless a server is running,
     // so we just demonstrate the API compiles correctly.
