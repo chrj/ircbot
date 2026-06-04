@@ -9,7 +9,7 @@ pub mod irc;
 pub mod testing;
 pub mod types;
 
-pub use bot::HandlerSet;
+pub use bot::{HandlerSet, PROTOCOL_LOG_TARGET};
 pub use connection::{
     State, DEFAULT_FLOOD_BURST, DEFAULT_FLOOD_RATE, DEFAULT_KEEPALIVE_INTERVAL,
     DEFAULT_KEEPALIVE_TIMEOUT,
@@ -138,15 +138,12 @@ pub mod internal {
                 crate::bot::run_bot_internal(Arc::clone(&bot), current_state, Arc::clone(&handlers))
                     .await
             {
-                eprintln!("[ircbot] connection error: {e}");
+                tracing::error!(%server, error = %e, "connection error");
             } else {
-                eprintln!("[ircbot] disconnected from {server}");
+                tracing::warn!(%server, "disconnected");
             }
 
-            eprintln!(
-                "[ircbot] reconnecting to {server} in {:.0?}…",
-                RECONNECT_DELAY
-            );
+            tracing::info!(%server, delay = ?RECONNECT_DELAY, "reconnecting");
             tokio::time::sleep(RECONNECT_DELAY).await;
 
             match State::connect(nick.clone(), &server, channels.clone()).await {
@@ -158,7 +155,7 @@ pub mod internal {
                     current_state = new_state;
                 }
                 Err(e) => {
-                    eprintln!("[ircbot] failed to reconnect to {server}: {e}");
+                    tracing::error!(%server, error = %e, "failed to reconnect");
                     return Err(e);
                 }
             }

@@ -21,6 +21,18 @@ use irc_proto::{prefix::Prefix, Command, Response};
 /// Command prefix recognised by the bot (e.g. `!ping`).
 const CMD_PREFIX: char = '!';
 
+/// Tracing target for raw IRC protocol lines.
+///
+/// Every line read from or written to the server is emitted at the `TRACE`
+/// level on this target, tagged with a `dir` field (`"recv"` or `"send"`).
+/// Protocol logging is therefore **opt-in**: it stays silent unless your
+/// subscriber enables this target at `TRACE`, e.g. with the environment filter
+/// `ircbot::protocol=trace`.
+///
+/// Note that these lines contain the full, unredacted message content; only
+/// enable them when debugging.
+pub const PROTOCOL_LOG_TARGET: &str = "ircbot::protocol";
+
 /// The token sent in our client-initiated keepalive `PING`.
 const KEEPALIVE_TOKEN: &str = "ircbot-keepalive";
 
@@ -103,6 +115,12 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         while let Some(msg) = write_rx.recv().await {
             limiter.acquire_one().await;
 
+            tracing::trace!(
+                target: PROTOCOL_LOG_TARGET,
+                dir = "send",
+                line = %msg.trim_end_matches(['\r', '\n']),
+            );
+
             if writer.write_all(msg.as_bytes()).await.is_err() {
                 break;
             }
@@ -151,7 +169,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
             }
             tokio::time::sleep(keepalive_timeout).await;
             if !pong_received_keepalive.load(Ordering::Relaxed) {
-                eprintln!("[ircbot] keepalive timeout — reconnecting");
+                tracing::warn!("keepalive timeout — reconnecting");
                 if let Some(tx) = fail_tx.take() {
                     let _ = tx.send(());
                 }
@@ -177,11 +195,13 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                         continue;
                     }
 
+                    tracing::trace!(target: PROTOCOL_LOG_TARGET, dir = "recv", %line);
+
                     if let Ok(msg) = line.parse::<Message>() {
                         match &msg.command {
                             Command::PING(srv, _) => {
                                 if let Err(e) = write_tx.send(format!("PONG :{srv}\r\n")) {
-                                    eprintln!("[ircbot] failed to send PONG: {e}");
+                                    tracing::error!(error = %e, "failed to send PONG");
                                 }
                             }
                             Command::PONG(a, b) => {
@@ -198,7 +218,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                     joined = true;
                                     for ch in &channels {
                                         if let Err(e) = write_tx.send(format!("JOIN {ch}\r\n")) {
-                                            eprintln!("[ircbot] failed to send JOIN {ch}: {e}");
+                                            tracing::error!(channel = %ch, error = %e, "failed to send JOIN");
                                         }
                                     }
                                 }
@@ -215,21 +235,21 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                     nick_attempt += 1;
                                     if nick_attempt <= MAX_NICK_ATTEMPTS {
                                         let candidate = fallback_nick(nick.as_str(), nick_attempt);
-                                        eprintln!(
-                                            "[ircbot] nick {bot_nick:?} unavailable — retrying as {candidate:?}"
+                                        tracing::warn!(
+                                            current = %bot_nick,
+                                            %candidate,
+                                            "nick unavailable — retrying"
                                         );
                                         if let Err(e) =
                                             write_tx.send(format!("NICK {candidate}\r\n"))
                                         {
-                                            eprintln!(
-                                                "[ircbot] failed to send NICK {candidate}: {e}"
-                                            );
+                                            tracing::error!(%candidate, error = %e, "failed to send NICK");
                                         }
                                         bot_nick = Nick::from(candidate);
                                     } else {
-                                        eprintln!(
-                                            "[ircbot] giving up on registration after \
-                                             {MAX_NICK_ATTEMPTS} nick attempts"
+                                        tracing::error!(
+                                            attempts = MAX_NICK_ATTEMPTS,
+                                            "giving up on registration"
                                         );
                                     }
                                 }
@@ -339,7 +359,7 @@ async fn run_cron_supervisor<T: Send + Sync + 'static>(
                 captures: vec![],
             };
             if let Err(e) = (entry.handler)(Arc::clone(&bot), ctx).await {
-                eprintln!("[ircbot] cron handler error: {e}");
+                tracing::error!(error = %e, "cron handler error");
             }
         }
     }
@@ -643,7 +663,7 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
                         ctcp.arg,
                     );
                     if let Err(e) = tx.send(reply) {
-                        eprintln!("[ircbot] failed to send CTCP PING reply: {e}");
+                        tracing::error!(error = %e, "failed to send CTCP PING reply");
                     }
                 }
                 return;
@@ -658,7 +678,7 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
                     );
                     let reply = format!("NOTICE {sender} :\x01VERSION {version}\x01\r\n");
                     if let Err(e) = tx.send(reply) {
-                        eprintln!("[ircbot] failed to send CTCP VERSION reply: {e}");
+                        tracing::error!(error = %e, "failed to send CTCP VERSION reply");
                     }
                 }
                 return;
@@ -706,7 +726,7 @@ async fn dispatch<T: Send + Sync + 'static>(
             let bot_clone = Arc::clone(bot);
             let fut = (entry.handler)(bot_clone, ctx);
             if let Err(e) = fut.await {
-                eprintln!("[ircbot] handler error: {e}");
+                tracing::error!(error = %e, "handler error");
             }
         }
     }
@@ -774,6 +794,111 @@ mod tests {
                 "NOTICE alice :\x01VERSION ircbot {}\x01\r\n",
                 env!("CARGO_PKG_VERSION")
             ),
+        );
+    }
+
+    // ── protocol logging ───────────────────────────────────────────────────────
+
+    /// A `tracing` writer that appends everything it is handed to a shared
+    /// buffer, so a test can inspect what the subscriber emitted.
+    #[derive(Clone, Default)]
+    struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CaptureWriter {
+        fn contents(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
+                .expect("capture buffer is valid UTF-8")
+        }
+    }
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Drives the real read/write loop against a local socket that sends a
+    /// single `PING` and then disconnects, and asserts that both the inbound
+    /// line and the bot's `PONG` reply are emitted on the protocol target.
+    #[tokio::test]
+    async fn protocol_logging_captures_recv_and_send_on_protocol_target() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let capture = CaptureWriter::default();
+        // Capture only the protocol target so unrelated events don't pollute the
+        // buffer. Installed for the current thread; `#[tokio::test]` runs a
+        // current-thread runtime, so the bot's spawned tasks share it.
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(capture.clone())
+            .with_env_filter(format!("{PROTOCOL_LOG_TARGET}=trace"))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // A stand-in server: send one PING with a recognisable token, drain the
+        // bot's input until its PONG arrives (so the exchange completes), then
+        // drop the connection so the bot's read loop tears down.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let (read, mut write) = sock.into_split();
+            write.write_all(b"PING :capture-token\r\n").await.unwrap();
+            write.flush().await.unwrap();
+            let mut lines = tokio::io::BufReader::new(read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.contains("PONG") {
+                    break;
+                }
+            }
+            // Dropping the halves closes the connection.
+        });
+
+        let state = State::connect(Nick::from("tester"), &addr.to_string(), vec![])
+            .await
+            .unwrap();
+        let bot = std::sync::Arc::new(());
+        let handlers = crate::internal::make_handler_set::<()>(vec![]);
+
+        // The loop returns on its own once the server disconnects (whether
+        // cleanly or with a reset); we only care that the exchange was logged.
+        // Bound it so a regression can't hang the suite.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_bot_internal(bot, state, handlers),
+        )
+        .await
+        .expect("read loop should return after the server disconnects");
+
+        let out = capture.contents();
+        assert!(
+            out.contains(PROTOCOL_LOG_TARGET),
+            "events should be on the protocol target; got:\n{out}"
+        );
+        assert!(
+            out.contains("recv") && out.contains("PING :capture-token"),
+            "the inbound PING should be logged as recv; got:\n{out}"
+        );
+        assert!(
+            out.contains("send") && out.contains("PONG :capture-token"),
+            "the outbound PONG should be logged as send; got:\n{out}"
         );
     }
 }

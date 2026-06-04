@@ -57,6 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Auto message splitting** — long messages are word-wrapped and split within the 512-byte IRC limit.
 - **Output sanitization** — `\r`, `\n`, `\0` stripped from every outgoing message.
 - **Unit-testable** — `ircbot::testing::TestContext` lets you test handlers without a live server.
+- **Structured logging** — diagnostics are emitted through [`tracing`](https://docs.rs/tracing); you pick the subscriber, level, and format. Raw IRC traffic is available opt-in on the `ircbot::protocol` target.
 
 Full API reference: **[docs.rs/ircbot](https://docs.rs/ircbot)**
 
@@ -69,6 +70,38 @@ tokio  = { version = "1", features = ["full"] }
 ```
 
 See the [`basic_bot` example](ircbot/examples/basic_bot.rs) and the [docs](https://docs.rs/ircbot) for the complete API, hot-reload guide, testing helpers, and lower-level `State` / `internal` APIs.
+
+## Logging
+
+The framework emits all of its diagnostics through the [`tracing`](https://docs.rs/tracing)
+facade and installs **no** subscriber of its own — the level, format, and
+destination are entirely yours to choose. Until you install a subscriber, the
+events are silently dropped.
+
+A minimal setup using [`tracing-subscriber`](https://docs.rs/tracing-subscriber)
+prints to stderr and reads its filter from the `RUST_LOG` environment variable:
+
+```rust,ignore
+tracing_subscriber::fmt()
+    .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+    .init();
+```
+
+Connection lifecycle and handler failures are logged at `info`/`warn`/`error`.
+
+### Raw protocol logging
+
+Every line read from and written to the server is emitted at the `TRACE` level
+on the dedicated `ircbot::protocol` target (the `ircbot::PROTOCOL_LOG_TARGET`
+constant), tagged with a `dir` field of `"recv"` or `"send"`. This is **opt-in**:
+it stays silent unless you enable that target at `TRACE`, for example:
+
+```sh
+RUST_LOG=ircbot=info,ircbot::protocol=trace cargo run
+```
+
+Protocol traces contain the full, unredacted message content, so enable them
+only while debugging.
 
 ## License
 
