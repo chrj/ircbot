@@ -158,6 +158,21 @@ async fn spawn_bot_with<T: Send + Sync + 'static>(
     tokio::spawn(run_bot_internal(bot, state, handler_set))
 }
 
+/// Connect a bot with the keepnick enabled at a short reclaim interval.
+async fn spawn_bot_with_keepnick<T: Send + Sync + 'static>(
+    addr: &str,
+    interval: Duration,
+    bot: Arc<T>,
+    handlers: Vec<HandlerEntry<T>>,
+) -> tokio::task::JoinHandle<Result<(), ircbot::BoxError>> {
+    let state = State::connect("testbot".to_string(), addr, vec![])
+        .await
+        .expect("failed to connect to mock server")
+        .with_keepnick_interval(interval);
+    let handler_set = ircbot::internal::make_handler_set(handlers);
+    tokio::spawn(run_bot_internal(bot, state, handler_set))
+}
+
 /// A no-op handler set.
 fn no_handlers() -> Vec<HandlerEntry<()>> {
     vec![]
@@ -545,4 +560,78 @@ async fn wait_for_some<V>(slot: &Arc<Mutex<Option<V>>>) {
     })
     .await
     .expect("handler did not fire within 2 s");
+}
+
+// ─── keepnick ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn keepnick_reclaims_after_landing_on_fallback() {
+    let mut server = MockServer::start().await;
+    let bot_task = spawn_bot_with_keepnick(
+        &server.addr,
+        Duration::from_millis(100),
+        Arc::new(()),
+        no_handlers(),
+    )
+    .await;
+
+    // Requested nick is taken → bot falls back to `testbot_`, then registers.
+    server.send(":server 433 * testbot :Nickname is already in use\r\n");
+    server.expect_line(|l| l == "NICK testbot_").await;
+    server.send_welcome();
+
+    // The stealer should re-attempt the original nick once the interval elapses.
+    let line = server.expect_line(|l| l == "NICK testbot").await;
+    assert_eq!(line, "NICK testbot");
+
+    bot_task.abort();
+}
+
+#[tokio::test]
+async fn keepnick_does_not_retry_when_already_on_desired_nick() {
+    let mut server = MockServer::start().await;
+    let bot_task = spawn_bot_with_keepnick(
+        &server.addr,
+        Duration::from_millis(100),
+        Arc::new(()),
+        no_handlers(),
+    )
+    .await;
+
+    // Drain the initial registration NICK, then register on the requested nick
+    // directly — no *reclaim* attempt should ever follow.
+    server.expect_line(|l| l == "NICK testbot").await;
+    server.send_welcome();
+    server
+        .expect_no_line(Duration::from_millis(400), |l| l.starts_with("NICK"))
+        .await;
+
+    bot_task.abort();
+}
+
+#[tokio::test]
+async fn keepnick_stops_after_reclaim_succeeds() {
+    let mut server = MockServer::start().await;
+    let bot_task = spawn_bot_with_keepnick(
+        &server.addr,
+        Duration::from_millis(100),
+        Arc::new(()),
+        no_handlers(),
+    )
+    .await;
+
+    server.send(":server 433 * testbot :Nickname is already in use\r\n");
+    server.expect_line(|l| l == "NICK testbot_").await;
+    server.send_welcome();
+
+    // First reclaim attempt fires; confirm it to the bot via a self-NICK change.
+    server.expect_line(|l| l == "NICK testbot").await;
+    server.send(":testbot_!u@h NICK testbot\r\n");
+
+    // Now that the bot holds its desired nick, no further attempts are made.
+    server
+        .expect_no_line(Duration::from_millis(400), |l| l == "NICK testbot")
+        .await;
+
+    bot_task.abort();
 }

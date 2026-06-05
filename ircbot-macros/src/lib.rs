@@ -464,6 +464,30 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                 self
             }
 
+            /// Enable keepnick: periodically re-attempt to reclaim the
+            /// originally-requested nick whenever the bot is using a different
+            /// one. Disabled by default. Call this (before `main_loop`); the
+            /// value is re-applied on a `SIGHUP` hot-reload, since the builder
+            /// runs again on startup.
+            #[must_use]
+            pub fn with_keepnick_interval(mut self, interval: std::time::Duration) -> Self {
+                if let Some(state) = self.__state.take() {
+                    self.__state = Some(state.with_keepnick_interval(interval));
+                }
+                self
+            }
+
+            /// Enable keepnick with the default reclaim interval
+            /// (60 seconds). Convenience wrapper around
+            /// `with_keepnick_interval`.
+            #[must_use]
+            pub fn with_keepnick(mut self) -> Self {
+                if let Some(state) = self.__state.take() {
+                    self.__state = Some(state.with_keepnick());
+                }
+                self
+            }
+
             /// Run the bot's main event loop.
             ///
             /// On Unix, listens for `SIGHUP`.  When received, the current
