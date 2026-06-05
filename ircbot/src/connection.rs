@@ -17,6 +17,10 @@ pub const DEFAULT_FLOOD_BURST: usize = 4;
 /// Default minimum interval between messages once the burst budget is exhausted.
 pub const DEFAULT_FLOOD_RATE: Duration = Duration::from_millis(500);
 
+/// Default interval between keepnick reclaim attempts when the feature is
+/// enabled via [`State::with_keepnick`].
+pub const DEFAULT_KEEPNICK_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Holds the established connection to an IRC server plus join-on-connect metadata.
 pub struct State {
     pub nick: Nick,
@@ -34,6 +38,11 @@ pub struct State {
     /// `ircbot <crate-version>`; when `Some`, it answers with this string
     /// verbatim. Set via [`State::with_ctcp_version`].
     pub(crate) ctcp_version: Option<String>,
+    /// When `Some`, periodically re-attempt to reclaim the originally-requested
+    /// nick at this interval whenever the bot is using a different one. `None`
+    /// (the default) disables the feature. Set via
+    /// [`State::with_keepnick_interval`].
+    pub(crate) keepnick_interval: Option<Duration>,
     pub(crate) reader: tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
     /// The raw write half; `run_bot_internal` wraps this in a buffered writer and a
     /// dedicated write-loop task.
@@ -111,6 +120,7 @@ impl State {
             flood_burst: DEFAULT_FLOOD_BURST,
             flood_rate: DEFAULT_FLOOD_RATE,
             ctcp_version: None,
+            keepnick_interval: None,
             reader,
             write_half,
             #[cfg(unix)]
@@ -207,6 +217,8 @@ impl State {
             // Re-applied by the bot builder on the re-exec'd process, so it need
             // not be carried through the hot-reload environment.
             ctcp_version: None,
+            // Likewise re-applied by the builder on restart (see `ctcp_version`).
+            keepnick_interval: None,
             reader,
             write_half,
             raw_fd,
@@ -246,6 +258,34 @@ impl State {
         self
     }
 
+    /// Enable keepnick: periodically re-attempt to reclaim the
+    /// originally-requested nick whenever the bot is using a different one.
+    ///
+    /// When the requested nick is already taken at connect time the bot falls
+    /// back to an alternate (`bot_`, `bot__`, …) and would otherwise keep it
+    /// indefinitely. With this enabled, the bot re-sends `NICK <requested>`
+    /// every `interval`; once the nick frees up the change succeeds and the bot
+    /// returns to its preferred name. While the bot already holds its requested
+    /// nick no attempts are made. A retry that fails is harmless — the server
+    /// simply replies with `ERR_NICKNAMEINUSE`, which is ignored after
+    /// registration.
+    ///
+    /// This feature is opt-in and disabled by default. Call this (before
+    /// starting the bot); see also [`State::with_keepnick`] for the default
+    /// interval.
+    pub fn with_keepnick_interval(mut self, interval: Duration) -> Self {
+        self.keepnick_interval = Some(interval);
+        self
+    }
+
+    /// Enable keepnick with the default reclaim interval
+    /// ([`DEFAULT_KEEPNICK_INTERVAL`], 60 seconds).
+    ///
+    /// Convenience wrapper around [`State::with_keepnick_interval`].
+    pub fn with_keepnick(self) -> Self {
+        self.with_keepnick_interval(DEFAULT_KEEPNICK_INTERVAL)
+    }
+
     /// Returns the configured keepalive interval.
     pub fn keepalive_interval(&self) -> Duration {
         self.keepalive_interval
@@ -265,6 +305,12 @@ impl State {
     /// budget is exhausted.
     pub fn flood_rate(&self) -> Duration {
         self.flood_rate
+    }
+
+    /// Returns the configured keepnick reclaim interval, or `None` when the
+    /// feature is disabled (the default).
+    pub fn keepnick_interval(&self) -> Option<Duration> {
+        self.keepnick_interval
     }
 }
 
@@ -309,6 +355,26 @@ mod tests {
     async fn connect_normalises_channels() {
         let state = connect_loopback().await;
         assert_eq!(state.channels, vec![Channel::from("#general")]);
+    }
+
+    #[tokio::test]
+    async fn keepnick_disabled_by_default() {
+        let state = connect_loopback().await;
+        assert_eq!(state.keepnick_interval(), None);
+    }
+
+    #[tokio::test]
+    async fn with_keepnick_interval_sets_interval() {
+        let state = connect_loopback()
+            .await
+            .with_keepnick_interval(Duration::from_secs(15));
+        assert_eq!(state.keepnick_interval(), Some(Duration::from_secs(15)));
+    }
+
+    #[tokio::test]
+    async fn with_keepnick_uses_default_interval() {
+        let state = connect_loopback().await.with_keepnick();
+        assert_eq!(state.keepnick_interval(), Some(DEFAULT_KEEPNICK_INTERVAL));
     }
 
     // Note: `with_keepalive` and `with_flood_control` are exercised

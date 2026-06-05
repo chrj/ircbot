@@ -73,6 +73,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         flood_burst,
         flood_rate,
         ctcp_version,
+        keepnick_interval,
         reader,
         write_half,
         #[cfg(unix)]
@@ -136,6 +137,46 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         write_tx.clone(),
         bot_nick.clone(),
     ));
+
+    // Shared view of the nick we are actually using, kept in sync with
+    // `bot_nick` at every point it changes (registration fallback and our own
+    // post-registration NICK changes).  `registered` flips to `true` on
+    // RPL_WELCOME.  Both are read by the optional keepnick task below.
+    let current_nick = Arc::new(RwLock::new(bot_nick.clone()));
+    let registered = Arc::new(AtomicBool::new(false));
+
+    // Keepnick: when enabled, periodically re-attempt to reclaim the
+    // originally-requested nick while we are using a different one.  A failed
+    // attempt just yields an ERR_NICKNAMEINUSE, which is ignored after
+    // registration; once the nick frees up the change succeeds and this becomes
+    // a no-op until the nick is lost again.
+    let keepnick_task = keepnick_interval.map(|interval| {
+        let desired = nick.clone();
+        let stealer_write_tx = write_tx.clone();
+        let current_nick = Arc::clone(&current_nick);
+        let registered = Arc::clone(&registered);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                if !registered.load(Ordering::Relaxed) {
+                    continue;
+                }
+                let current = current_nick
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                if current != desired {
+                    tracing::debug!(%desired, %current, "keepnick: reclaiming");
+                    if stealer_write_tx
+                        .send(format!("NICK {desired}\r\n"))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        })
+    });
 
     // Keepalive: set to `true` on startup (no ping pending) and whenever we
     // receive a matching PONG.  The keepalive task resets it to `false` before
@@ -203,6 +244,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                 }
                             }
                             Command::Response(Response::RPL_WELCOME, _) => {
+                                registered.store(true, Ordering::Relaxed);
                                 if !joined {
                                     joined = true;
                                     for ch in &channels {
@@ -235,11 +277,30 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                             tracing::error!(%candidate, error = %e, "failed to send NICK");
                                         }
                                         bot_nick = Nick::from(candidate);
+                                        *current_nick
+                                            .write()
+                                            .unwrap_or_else(|e| e.into_inner()) =
+                                            bot_nick.clone();
                                     } else {
                                         tracing::error!(
                                             attempts = MAX_NICK_ATTEMPTS,
                                             "giving up on registration"
                                         );
+                                    }
+                                }
+                                dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
+                            }
+                            Command::NICK(new_nick) => {
+                                // Keep `bot_nick` in sync when the change is our
+                                // own, so the keepnick knows once it has
+                                // succeeded (and stops retrying).
+                                if let Some(Prefix::Nickname(old, ..)) = msg.prefix.as_ref() {
+                                    if old.as_str() == bot_nick.as_str() {
+                                        bot_nick = Nick::from(new_nick.clone());
+                                        *current_nick
+                                            .write()
+                                            .unwrap_or_else(|e| e.into_inner()) =
+                                            bot_nick.clone();
                                     }
                                 }
                                 dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
@@ -271,9 +332,13 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     }
     .await;
 
-    // Always clean up the keepalive, cron, and write tasks before returning.
+    // Always clean up the keepalive, cron, keepnick, and write tasks before
+    // returning.
     keepalive_task.abort();
     cron_task.abort();
+    if let Some(task) = keepnick_task {
+        task.abort();
+    }
     drop(write_tx);
     let _ = write_task.await;
 
