@@ -20,7 +20,7 @@ jobs:
       # `v*` tags: the app is the only bypass actor on the `Versions` tag ruleset.
       # A PAT acting as a user is not in that bypass list and would be rejected.
       - name: Generate GitHub App token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ secrets.APP_ID }}
