@@ -65,7 +65,8 @@ async fn op_request(&self, ctx: Context, target_nick: String, reason: String) ->
 ```
 
 **`command`** — command-style shorthand inside `#[on]`, useful when you
-also need `target`:
+also need `target`.  It accepts the same
+[typed arguments](macro@command#typed-arguments) as `#[command]`:
 
 ```rust,ignore
 #[on(command = "dance", target = "#general")]

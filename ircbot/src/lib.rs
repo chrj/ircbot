@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod args;
 pub mod bot;
 pub mod connection;
 pub mod context;
@@ -92,6 +93,8 @@ pub mod internal {
     use std::time::Duration;
 
     use crate::{bot::HandlerSet, BoxError, HandlerEntry, State};
+
+    pub use crate::args::Args;
 
     /// Delay between successive reconnection attempts.
     const RECONNECT_DELAY: Duration = Duration::from_secs(5);

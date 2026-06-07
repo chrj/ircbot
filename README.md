@@ -16,6 +16,12 @@ impl MyBot {
         ctx.reply("Pong!")
     }
 
+    // Typed args: the words after `!add` are parsed into `a` and `b`.
+    #[command("add")]
+    async fn add(&self, ctx: Context, a: i64, b: i64) -> Result {
+        ctx.reply(a + b)
+    }
+
     #[on(message = "you are *")]
     async fn praise_me(&self, ctx: Context) -> Result {
         ctx.say("Correct.")
@@ -46,6 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Proc-macro API** — annotate methods with `#[command]` or `#[on]`; `#[bot]` wires everything up.
 - **Typed state** — `#[bot(state = MyState)]` adds a `pub state` field your handlers can read; mutate it through interior mutability (`Mutex`/atomics). See `examples/stateful_bot.rs`.
 - **Flexible triggers** — commands (`!ping`), glob patterns (`"you are *"`), raw IRC events, mention detection, cron schedules — all with optional target-channel and regex filters.
+- **Typed command arguments** — declare `async fn add(&self, ctx: Context, a: i64, b: i64)` and the words after `!add` are parsed into the parameters (`FromStr` types, a trailing `String`/`Vec`, `Option<T>`); on bad input the bot replies with a generated usage string.
 - **Reply helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, `ctx.whisper()`.
 - **Channel control** — `ctx.join()` and `ctx.part()` to make the bot enter or leave channels from a handler.
 - **Raw escape hatch** — `ctx.raw()` sends any IRC line the helpers don't wrap (`MODE`, `INVITE`, …), still sanitized.
