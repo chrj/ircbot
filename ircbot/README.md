@@ -73,7 +73,7 @@ Full API reference: **[docs.rs/ircbot](https://docs.rs/ircbot)**
 
 ```toml
 [dependencies]
-ircbot = "0.2"
+ircbot = "0.3"
 tokio  = { version = "1", features = ["full"] }
 ```
 
