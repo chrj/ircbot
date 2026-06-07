@@ -128,6 +128,7 @@ pub mod internal {
         let keepalive_timeout = state.keepalive_timeout;
         let flood_burst = state.flood_burst;
         let flood_rate = state.flood_rate;
+        let roles = state.roles.clone();
 
         // Record the flood-control settings so a SIGHUP hot-reload can carry
         // them to the successor process (the `#[bot]` macro doesn't forward
@@ -157,6 +158,7 @@ pub mod internal {
                     new_state.keepalive_timeout = keepalive_timeout;
                     new_state.flood_burst = flood_burst;
                     new_state.flood_rate = flood_rate;
+                    new_state.roles = roles.clone();
                     current_state = new_state;
                 }
                 Err(e) => {

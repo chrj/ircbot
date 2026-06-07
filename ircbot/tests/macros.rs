@@ -104,6 +104,12 @@ impl MacroBot {
         ctx.say(items.join(","))
     }
 
+    // [13] — role-gated command
+    #[command("ban", role = "admin")]
+    async fn ban(&self, ctx: Context) -> Result {
+        ctx.say("banned")
+    }
+
     // Plain (non-annotated) method — must remain callable and produce NO entry.
     fn helper(&self) -> u32 {
         42
@@ -129,7 +135,7 @@ async fn invoke(entry: &HandlerEntry<MacroBot>, mut tc: TestContext) -> Option<S
 #[test]
 fn command_attr_yields_command_trigger() {
     match &handlers()[0].trigger {
-        Trigger::Command { name, target } => {
+        Trigger::Command { name, target, .. } => {
             assert_eq!(name, "ping");
             assert_eq!(target.as_deref(), None);
         }
@@ -140,7 +146,7 @@ fn command_attr_yields_command_trigger() {
 #[test]
 fn command_target_propagates() {
     match &handlers()[1].trigger {
-        Trigger::Command { name, target } => {
+        Trigger::Command { name, target, .. } => {
             assert_eq!(name, "hi");
             assert_eq!(target.as_deref(), Some("#rust"));
         }
@@ -204,8 +210,30 @@ fn message_wins_trigger_precedence() {
 
 #[test]
 fn only_annotated_methods_produce_handler_entries() {
-    // 13 annotated methods; the plain `helper` produces no entry.
-    assert_eq!(handlers().len(), 13);
+    // 14 annotated methods; the plain `helper` produces no entry.
+    assert_eq!(handlers().len(), 14);
+}
+
+#[test]
+fn command_role_propagates() {
+    match &handlers()[13].trigger {
+        Trigger::Command { name, role, .. } => {
+            assert_eq!(name, "ban");
+            assert_eq!(role.as_deref(), Some("admin"));
+        }
+        other => panic!("expected Command, got {other:?}"),
+    }
+}
+
+#[test]
+fn command_without_role_has_none() {
+    match &handlers()[0].trigger {
+        Trigger::Command { name, role, .. } => {
+            assert_eq!(name, "ping");
+            assert_eq!(role.as_deref(), None);
+        }
+        other => panic!("expected Command, got {other:?}"),
+    }
 }
 
 #[test]

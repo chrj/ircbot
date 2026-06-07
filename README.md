@@ -57,6 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Channel control** — `ctx.join()` and `ctx.part()` to make the bot enter or leave channels from a handler.
 - **Raw escape hatch** — `ctx.raw()` sends any IRC line the helpers don't wrap (`MODE`, `INVITE`, …), still sanitized.
 - **Moderation** — `ctx.set_topic()` and `ctx.kick()` act on the channel the message arrived in.
+- **Access control** — define hostmask-based roles with `.with_role("admin", ["*!*@trusted.host"])` and gate commands with `#[command("op", role = "admin")]`; unauthorized senders are silently ignored.
 - **Message accessors** — `ctx.nick()`, `ctx.is_from_self()`, `ctx.mentions_me()` to inspect who sent a message and what it says.
 - **Keepalive & auto-reconnect** — periodic `PING`/`PONG` monitoring; reconnects and re-joins on drop. If the configured nick is already in use, the bot automatically retries with a suffixed alternative (`bot`, `bot_`, …).
 - **Hot reload** (Unix) — `SIGHUP` execs the new binary with the live TCP socket inherited; no reconnect, no missed messages.
