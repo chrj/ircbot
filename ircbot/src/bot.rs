@@ -74,6 +74,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         flood_rate,
         ctcp_version,
         keepnick_interval,
+        roles,
         reader,
         write_half,
         #[cfg(unix)]
@@ -253,7 +254,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                         }
                                     }
                                 }
-                                dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
+                                dispatch(&bot, &handlers, &msg, &bot_nick, &roles, write_tx.clone()).await;
                             }
                             Command::Response(
                                 Response::ERR_NICKNAMEINUSE | Response::ERR_UNAVAILRESOURCE,
@@ -288,7 +289,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                         );
                                     }
                                 }
-                                dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
+                                dispatch(&bot, &handlers, &msg, &bot_nick, &roles, write_tx.clone()).await;
                             }
                             Command::NICK(new_nick) => {
                                 // Keep `bot_nick` in sync when the change is our
@@ -303,7 +304,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                             bot_nick.clone();
                                     }
                                 }
-                                dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
+                                dispatch(&bot, &handlers, &msg, &bot_nick, &roles, write_tx.clone()).await;
                             }
                             Command::PRIVMSG(_, _) => {
                                 handle_privmsg(
@@ -312,12 +313,13 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                                     &msg,
                                     &bot_nick,
                                     ctcp_version.as_deref(),
+                                    &roles,
                                     write_tx.clone(),
                                 )
                                 .await;
                             }
                             _ => {
-                                dispatch(&bot, &handlers, &msg, &bot_nick, write_tx.clone()).await;
+                                dispatch(&bot, &handlers, &msg, &bot_nick, &roles, write_tx.clone()).await;
                             }
                         }
                     }
@@ -466,7 +468,7 @@ fn synthesize_cron_message(bot_nick: &str) -> Message {
 #[must_use]
 pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option<Vec<String>> {
     match trigger {
-        Trigger::Command { name, target } => {
+        Trigger::Command { name, target, .. } => {
             let Command::PRIVMSG(msg_target, text) = &msg.command else {
                 return None;
             };
@@ -701,10 +703,11 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
     msg: &Message,
     bot_nick: &Nick,
     ctcp_version: Option<&str>,
+    roles: &[(String, Vec<String>)],
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
     let Command::PRIVMSG(_, text) = &msg.command else {
-        dispatch(bot, handlers, msg, bot_nick, tx).await;
+        dispatch(bot, handlers, msg, bot_nick, roles, tx).await;
         return;
     };
     if let Some(ctcp) = CtcpMessage::parse(text) {
@@ -740,7 +743,7 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
             _ => {}
         }
     }
-    dispatch(bot, handlers, msg, bot_nick, tx).await;
+    dispatch(bot, handlers, msg, bot_nick, roles, tx).await;
 }
 
 async fn dispatch<T: Send + Sync + 'static>(
@@ -748,6 +751,7 @@ async fn dispatch<T: Send + Sync + 'static>(
     handlers: &HandlerSet<T>,
     msg: &Message,
     bot_nick: &Nick,
+    roles: &[(String, Vec<String>)],
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
     // Snapshot the current handler list under a brief read-lock, then release
@@ -769,6 +773,11 @@ async fn dispatch<T: Send + Sync + 'static>(
 
     for entry in current.iter() {
         if let Some(captures) = check_trigger(&entry.trigger, msg, bot_nick.as_str()) {
+            // Enforce per-command role authorization; unauthorized senders are
+            // silently ignored, exactly as if the trigger had not matched.
+            if !authorized(roles, &entry.trigger, sender.as_ref()) {
+                continue;
+            }
             let ctx = Context {
                 tx: tx.clone(),
                 target: target.clone(),
@@ -784,6 +793,40 @@ async fn dispatch<T: Send + Sync + 'static>(
             }
         }
     }
+}
+
+/// Decide whether `sender` may invoke a handler with the given `trigger`.
+///
+/// Only [`Trigger::Command`] with `role = Some(_)` is restricted; every other
+/// trigger (and any command without a role) is always allowed. A restricted
+/// command requires a known `sender` whose `nick!user@host` matches one of the
+/// hostmask glob patterns configured for that role (see
+/// [`State::with_role`](crate::State::with_role)). A role with no configured
+/// patterns — including an unknown role name — authorizes no one.
+#[must_use]
+pub fn authorized(
+    roles: &[(String, Vec<String>)],
+    trigger: &Trigger,
+    sender: Option<&User>,
+) -> bool {
+    let Trigger::Command {
+        role: Some(required),
+        ..
+    } = trigger
+    else {
+        return true;
+    };
+
+    let Some(user) = sender else {
+        return false;
+    };
+    let mask = format!("{}!{}@{}", user.nick.as_str(), user.user, user.host);
+
+    roles
+        .iter()
+        .filter(|(name, _)| name == required)
+        .flat_map(|(_, patterns)| patterns)
+        .any(|pattern| glob_match(pattern, &mask).is_some())
 }
 
 #[cfg(test)]
@@ -816,6 +859,82 @@ mod tests {
         }
     }
 
+    // ── authorized ───────────────────────────────────────────────────────────
+
+    fn user(nick: &str, u: &str, host: &str) -> User {
+        User {
+            nick: Nick::from(nick),
+            user: u.to_string(),
+            host: host.to_string(),
+        }
+    }
+
+    fn admin_command() -> Trigger {
+        Trigger::Command {
+            name: "ban".to_string(),
+            target: None,
+            role: Some("admin".to_string()),
+        }
+    }
+
+    fn admin_roles() -> Vec<(String, Vec<String>)> {
+        vec![("admin".to_string(), vec!["*!*@trusted.host".to_string()])]
+    }
+
+    #[test]
+    fn authorized_allows_command_without_a_role() {
+        let trigger = Trigger::Command {
+            name: "ping".to_string(),
+            target: None,
+            role: None,
+        };
+        assert!(authorized(&[], &trigger, Some(&user("a", "u", "h"))));
+        assert!(authorized(&[], &trigger, None));
+    }
+
+    #[test]
+    fn authorized_allows_non_command_triggers() {
+        let trigger = Trigger::Message {
+            pattern: "x".to_string(),
+            target: None,
+        };
+        assert!(authorized(&[], &trigger, None));
+    }
+
+    #[test]
+    fn authorized_accepts_matching_hostmask() {
+        assert!(authorized(
+            &admin_roles(),
+            &admin_command(),
+            Some(&user("alice", "a", "trusted.host"))
+        ));
+    }
+
+    #[test]
+    fn authorized_rejects_non_matching_hostmask() {
+        assert!(!authorized(
+            &admin_roles(),
+            &admin_command(),
+            Some(&user("mallory", "m", "evil.host"))
+        ));
+    }
+
+    #[test]
+    fn authorized_rejects_when_sender_is_unknown() {
+        assert!(!authorized(&admin_roles(), &admin_command(), None));
+    }
+
+    #[test]
+    fn authorized_rejects_unknown_role_name() {
+        // The command requires "admin", but only "ops" is configured.
+        let roles = vec![("ops".to_string(), vec!["*!*@trusted.host".to_string()])];
+        assert!(!authorized(
+            &roles,
+            &admin_command(),
+            Some(&user("alice", "a", "trusted.host"))
+        ));
+    }
+
     // ── CTCP VERSION ───────────────────────────────────────────────────────────
 
     /// Drive `handle_privmsg` with a CTCP VERSION request and return the line
@@ -827,7 +946,7 @@ mod tests {
         let msg = ":alice!u@h PRIVMSG mybot :\x01VERSION\x01"
             .parse::<Message>()
             .unwrap();
-        handle_privmsg(&bot, &handlers, &msg, &Nick::from("mybot"), custom, tx).await;
+        handle_privmsg(&bot, &handlers, &msg, &Nick::from("mybot"), custom, &[], tx).await;
         rx.try_recv().expect("a CTCP VERSION reply was sent")
     }
 

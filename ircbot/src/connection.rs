@@ -43,6 +43,10 @@ pub struct State {
     /// (the default) disables the feature. Set via
     /// [`State::with_keepnick_interval`].
     pub(crate) keepnick_interval: Option<Duration>,
+    /// Access-control roles, each mapping a role name to a list of `nick!user@host`
+    /// hostmask glob patterns. A command with `role = Some(name)` only fires for
+    /// senders matching one of that role's patterns. Set via [`State::with_role`].
+    pub(crate) roles: Vec<(String, Vec<String>)>,
     pub(crate) reader: tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
     /// The raw write half; `run_bot_internal` wraps this in a buffered writer and a
     /// dedicated write-loop task.
@@ -121,6 +125,7 @@ impl State {
             flood_rate: DEFAULT_FLOOD_RATE,
             ctcp_version: None,
             keepnick_interval: None,
+            roles: Vec::new(),
             reader,
             write_half,
             #[cfg(unix)]
@@ -219,6 +224,8 @@ impl State {
             ctcp_version: None,
             // Likewise re-applied by the builder on restart (see `ctcp_version`).
             keepnick_interval: None,
+            // Re-applied by the builder on restart (see `ctcp_version`).
+            roles: Vec::new(),
             reader,
             write_half,
             raw_fd,
@@ -284,6 +291,28 @@ impl State {
     /// Convenience wrapper around [`State::with_keepnick_interval`].
     pub fn with_keepnick(self) -> Self {
         self.with_keepnick_interval(DEFAULT_KEEPNICK_INTERVAL)
+    }
+
+    /// Define an access-control role for command authorization.
+    ///
+    /// `name` is the role referenced by `#[command(..., role = "name")]`; `masks`
+    /// is a set of `nick!user@host` hostmask glob patterns (`*` matches any run
+    /// of characters). A command guarded by this role only fires for senders
+    /// whose hostmask matches one of the patterns; everyone else is silently
+    /// ignored. A command guarded by a role with no configured patterns (or an
+    /// unknown role name) therefore never fires — authorization is closed by
+    /// default.
+    ///
+    /// May be called multiple times; patterns accumulate, and the same role name
+    /// may be extended across several calls. Call this before starting the bot.
+    pub fn with_role(
+        mut self,
+        name: impl Into<String>,
+        masks: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        let patterns: Vec<String> = masks.into_iter().map(Into::into).collect();
+        self.roles.push((name.into(), patterns));
+        self
     }
 
     /// Returns the configured keepalive interval.

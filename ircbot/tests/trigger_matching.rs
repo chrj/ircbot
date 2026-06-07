@@ -59,6 +59,7 @@ fn command_trigger_basic() {
     let trigger = Trigger::Command {
         name: "ping".to_string(),
         target: None,
+        role: None,
     };
     let msg = privmsg("#chan", "!ping");
     let caps = check_trigger(&trigger, &msg, "bot").unwrap();
@@ -70,6 +71,7 @@ fn command_trigger_with_args() {
     let trigger = Trigger::Command {
         name: "echo".to_string(),
         target: None,
+        role: None,
     };
     let msg = privmsg("#chan", "!echo hello world");
     let caps = check_trigger(&trigger, &msg, "bot").unwrap();
@@ -81,6 +83,7 @@ fn command_trigger_wrong_name() {
     let trigger = Trigger::Command {
         name: "ping".to_string(),
         target: None,
+        role: None,
     };
     let msg = privmsg("#chan", "!pong");
     assert!(check_trigger(&trigger, &msg, "bot").is_none());
@@ -91,6 +94,7 @@ fn command_trigger_target_match() {
     let trigger = Trigger::Command {
         name: "hi".to_string(),
         target: Some("#general".to_string()),
+        role: None,
     };
     assert!(check_trigger(&trigger, &privmsg("#general", "!hi"), "bot").is_some());
     assert!(check_trigger(&trigger, &privmsg("#other", "!hi"), "bot").is_none());
@@ -101,6 +105,7 @@ fn command_trigger_case_insensitive_name() {
     let trigger = Trigger::Command {
         name: "Ping".to_string(),
         target: None,
+        role: None,
     };
     assert!(check_trigger(&trigger, &privmsg("#chan", "!ping"), "bot").is_some());
     assert!(check_trigger(&trigger, &privmsg("#chan", "!PING"), "bot").is_some());
@@ -111,6 +116,7 @@ fn command_trigger_ignores_non_privmsg() {
     let trigger = Trigger::Command {
         name: "ping".to_string(),
         target: None,
+        role: None,
     };
     let msg = ":nick!u@h JOIN #chan".parse().unwrap();
     assert!(check_trigger(&trigger, &msg, "bot").is_none());

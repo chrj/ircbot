@@ -14,9 +14,15 @@ pub type HandlerFn<T> = Box<dyn Fn(Arc<T>, Context) -> BoxFuture<crate::Result> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trigger {
     /// Fires when the user sends `!<name>` (optionally in a specific channel).
+    ///
+    /// When `role` is `Some`, the command only fires for senders whose
+    /// `nick!user@host` matches one of the hostmask patterns configured for that
+    /// role (see [`State::with_role`](crate::State::with_role)); unauthorized
+    /// senders are silently ignored.
     Command {
         name: String,
         target: Option<String>,
+        role: Option<String>,
     },
     /// Fires when an incoming PRIVMSG matches a glob pattern (`*` as wildcard).
     Message {

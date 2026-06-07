@@ -8,7 +8,7 @@ The general-purpose trigger attribute.  Exactly one of `command`,
 
 | Key | Description |
 |-----|-------------|
-| `command = "name"` | Fires on `!name`; equivalent to [`#[command("name")]`](macro@command) but also accepts `target` |
+| `command = "name"` | Fires on `!name`; equivalent to [`#[command("name")]`](macro@command) but also accepts `target` and `role` |
 | `message = "pattern"` | Glob pattern on PRIVMSG text; each `*` captures the matched portion as a `String` parameter |
 | `event = "IRC_CMD"` | Any raw IRC command (e.g. `"JOIN"`, `"PRIVMSG"`, `"PART"`, `"NICK"`) |
 | `mention` | Fires when a PRIVMSG addresses the bot by name (`"botname: …"` or `"botname, …"`); matched text is passed as first `String` parameter |
@@ -65,13 +65,21 @@ async fn op_request(&self, ctx: Context, target_nick: String, reason: String) ->
 ```
 
 **`command`** — command-style shorthand inside `#[on]`, useful when you
-also need `target`.  It accepts the same
-[typed arguments](macro@command#typed-arguments) as `#[command]`:
+also need `target` or `role` (the latter restricts the command to senders
+authorised for that role; see [`#[command]`](macro@command#access-control)).
+It accepts the same [typed arguments](macro@command#typed-arguments) as
+`#[command]`:
 
 ```rust,ignore
 #[on(command = "dance", target = "#general")]
 async fn dance(&self, ctx: Context) -> Result {
     ctx.action("dances!")
+}
+
+// Only "admin"-authorised senders can run this.
+#[on(command = "shutdown", role = "admin")]
+async fn shutdown(&self, ctx: Context) -> Result {
+    ctx.say("shutting down…")
 }
 ```
 

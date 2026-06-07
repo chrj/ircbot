@@ -11,6 +11,26 @@ same line is parsed into the method's parameters (see
   leading `!`.  Matching is case-insensitive.
 - `target = "#channel"` — *(optional)* restrict the command to a specific
   channel.  When omitted, the command responds everywhere.
+- `role = "name"` — *(optional)* restrict the command to senders authorised
+  for that role (see [Access control](#access-control)).
+
+# Access control
+
+When `role = "name"` is set, the command only fires for senders whose
+`nick!user@host` matches one of the hostmask patterns configured for that
+role via `with_role` on the bot builder:
+
+```rust,ignore
+MyBot::new("bot", "irc.example.net:6667", ["ops"]).await?
+    .with_role("admin", ["*!*@trusted.host", "alice!*@*"])
+    .main_loop()
+    .await
+```
+
+Patterns use `*` (any run of characters) and `?` (any single character).
+Unauthorised senders are **silently ignored** — the handler does not run and
+no reply is sent.  A role with no configured patterns (including an unknown
+role name) authorises no one, so authorisation is closed by default.
 
 # Typed arguments
 
@@ -58,6 +78,12 @@ impl MyBot {
     #[command("roll", target = "#dice")]
     async fn roll(&self, ctx: Context) -> Result {
         ctx.say("🎲 You rolled a 4!")
+    }
+
+    // Only authorised "admin" senders can run this; others are ignored.
+    #[command("op", role = "admin")]
+    async fn op(&self, ctx: Context) -> Result {
+        ctx.say("opping…")
     }
 }
 ```

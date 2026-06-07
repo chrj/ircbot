@@ -635,3 +635,75 @@ async fn keepnick_stops_after_reclaim_succeeds() {
 
     bot_task.abort();
 }
+
+// ─── role-based command authorization ────────────────────────────────────────
+
+/// Connect a bot with one or more access-control roles configured.
+async fn spawn_bot_with_roles<T: Send + Sync + 'static>(
+    addr: &str,
+    roles: Vec<(&str, Vec<&str>)>,
+    bot: Arc<T>,
+    handlers: Vec<HandlerEntry<T>>,
+) -> tokio::task::JoinHandle<Result<(), ircbot::BoxError>> {
+    let mut state = State::connect("testbot".to_string(), addr, vec![])
+        .await
+        .expect("failed to connect to mock server");
+    for (name, masks) in roles {
+        state = state.with_role(name, masks);
+    }
+    let handler_set = ircbot::internal::make_handler_set(handlers);
+    tokio::spawn(run_bot_internal(bot, state, handler_set))
+}
+
+/// A single `!secret` command gated behind the `admin` role.
+fn admin_command_handlers() -> Vec<HandlerEntry<()>> {
+    vec![HandlerEntry {
+        trigger: Trigger::Command {
+            name: "secret".to_string(),
+            target: None,
+            role: Some("admin".to_string()),
+        },
+        handler: Box::new(|_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
+            Box::pin(async move { ctx.say("ok") })
+        }),
+    }]
+}
+
+#[tokio::test]
+async fn role_gated_command_fires_for_authorized_hostmask() {
+    let mut server = MockServer::start().await;
+    let bot_task = spawn_bot_with_roles(
+        &server.addr,
+        vec![("admin", vec!["*!*@trusted.host"])],
+        Arc::new(()),
+        admin_command_handlers(),
+    )
+    .await;
+    server.send_welcome();
+
+    server.send(":alice!a@trusted.host PRIVMSG #chan :!secret\r\n");
+    let line = server.expect_line(|l| l.starts_with("PRIVMSG")).await;
+    assert_eq!(line, "PRIVMSG #chan :ok");
+
+    bot_task.abort();
+}
+
+#[tokio::test]
+async fn role_gated_command_silently_ignored_for_unauthorized_hostmask() {
+    let mut server = MockServer::start().await;
+    let bot_task = spawn_bot_with_roles(
+        &server.addr,
+        vec![("admin", vec!["*!*@trusted.host"])],
+        Arc::new(()),
+        admin_command_handlers(),
+    )
+    .await;
+    server.send_welcome();
+
+    server.send(":mallory!m@evil.host PRIVMSG #chan :!secret\r\n");
+    server
+        .expect_no_line(Duration::from_millis(300), |l| l.starts_with("PRIVMSG"))
+        .await;
+
+    bot_task.abort();
+}

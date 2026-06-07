@@ -42,16 +42,19 @@ impl syn::parse::Parse for BotArgs {
     }
 }
 
-/// Parses `#[command("name")]` or `#[command("name", target = "...")]`
+/// Parses `#[command("name")]`, `#[command("name", target = "...")]`, and/or
+/// `#[command("name", role = "...")]`.
 struct CommandArgs {
     name: String,
     target: Option<String>,
+    role: Option<String>,
 }
 
 impl syn::parse::Parse for CommandArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let name: syn::LitStr = input.parse()?;
         let mut target = None;
+        let mut role = None;
         while input.peek(syn::Token![,]) {
             let _: syn::Token![,] = input.parse()?;
             if input.is_empty() {
@@ -62,11 +65,14 @@ impl syn::parse::Parse for CommandArgs {
             let val: syn::LitStr = input.parse()?;
             if key == "target" {
                 target = Some(val.value());
+            } else if key == "role" {
+                role = Some(val.value());
             }
         }
         Ok(CommandArgs {
             name: name.value(),
             target,
+            role,
         })
     }
 }
@@ -177,14 +183,17 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 syn::parse2(ml.tokens.clone()).unwrap_or(CommandArgs {
                                     name: String::new(),
                                     target: None,
+                                    role: None,
                                 });
                             let name = &args.name;
                             command_name = Some(args.name.clone());
                             let target_ts = opt_str_ts(args.target.as_deref());
+                            let role_ts = opt_str_ts(args.role.as_deref());
                             trigger_tokens = Some(quote! {
                                 ircbot::Trigger::Command {
                                     name: #name.to_string(),
                                     target: #target_ts,
+                                    role: #role_ts,
                                 }
                             });
                         }
@@ -203,6 +212,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                             let mut mention = false;
                             let mut cron_interval: Option<String> = None;
                             let mut cron_tz: Option<String> = None;
+                            let mut role: Option<String> = None;
 
                             if let Ok(metas) = metas_result {
                                 for meta in metas {
@@ -229,6 +239,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                                     "regex" => regex = Some(v),
                                                     "cron" => cron_interval = Some(v),
                                                     "tz" => cron_tz = Some(v),
+                                                    "role" => role = Some(v),
                                                     _ => {}
                                                 }
                                             }
@@ -239,6 +250,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                             }
 
                             let target_ts = opt_str_ts(target.as_deref());
+                            let role_ts = opt_str_ts(role.as_deref());
                             // Precedence: message > command > event > mention > cron.
                             // Only the first matching key wins; combining multiple
                             // trigger types in one `#[on(...)]` is not supported.
@@ -255,6 +267,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     ircbot::Trigger::Command {
                                         name: #cmd.to_string(),
                                         target: #target_ts,
+                                        role: #role_ts,
                                     }
                                 });
                             } else if let Some(ev) = event {
@@ -482,6 +495,27 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             pub fn with_keepnick(mut self) -> Self {
                 if let Some(state) = self.__state.take() {
                     self.__state = Some(state.with_keepnick());
+                }
+                self
+            }
+
+            /// Define an access-control role named `name`, authorising any
+            /// sender whose `nick!user@host` matches one of the given hostmask
+            /// glob patterns (`*` wildcard). Commands annotated with
+            /// `#[command(..., role = #name)]` only fire for matching senders;
+            /// everyone else is silently ignored.
+            ///
+            /// Call this (before `main_loop`); like the other builders it is
+            /// re-applied on a `SIGHUP` hot-reload, since the builder runs again
+            /// on startup. May be called repeatedly to add patterns or roles.
+            #[must_use]
+            pub fn with_role(
+                mut self,
+                name: impl Into<String>,
+                masks: impl IntoIterator<Item = impl Into<String>>,
+            ) -> Self {
+                if let Some(state) = self.__state.take() {
+                    self.__state = Some(state.with_role(name, masks));
                 }
                 self
             }
