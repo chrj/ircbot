@@ -36,6 +36,17 @@ CI also enforces:
 - **Docs**: `cargo doc --no-deps --workspace` with `RUSTDOCFLAGS="-D warnings"` — broken doc links fail the build.
 - **Sync check**: duplicated docs must be byte-identical (see below).
 
+On pull requests, a separate `pr.yml` workflow additionally enforces:
+
+- **Conventional PR title**: the PR title must follow [Conventional Commits](https://www.conventionalcommits.org/)
+  (`feat:`, `fix:`, `chore(deps):`, …). release-plz squash-merges PRs using the
+  title as the commit message, so the title is what drives changelogs and version
+  bumps.
+- **API compatibility**: `cargo semver-checks` diffs the public API against the
+  base branch. If it finds an **incompatible (breaking) change**, the PR title
+  must declare it with a `!` marker (`feat!: …`, `fix(scope)!: …`) — otherwise the
+  check fails.
+
 **Clippy is run with `-D warnings`.** Treat every clippy lint as a hard error,
 including pedantic ones already in use here (`#[must_use]`, `clippy::too_many_lines`).
 Never silence a lint with a blanket `#[allow]` without a clear, local reason.

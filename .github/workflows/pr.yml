@@ -1,0 +1,69 @@
+name: PR
+
+# PR-only checks. These run on title edits too (not just code pushes), so that
+# fixing a non-conforming title re-triggers the gate.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  title:
+    name: Conventional PR title
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      # Validate the PR title against the Conventional Commits spec. release-plz
+      # squash-merges PRs using their title as the commit message, so the title
+      # is what ends up driving changelog generation and version bumps.
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  semver:
+    name: API compatibility
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history so cargo-semver-checks can build the base branch as the
+          # baseline to diff the public API against.
+          fetch-depth: 0
+      # Nightly is required: cargo-semver-checks generates rustdoc JSON, which is
+      # an unstable rustc feature.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - name: Detect breaking API changes
+        id: semver
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch --quiet origin "$BASE_REF"
+          if cargo semver-checks --workspace --baseline-rev "origin/$BASE_REF"; then
+            echo "breaking=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "breaking=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Require a breaking-change marker in the PR title
+        if: steps.semver.outputs.breaking == 'true'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # Conventional Commits flags a breaking change with a `!` before the
+          # colon, e.g. `feat!: ...` or `fix(scope)!: ...`.
+          if printf '%s' "$PR_TITLE" | grep -qE '^[a-z]+(\([^)]*\))?!:'; then
+            echo "Incompatible API change is declared in the PR title. OK."
+          else
+            echo "::error::cargo-semver-checks detected an incompatible (breaking) API change, but the PR title does not declare one."
+            echo "Add a '!' before the colon to mark it, e.g. 'feat!: ...' or 'fix(scope)!: ...'."
+            exit 1
+          fi
