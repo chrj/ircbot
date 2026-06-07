@@ -137,8 +137,9 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
         if let ImplItem::Fn(method) = item {
             let method_name = &method.sig.ident;
 
-            // Extra args beyond &self and ctx
-            let extra_args: Vec<(String, String)> = method
+            // Extra args beyond &self and ctx, retaining the full parsed type so
+            // command handlers can parse typed positional arguments.
+            let extra_args: Vec<(Ident, Type)> = method
                 .sig
                 .inputs
                 .iter()
@@ -146,19 +147,10 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .filter_map(|arg| {
                     if let FnArg::Typed(pt) = arg {
                         let name = match pt.pat.as_ref() {
-                            Pat::Ident(pi) => pi.ident.to_string(),
-                            _ => "arg".to_string(),
+                            Pat::Ident(pi) => pi.ident.clone(),
+                            _ => Ident::new("arg", Span::call_site()),
                         };
-                        let ty = match pt.ty.as_ref() {
-                            Type::Path(tp) => tp
-                                .path
-                                .segments
-                                .last()
-                                .map(|s| s.ident.to_string())
-                                .unwrap_or_default(),
-                            _ => "Unknown".to_string(),
-                        };
-                        Some((name, ty))
+                        Some((name, (*pt.ty).clone()))
                     } else {
                         None
                     }
@@ -166,6 +158,10 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .collect();
 
             let mut trigger_tokens: Option<TokenStream2> = None;
+            // The command keyword, if this handler is triggered by a command
+            // (via `#[command]` or `#[on(command = "...")]`). Drives typed
+            // argument parsing and the generated usage string.
+            let mut command_name: Option<String> = None;
             let mut cleaned_attrs: Vec<syn::Attribute> = Vec::new();
 
             for attr in &method.attrs {
@@ -183,6 +179,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     target: None,
                                 });
                             let name = &args.name;
+                            command_name = Some(args.name.clone());
                             let target_ts = opt_str_ts(args.target.as_deref());
                             trigger_tokens = Some(quote! {
                                 ircbot::Trigger::Command {
@@ -253,6 +250,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     }
                                 });
                             } else if let Some(cmd) = command_on {
+                                command_name = Some(cmd.clone());
                                 trigger_tokens = Some(quote! {
                                     ircbot::Trigger::Command {
                                         name: #cmd.to_string(),
@@ -321,7 +319,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             if let Some(trigger) = trigger_tokens {
-                let wrapper = build_wrapper(method_name, &extra_args);
+                let wrapper = build_wrapper(method_name, &extra_args, command_name.as_deref());
                 handler_entries.push(quote! {
                     ircbot::HandlerEntry {
                         trigger: #trigger,
@@ -562,7 +560,74 @@ fn opt_str_ts(s: Option<&str>) -> TokenStream2 {
     }
 }
 
-fn build_wrapper(method_name: &Ident, extra_args: &[(String, String)]) -> TokenStream2 {
+/// How a handler parameter's declared type is sourced from a message.
+enum TypeClass {
+    /// The message sender (`User`).
+    User,
+    /// A `String`.
+    StringTy,
+    /// `Option<Inner>`; `is_string` is true for `Option<String>`.
+    Opt { inner: Type, is_string: bool },
+    /// `Vec<Inner>`; `is_string` is true for `Vec<String>`.
+    VecTy { inner: Type, is_string: bool },
+    /// Any other type, parsed from a single token via `FromStr`.
+    Scalar(Type),
+}
+
+/// The last path segment of a `Type::Path` (e.g. `Option` of `std::option::Option`).
+fn type_last_seg(ty: &Type) -> Option<&syn::PathSegment> {
+    match ty {
+        Type::Path(tp) => tp.path.segments.last(),
+        _ => None,
+    }
+}
+
+/// Whether `ty`'s final path segment is the identifier `name`.
+fn type_is(ty: &Type, name: &str) -> bool {
+    type_last_seg(ty).is_some_and(|s| s.ident == name)
+}
+
+/// The first generic type argument of `ty` (e.g. `i64` of `Option<i64>`).
+fn generic_inner(ty: &Type) -> Option<Type> {
+    let seg = type_last_seg(ty)?;
+    if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments {
+        for arg in &ab.args {
+            if let syn::GenericArgument::Type(t) = arg {
+                return Some(t.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Classify a parameter type for argument extraction.
+fn classify(ty: &Type) -> TypeClass {
+    if type_is(ty, "User") {
+        return TypeClass::User;
+    }
+    if type_is(ty, "String") {
+        return TypeClass::StringTy;
+    }
+    if type_is(ty, "Option") {
+        if let Some(inner) = generic_inner(ty) {
+            let is_string = type_is(&inner, "String");
+            return TypeClass::Opt { inner, is_string };
+        }
+    }
+    if type_is(ty, "Vec") {
+        if let Some(inner) = generic_inner(ty) {
+            let is_string = type_is(&inner, "String");
+            return TypeClass::VecTy { inner, is_string };
+        }
+    }
+    TypeClass::Scalar(ty.clone())
+}
+
+fn build_wrapper(
+    method_name: &Ident,
+    extra_args: &[(Ident, Type)],
+    command_name: Option<&str>,
+) -> TokenStream2 {
     if extra_args.is_empty() {
         return quote! {
             |bot: std::sync::Arc<_>, ctx: ircbot::Context| -> ircbot::BoxFuture<ircbot::Result> {
@@ -571,38 +636,16 @@ fn build_wrapper(method_name: &Ident, extra_args: &[(String, String)]) -> TokenS
         };
     }
 
-    let mut extractions: Vec<TokenStream2> = Vec::new();
-    let mut call_args: Vec<TokenStream2> = Vec::new();
-    let mut str_idx = 0usize;
+    let call_args: Vec<TokenStream2> = extra_args
+        .iter()
+        .map(|(name, _)| quote! { #name })
+        .collect();
 
-    for (name, ty) in extra_args {
-        let ident = Ident::new(name, Span::call_site());
-        call_args.push(quote! { #ident });
-        match ty.as_str() {
-            "User" => {
-                extractions.push(quote! {
-                    let #ident = ctx.sender.clone().unwrap_or_default();
-                });
-            }
-            "String" => {
-                let idx = str_idx;
-                str_idx += 1;
-                extractions.push(quote! {
-                    let #ident: String = if !ctx.captures.is_empty() {
-                        ctx.captures.get(#idx).cloned().unwrap_or_default()
-                    } else {
-                        ctx.message_text().to_string()
-                    };
-                });
-            }
-            _ => {
-                let ty_ident = Ident::new(ty, Span::call_site());
-                extractions.push(quote! {
-                    let #ident: #ty_ident = Default::default();
-                });
-            }
-        }
-    }
+    let extractions: Vec<TokenStream2> = if let Some(cmd) = command_name {
+        command_extractions(extra_args, cmd)
+    } else {
+        legacy_extractions(extra_args)
+    };
 
     quote! {
         |bot: std::sync::Arc<_>, ctx: ircbot::Context| -> ircbot::BoxFuture<ircbot::Result> {
@@ -612,6 +655,156 @@ fn build_wrapper(method_name: &Ident, extra_args: &[(String, String)]) -> TokenS
             })
         }
     }
+}
+
+/// Argument extraction for non-command triggers (message/event/mention).
+///
+/// Preserves historical behaviour: each `String` parameter maps to the trigger
+/// capture group at its positional index, `User` becomes the sender, and any
+/// other type is filled with `Default::default()`.
+fn legacy_extractions(extra_args: &[(Ident, Type)]) -> Vec<TokenStream2> {
+    let mut out = Vec::new();
+    let mut str_idx = 0usize;
+    for (name, ty) in extra_args {
+        match classify(ty) {
+            TypeClass::User => out.push(quote! {
+                let #name = ctx.sender.clone().unwrap_or_default();
+            }),
+            TypeClass::StringTy => {
+                let idx = str_idx;
+                str_idx += 1;
+                out.push(quote! {
+                    let #name: String = if !ctx.captures.is_empty() {
+                        ctx.captures.get(#idx).cloned().unwrap_or_default()
+                    } else {
+                        ctx.message_text().to_string()
+                    };
+                });
+            }
+            _ => out.push(quote! {
+                let #name: #ty = std::default::Default::default();
+            }),
+        }
+    }
+    out
+}
+
+/// Argument extraction for command triggers: typed positional parsing of the
+/// command tail, replying with a generated usage string (and skipping the
+/// handler) when a required argument is missing or fails to parse.
+fn command_extractions(extra_args: &[(Ident, Type)], cmd: &str) -> Vec<TokenStream2> {
+    // The last argument sourced from the tail (everything except `User`); a
+    // trailing `String` here captures the rest of the line.
+    let last_tail_idx = extra_args.iter().rposition(|(_, ty)| !type_is(ty, "User"));
+
+    // Build the usage string from the signature.
+    let mut usage_parts: Vec<String> = Vec::new();
+    for (name, ty) in extra_args {
+        match classify(ty) {
+            TypeClass::User => {}
+            TypeClass::Opt { .. } => usage_parts.push(format!("[{name}]")),
+            TypeClass::VecTy { .. } => usage_parts.push(format!("[{name}...]")),
+            _ => usage_parts.push(format!("<{name}>")),
+        }
+    }
+    let usage = if usage_parts.is_empty() {
+        format!("usage: !{cmd}")
+    } else {
+        format!("usage: !{cmd} {}", usage_parts.join(" "))
+    };
+    let usage_fail = quote! {
+        { let _ = ctx.reply(#usage); return std::result::Result::Ok(()); }
+    };
+
+    // `next_token` needs `&mut __args`; the rest-consuming helpers take `self`.
+    // Only declare `__args` mutable when a token is actually pulled, to avoid an
+    // `unused_mut` warning under `-D warnings`.
+    let needs_mut = extra_args.iter().enumerate().any(|(i, (_, ty))| {
+        let is_last_tail = Some(i) == last_tail_idx;
+        match classify(ty) {
+            TypeClass::User => false,
+            TypeClass::StringTy => !is_last_tail,
+            TypeClass::Scalar(_) => true,
+            TypeClass::Opt { is_string, .. } => !is_string,
+            TypeClass::VecTy { .. } => false,
+        }
+    });
+    let has_tail_args = extra_args.iter().any(|(_, ty)| !type_is(ty, "User"));
+
+    let mut out: Vec<TokenStream2> = Vec::new();
+    if has_tail_args {
+        let binding = if needs_mut {
+            quote! { let mut __args = ircbot::internal::Args::new(&__tail); }
+        } else {
+            quote! { let __args = ircbot::internal::Args::new(&__tail); }
+        };
+        out.push(quote! {
+            let __tail: String = ctx.captures.first().cloned().unwrap_or_default();
+            #binding
+        });
+    }
+
+    for (i, (name, ty)) in extra_args.iter().enumerate() {
+        let is_last_tail = Some(i) == last_tail_idx;
+        match classify(ty) {
+            TypeClass::User => out.push(quote! {
+                let #name = ctx.sender.clone().unwrap_or_default();
+            }),
+            TypeClass::StringTy if is_last_tail => out.push(quote! {
+                let #name: String = __args.rest().to_string();
+            }),
+            TypeClass::StringTy => out.push(quote! {
+                let #name: String = match __args.next_token() {
+                    Some(t) => t.to_string(),
+                    None => #usage_fail,
+                };
+            }),
+            TypeClass::Scalar(scalar) => out.push(quote! {
+                let #name: #scalar = match __args.next_token() {
+                    Some(t) => match t.parse::<#scalar>() {
+                        Ok(v) => v,
+                        Err(_) => #usage_fail,
+                    },
+                    None => #usage_fail,
+                };
+            }),
+            TypeClass::Opt {
+                is_string: true, ..
+            } => out.push(quote! {
+                let #name: Option<String> = {
+                    let __r = __args.rest();
+                    if __r.is_empty() { None } else { Some(__r.to_string()) }
+                };
+            }),
+            TypeClass::Opt { inner, .. } => out.push(quote! {
+                let #name: Option<#inner> = match __args.next_token() {
+                    Some(t) => match t.parse::<#inner>() {
+                        Ok(v) => Some(v),
+                        Err(_) => #usage_fail,
+                    },
+                    None => None,
+                };
+            }),
+            TypeClass::VecTy {
+                is_string: true, ..
+            } => out.push(quote! {
+                let #name: Vec<String> = __args.rest_tokens();
+            }),
+            TypeClass::VecTy { inner, .. } => out.push(quote! {
+                let #name: Vec<#inner> = {
+                    let mut __out: Vec<#inner> = std::vec::Vec::new();
+                    for __t in __args.rest_tokens() {
+                        match __t.parse::<#inner>() {
+                            Ok(v) => __out.push(v),
+                            Err(_) => #usage_fail,
+                        }
+                    }
+                    __out
+                };
+            }),
+        }
+    }
+    out
 }
 
 // ─── #[command] / #[on] as standalone no-ops ─────────────────────────────────

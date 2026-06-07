@@ -80,6 +80,30 @@ impl MacroBot {
         ctx.say(user.nick)
     }
 
+    // [9] — typed scalar command args parsed from the tail
+    #[command("add")]
+    async fn add(&self, ctx: Context, a: i64, b: i64) -> Result {
+        ctx.say(format!("{}", a + b))
+    }
+
+    // [10] — scalar arg followed by a trailing rest-of-line String
+    #[command("repeat")]
+    async fn repeat(&self, ctx: Context, n: u32, text: String) -> Result {
+        ctx.say(text.repeat(n as usize))
+    }
+
+    // [11] — optional trailing scalar arg
+    #[command("maybe")]
+    async fn maybe(&self, ctx: Context, n: Option<u32>) -> Result {
+        ctx.say(format!("{n:?}"))
+    }
+
+    // [12] — variadic trailing Vec<String>
+    #[command("tags")]
+    async fn tags(&self, ctx: Context, items: Vec<String>) -> Result {
+        ctx.say(items.join(","))
+    }
+
     // Plain (non-annotated) method — must remain callable and produce NO entry.
     fn helper(&self) -> u32 {
         42
@@ -180,8 +204,8 @@ fn message_wins_trigger_precedence() {
 
 #[test]
 fn only_annotated_methods_produce_handler_entries() {
-    // 9 annotated methods; the plain `helper` produces no entry.
-    assert_eq!(handlers().len(), 9);
+    // 13 annotated methods; the plain `helper` produces no entry.
+    assert_eq!(handlers().len(), 13);
 }
 
 #[test]
@@ -240,6 +264,110 @@ async fn user_arg_filled_from_sender() {
     assert_eq!(
         invoke(entry, tc).await,
         Some("PRIVMSG #test :zaphod\r\n".to_string())
+    );
+}
+
+// ─── typed command arguments ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn typed_scalar_args_parsed_from_command_tail() {
+    let entry = &handlers()[9]; // add(a: i64, b: i64)
+    let tc = TestContext::builder()
+        .target("#test")
+        .captures(vec!["3 4".to_string()])
+        .build();
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :7\r\n".to_string())
+    );
+}
+
+#[tokio::test]
+async fn typed_scalar_parse_failure_replies_usage() {
+    let entry = &handlers()[9]; // add(a: i64, b: i64)
+    let tc = TestContext::builder()
+        .target("#test")
+        .captures(vec!["foo 4".to_string()])
+        .build();
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :tester, usage: !add <a> <b>\r\n".to_string())
+    );
+}
+
+#[tokio::test]
+async fn missing_required_arg_replies_usage() {
+    let entry = &handlers()[9]; // add(a: i64, b: i64)
+    let tc = TestContext::builder()
+        .target("#test")
+        .captures(vec!["3".to_string()])
+        .build();
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :tester, usage: !add <a> <b>\r\n".to_string())
+    );
+}
+
+#[tokio::test]
+async fn trailing_string_captures_rest_of_line() {
+    let entry = &handlers()[10]; // repeat(n: u32, text: String)
+    let tc = TestContext::builder()
+        .target("#test")
+        .captures(vec!["2 ab cd".to_string()])
+        .build();
+    // n = 2, text = "ab cd" (rest, verbatim) -> repeated twice.
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :ab cdab cd\r\n".to_string())
+    );
+}
+
+#[tokio::test]
+async fn optional_arg_is_some_when_present() {
+    let entry = &handlers()[11]; // maybe(n: Option<u32>)
+    let tc = TestContext::builder()
+        .target("#test")
+        .captures(vec!["42".to_string()])
+        .build();
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :Some(42)\r\n".to_string())
+    );
+}
+
+#[tokio::test]
+async fn optional_arg_is_none_when_absent() {
+    let entry = &handlers()[11]; // maybe(n: Option<u32>)
+    let tc = TestContext::builder().target("#test").build();
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :None\r\n".to_string())
+    );
+}
+
+#[tokio::test]
+async fn optional_arg_present_but_unparseable_replies_usage() {
+    let entry = &handlers()[11]; // maybe(n: Option<u32>)
+    let tc = TestContext::builder()
+        .target("#test")
+        .captures(vec!["notanumber".to_string()])
+        .build();
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :tester, usage: !maybe [n]\r\n".to_string())
+    );
+}
+
+#[tokio::test]
+async fn variadic_vec_collects_remaining_tokens() {
+    let entry = &handlers()[12]; // tags(items: Vec<String>)
+    let tc = TestContext::builder()
+        .target("#test")
+        .captures(vec!["red green blue".to_string()])
+        .build();
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :red,green,blue\r\n".to_string())
     );
 }
 
