@@ -36,22 +36,43 @@ jobs:
           fetch-depth: 0
       # Nightly is required: cargo-semver-checks generates rustdoc JSON, which is
       # an unstable rustc feature.
+      #
+      # Both the toolchain and cargo-semver-checks are pinned, and must be bumped
+      # together. Unstable rustdoc JSON bumps its format version every few weeks,
+      # and cargo-semver-checks only parses the versions it knows about, so an
+      # unpinned pair silently drifts apart and breaks this job. This combination
+      # is known good: nightly-2026-07-20 emits format v60, which
+      # cargo-semver-checks 0.49.0 supports.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-07-20
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-semver-checks
+          tool: cargo-semver-checks@0.49.0
       - name: Detect breaking API changes
         id: semver
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           git fetch --quiet origin "$BASE_REF"
-          if cargo semver-checks --workspace --baseline-rev "origin/$BASE_REF"; then
+          # A non-zero exit does not by itself mean "breaking change": it also
+          # covers tooling failures, e.g. cargo-semver-checks not yet supporting
+          # the rustdoc JSON format emitted by the current nightly. Treating
+          # those as breaking changes blocks every PR with a misleading error, so
+          # only the explicit summary line counts as a finding.
+          set +e
+          output=$(cargo semver-checks --workspace --baseline-rev "origin/$BASE_REF" 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+
+          if [ "$status" -eq 0 ]; then
             echo "breaking=false" >> "$GITHUB_OUTPUT"
-          else
+          elif printf '%s' "$output" | grep -q "semver requires new major version"; then
             echo "breaking=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::cargo-semver-checks exited $status without reporting an API verdict, so the public API was not checked. This is a tooling failure, not a breaking change. If the log shows an unsupported rustdoc format, a newer cargo-semver-checks is needed for the current nightly."
+            exit 1
           fi
       - name: Require a breaking-change marker in the PR title
         if: steps.semver.outputs.breaking == 'true'
