@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.2.1...ircbot-macros-v0.3.0) - 2026-07-25
+
+### Added
+
+- role-based command access control ([#102](https://github.com/chrj/ircbot/pull/102))
+- typed positional command arguments ([#101](https://github.com/chrj/ircbot/pull/101))
+- opt-in keepnick to reclaim the desired nick ([#97](https://github.com/chrj/ircbot/pull/97))
+
+### Other
+
+- *(deps)* bump cron from 0.15.0 to 0.17.0 ([#108](https://github.com/chrj/ircbot/pull/108))
+- bump README dependency version to 0.3 ([#103](https://github.com/chrj/ircbot/pull/103))
+
 ## [0.2.1](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.2.0...ircbot-macros-v0.2.1) - 2026-06-04
 
 ### Added
