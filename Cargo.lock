@@ -1016,7 +1016,7 @@ dependencies = [
 
 [[package]]
 name = "ircbot"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "ircbot-macros"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "chrono-tz",
  "cron",
