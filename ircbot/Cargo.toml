@@ -11,6 +11,10 @@ categories = ["network-programming", "asynchronous"]
 
 [features]
 integration = []
+tls = ["dep:tokio-rustls", "dep:rustls-native-certs"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -24,18 +28,32 @@ chrono-tz = "0.10"
 leaky-bucket = "1"
 thiserror = "2"
 tracing = "0.1"
+# TLS (optional, enabled by the `tls` feature). `ring` is chosen over the
+# default `aws_lc_rs` provider because it builds without cmake/nasm, which
+# matters for a library whose users control their own build environment.
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "tls12",
+    "logging",
+], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 
 [dev-dependencies]
 testcontainers = "0.27"
 irc = { version = "1", default-features = false }
 trybuild = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rcgen = "0.14"
 
 [[example]]
 name = "basic_bot"
 
 [[example]]
 name = "stateful_bot"
+
+[[example]]
+name = "tls_bot"
+required-features = ["tls"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -8,7 +8,9 @@ pub mod handler;
 pub mod hot_reload;
 pub mod irc;
 pub mod logging;
+pub mod server;
 pub mod testing;
+mod transport;
 pub mod types;
 
 pub use bot::HandlerSet;
@@ -25,6 +27,9 @@ pub use ircbot_macros::command;
 #[doc = include_str!("../docs/on.md")]
 pub use ircbot_macros::on;
 pub use logging::PROTOCOL_LOG_TARGET;
+pub use server::Server;
+#[cfg(feature = "tls")]
+pub use server::TlsServer;
 pub use types::{Channel, Nick, Target};
 
 /// The standard error type used throughout the crate.
@@ -152,7 +157,7 @@ pub mod internal {
             tracing::info!(%server, delay = ?RECONNECT_DELAY, "reconnecting");
             tokio::time::sleep(RECONNECT_DELAY).await;
 
-            match State::connect(nick.clone(), &server, channels.clone()).await {
+            match State::connect(nick.clone(), server.clone(), channels.clone()).await {
                 Ok(mut new_state) => {
                     new_state.keepalive_interval = keepalive_interval;
                     new_state.keepalive_timeout = keepalive_timeout;

@@ -435,13 +435,25 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
         impl #struct_name {
             /// Connect to an IRC server and return a bot ready to run.
             ///
+            /// `server` is anything that converts into an
+            /// [`ircbot::Server`](ircbot::Server). A bare `"host:port"` string
+            /// connects in plaintext; with the `tls` feature, `Server::tls`
+            /// connects over TLS:
+            ///
+            /// ```rust,ignore
+            /// MyBot::new("mybot", "irc.example.net:6667", ["rust"]).await?;
+            /// MyBot::new("mybot", Server::tls("irc.libera.chat:6697"), ["rust"]).await?;
+            /// ```
+            ///
             /// On Unix, if this process was started by `exec_reload` the live
             /// TCP connection is inherited from the parent binary and no new
             /// connection is made.  The `nick`, `server`, and `channels`
             /// arguments are used only when no inherited connection is present.
+            /// A TLS connection is never inherited, so a reloaded TLS bot always
+            /// reconnects using the `server` given here.
             pub async fn new(
                 nick: impl Into<String>,
-                server: impl AsRef<str>,
+                server: impl Into<ircbot::Server>,
                 channels: impl IntoIterator<Item = impl Into<String>>,
             ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
                 // On Unix, check for an inherited fd from a hot-reload exec.
@@ -453,7 +465,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 let state = ircbot::State::connect(
                     nick.into(),
-                    server.as_ref(),
+                    server,
                     channels.into_iter().map(|c| ircbot::Channel::from(c.into())).collect(),
                 ).await?;
                 Ok(#struct_name { __state: Some(state) #state_field_init })
@@ -534,7 +546,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                      reload_ka_interval_ms, reload_ka_timeout_ms) = (
                     state.raw_fd,
                     state.nick.as_str().to_string(),
-                    state.server.clone(),
+                    state.server.addr().to_string(),
                     state.channels.iter().map(|c| c.as_str().to_string()).collect::<std::vec::Vec<String>>(),
                     state.keepalive_interval().as_millis() as u64,
                     state.keepalive_timeout().as_millis() as u64,

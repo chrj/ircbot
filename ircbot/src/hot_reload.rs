@@ -21,11 +21,20 @@
 /// at startup.  If the env vars are present it reconstructs a live `State`
 /// from the inherited fd instead of opening a new TCP connection.
 ///
+/// # TLS connections
+///
+/// A `raw_fd` of `None` means the connection cannot be handed over — the case
+/// for TLS. A TLS session's keys, record sequence numbers, and any
+/// partially-read record live in this process's memory, which `exec` discards;
+/// the successor would inherit a socket it has no way to decrypt. The binary is
+/// still replaced, just without the socket, so the new process connects afresh
+/// and rejoins. Callers should warn the user that the connection will drop.
+///
 /// This is the Unix-only implementation.  On non-Unix targets the function is
 /// a no-op that returns `Err`.
 #[cfg(unix)]
 pub fn exec_reload(
-    raw_fd: std::os::unix::io::RawFd,
+    raw_fd: Option<std::os::unix::io::RawFd>,
     nick: &str,
     server: &str,
     channels: &[String],
@@ -34,14 +43,24 @@ pub fn exec_reload(
 ) -> crate::BoxError {
     use std::os::unix::process::CommandExt;
 
-    // Clear FD_CLOEXEC so the fd survives exec.
-    let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFD) };
-    if flags == -1 {
-        return format!("fcntl(F_GETFD) failed: {}", std::io::Error::last_os_error()).into();
+    if raw_fd.is_none() {
+        tracing::warn!(
+            %server,
+            "hot reload: this connection cannot be inherited across exec (TLS sessions do not \
+             survive it), so the new binary will reconnect and rejoin — expect a brief disconnect"
+        );
     }
-    let rc = unsafe { libc::fcntl(raw_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
-    if rc == -1 {
-        return format!("fcntl(F_SETFD) failed: {}", std::io::Error::last_os_error()).into();
+
+    // Clear FD_CLOEXEC so the fd survives exec.
+    if let Some(fd) = raw_fd {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags == -1 {
+            return format!("fcntl(F_GETFD) failed: {}", std::io::Error::last_os_error()).into();
+        }
+        let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
+        if rc == -1 {
+            return format!("fcntl(F_SETFD) failed: {}", std::io::Error::last_os_error()).into();
+        }
     }
 
     // Encode state into env vars for the new process.
@@ -51,12 +70,17 @@ pub fn exec_reload(
     };
 
     let mut cmd = std::process::Command::new(&exe);
-    cmd.env(ENV_FD, raw_fd.to_string())
-        .env(ENV_NICK, nick)
+    cmd.env(ENV_NICK, nick)
         .env(ENV_SERVER, server)
         .env(ENV_CHANNELS, channels.join(","))
         .env(ENV_KA_INTERVAL, keepalive_interval_ms.to_string())
         .env(ENV_KA_TIMEOUT, keepalive_timeout_ms.to_string());
+
+    // Without ENV_FD the successor's `try_inherit_from_env` returns `None` and
+    // it opens a fresh connection instead of adopting this one.
+    if let Some(fd) = raw_fd {
+        cmd.env(ENV_FD, fd.to_string());
+    }
 
     // The `#[bot]`-generated `main_loop` forwards keepalive timings as arguments
     // but, for compatibility with already-published macro versions, does not

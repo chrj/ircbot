@@ -60,6 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Access control** — define hostmask-based roles with `.with_role("admin", ["*!*@trusted.host"])` and gate commands with `#[command("op", role = "admin")]`; unauthorized senders are silently ignored.
 - **Message accessors** — `ctx.nick()`, `ctx.is_from_self()`, `ctx.mentions_me()` to inspect who sent a message and what it says.
 - **Keepalive & auto-reconnect** — periodic `PING`/`PONG` monitoring; reconnects and re-joins on drop. If the configured nick is already in use, the bot automatically retries with a suffixed alternative (`bot`, `bot_`, …).
+- **TLS** (optional) — `Server::tls("irc.libera.chat:6697")` behind the `tls` feature, with certificate verification against the platform root store, private-CA and self-signed support, and client certificates for CertFP.
 - **Hot reload** (Unix) — `SIGHUP` execs the new binary with the live TCP socket inherited; no reconnect, no missed messages.
 - **Flood protection** — token-bucket rate limiter (default: burst 4, 1 msg / 500 ms).
 - **Auto message splitting** — long messages are word-wrapped and split within the 512-byte IRC limit.
@@ -78,6 +79,53 @@ tokio  = { version = "1", features = ["full"] }
 ```
 
 See the [`basic_bot` example](ircbot/examples/basic_bot.rs) and the [docs](https://docs.rs/ircbot) for the complete API, hot-reload guide, testing helpers, and lower-level `State` / `internal` APIs.
+
+## TLS
+
+TLS is behind the optional `tls` feature, which pulls in
+[rustls](https://github.com/rustls/rustls):
+
+```toml
+[dependencies]
+ircbot = { version = "0.3", features = ["tls"] }
+```
+
+The second argument to `new` is the server, and it decides the transport. A bare
+`"host:port"` string connects in plaintext; `Server::tls` connects over TLS,
+verifying the certificate against the platform's root store:
+
+```rust,ignore
+use ircbot::Server;
+
+MyBot::new("mybot", Server::tls("irc.libera.chat:6697"), ["rust"])
+    .await?
+    .main_loop()
+    .await
+```
+
+The transport is never inferred from the port number, so a misconfigured port
+cannot silently downgrade the connection to plaintext.
+
+For a network with a private CA or a self-signed certificate, trust that
+certificate specifically rather than turning verification off:
+
+```rust,ignore
+Server::tls("irc.internal.example:6697")
+    .with_extra_root_pem(std::fs::read("ca.pem")?)
+```
+
+`with_client_cert_pem` presents a client certificate for CertFP / SASL EXTERNAL,
+and `with_sni` overrides the verified hostname when connecting by IP.
+`danger_accept_invalid_certs` disables verification entirely — it is meant for a
+development server on `localhost`, leaves the connection unauthenticated, and
+logs a warning on every connect.
+
+**Hot reload and TLS are mutually exclusive.** `SIGHUP` still swaps the binary,
+but a TLS session cannot be handed to the new process: the socket survives
+`exec`, while the session keys, record sequence numbers, and partially-read
+records that make it decryptable do not. The successor reconnects and rejoins,
+logging a warning, so a TLS bot trades zero-disconnect reloads for a few seconds
+of downtime.
 
 ## Logging
 
