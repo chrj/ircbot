@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use irc_proto::chan::ChannelExt;
 use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::net::TcpStream;
 
+use crate::server::Server;
+use crate::transport;
 use crate::types::{Channel, Nick};
 
 /// Default interval between client-initiated keepalive pings.
@@ -25,8 +26,10 @@ pub const DEFAULT_KEEPNICK_INTERVAL: Duration = Duration::from_secs(60);
 pub struct State {
     pub nick: Nick,
     pub channels: Vec<Channel>,
-    /// Server address used when reconnecting (e.g. `"irc.example.net:6667"`).
-    pub server: String,
+    /// The server this connection was made to, including its transport. Reused
+    /// verbatim when reconnecting, so a TLS connection can never come back as
+    /// plaintext.
+    pub server: Server,
     pub(crate) keepalive_interval: Duration,
     pub(crate) keepalive_timeout: Duration,
     /// Token-bucket burst: how many messages may be sent immediately before
@@ -47,14 +50,19 @@ pub struct State {
     /// hostmask glob patterns. A command with `role = Some(name)` only fires for
     /// senders matching one of that role's patterns. Set via [`State::with_role`].
     pub(crate) roles: Vec<(String, Vec<String>)>,
-    pub(crate) reader: tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
+    pub(crate) reader: tokio::io::BufReader<transport::ReadHalf>,
     /// The raw write half; `run_bot_internal` wraps this in a buffered writer and a
     /// dedicated write-loop task.
-    pub(crate) write_half: tokio::net::tcp::OwnedWriteHalf,
-    /// The raw file descriptor of the underlying TCP socket.
-    /// Used by the hot-reload path to pass the live connection to a new binary.
+    pub(crate) write_half: transport::WriteHalf,
+    /// The raw file descriptor of the underlying TCP socket, used by the
+    /// hot-reload path to pass the live connection to a new binary.
+    ///
+    /// `None` when the connection cannot be inherited across an `exec`, which
+    /// is the case for TLS: the socket survives but the session state needed to
+    /// decrypt it does not. [`crate::hot_reload::exec_reload`] then replaces the
+    /// binary without handing over the socket, and the successor reconnects.
     #[cfg(unix)]
-    pub raw_fd: std::os::unix::io::RawFd,
+    pub raw_fd: Option<std::os::unix::io::RawFd>,
 }
 
 impl State {
@@ -70,34 +78,46 @@ impl State {
 
     /// Connect to an IRC server, send NICK/USER, and return a `State` ready to run.
     ///
+    /// `server` accepts anything that converts into a [`Server`]. A bare
+    /// `"host:port"` string connects in plaintext; use `Server::tls` (with the
+    /// `tls` feature) for an encrypted connection:
+    ///
+    /// ```rust,no_run
+    /// # use ircbot::{Server, State};
+    /// # async fn f() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    /// State::connect("mybot", "irc.example.net:6667", vec![]).await?;
+    /// # #[cfg(feature = "tls")]
+    /// State::connect("mybot", Server::tls("irc.libera.chat:6697"), vec![]).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// Channel names that do not already start with a channel prefix character
     /// (`#`, `&`, `+`, `!`) will automatically be prefixed with `#`, so both
     /// `"general"` and `"#general"` are accepted.
     ///
     /// # Errors
     ///
-    /// Returns an error if the TCP connection or initial handshake fails.
+    /// Returns an error if the TCP connection, the TLS handshake, or the
+    /// initial NICK/USER handshake fails.
     pub async fn connect(
         nick: impl Into<Nick>,
-        server: &str,
+        server: impl Into<Server>,
         channels: Vec<Channel>,
     ) -> Result<State, Box<dyn std::error::Error + Send + Sync>> {
         let nick = nick.into();
+        let server = server.into();
         let channels: Vec<Channel> = channels
             .iter()
             .map(|c| Self::normalise_channel(c.as_str()))
             .collect();
-        let stream = TcpStream::connect(server).await?;
 
+        let connection = transport::connect(&server).await?;
         #[cfg(unix)]
-        let raw_fd = {
-            use std::os::unix::io::AsRawFd;
-            stream.as_raw_fd()
-        };
+        let raw_fd = connection.raw_fd;
 
-        let (read_half, write_half) = stream.into_split();
-        let reader = tokio::io::BufReader::new(read_half);
-        let mut writer = BufWriter::new(write_half);
+        let reader = tokio::io::BufReader::new(connection.reader);
+        let mut writer = BufWriter::new(connection.writer);
 
         let nick_line = format!("NICK {nick}\r\n");
         let user_line = format!("USER {nick} 0 * :{nick}\r\n");
@@ -118,7 +138,7 @@ impl State {
         Ok(State {
             nick,
             channels,
-            server: server.to_string(),
+            server,
             keepalive_interval: DEFAULT_KEEPALIVE_INTERVAL,
             keepalive_timeout: DEFAULT_KEEPALIVE_TIMEOUT,
             flood_burst: DEFAULT_FLOOD_BURST,
@@ -142,7 +162,8 @@ impl State {
     /// IRC session is never interrupted.
     ///
     /// Returns `None` if the expected environment variables are absent (i.e.
-    /// this is a fresh start, not a reload).
+    /// this is a fresh start, not a reload). A TLS connection is never handed
+    /// over, so a reloaded TLS bot always takes this path and reconnects.
     ///
     /// # Errors
     ///
@@ -151,7 +172,7 @@ impl State {
     #[cfg(unix)]
     pub fn try_inherit_from_env() -> Result<Option<State>, Box<dyn std::error::Error + Send + Sync>>
     {
-        use std::os::unix::io::{FromRawFd, RawFd};
+        use std::os::unix::io::RawFd;
 
         use crate::hot_reload::{
             ENV_CHANNELS, ENV_FD, ENV_FLOOD_BURST, ENV_FLOOD_RATE, ENV_KA_INTERVAL, ENV_KA_TIMEOUT,
@@ -202,19 +223,15 @@ impl State {
             channels_raw.split(',').map(Channel::from).collect()
         };
 
-        // Reconstruct the TcpStream from the raw fd.  Safety: the fd was
-        // inherited from the parent process and is still valid.
-        let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
-        std_stream.set_nonblocking(true)?;
-        let stream = TcpStream::from_std(std_stream)?;
-
-        let (read_half, write_half) = stream.into_split();
-        let reader = tokio::io::BufReader::new(read_half);
+        let connection = transport::from_inherited_fd(raw_fd)?;
+        let reader = tokio::io::BufReader::new(connection.reader);
 
         Ok(Some(State {
             nick: Nick::from(nick),
             channels,
-            server,
+            // An inherited connection is always plaintext; TLS sessions cannot
+            // survive the `exec` and so are never handed over.
+            server: Server::plain(server),
             keepalive_interval: Duration::from_millis(ka_interval_ms),
             keepalive_timeout: Duration::from_millis(ka_timeout_ms),
             flood_burst,
@@ -227,8 +244,8 @@ impl State {
             // Re-applied by the builder on restart (see `ctcp_version`).
             roles: Vec::new(),
             reader,
-            write_half,
-            raw_fd,
+            write_half: connection.writer,
+            raw_fd: connection.raw_fd,
         }))
     }
 
@@ -500,7 +517,9 @@ mod tests {
             .expect("env vars present → Some(State)");
 
         assert_eq!(state.nick, "inheritbot");
-        assert_eq!(state.server, addr);
+        assert_eq!(state.server.addr(), addr);
+        // An inherited connection is always plaintext.
+        assert!(!state.server.is_tls());
         assert_eq!(
             state.channels,
             vec![Channel::from("#a"), Channel::from("#b")]
