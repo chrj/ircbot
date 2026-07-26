@@ -125,22 +125,21 @@ pub mod internal {
         // Wrap handlers in a HandlerSet so they can be hot-swapped at runtime.
         let handlers = make_handler_set(handlers);
 
-        // Preserve reconnection parameters before `state` is consumed.
+        // Capture how to rebuild this connection before `state` is consumed by
+        // the read loop, so every reconnect below restores the caller's
+        // configuration in full.
+        let blueprint = state.blueprint();
         let server = state.server.clone();
-        let nick = state.nick.clone();
-        let channels = state.channels.clone();
-        let keepalive_interval = state.keepalive_interval;
-        let keepalive_timeout = state.keepalive_timeout;
-        let flood_burst = state.flood_burst;
-        let flood_rate = state.flood_rate;
-        let roles = state.roles.clone();
 
         // Record the flood-control settings so a SIGHUP hot-reload can carry
         // them to the successor process (the `#[bot]` macro doesn't forward
         // them to `exec_reload` itself). Keepalive timings are forwarded by the
         // macro directly; these are not.
         #[cfg(unix)]
-        crate::hot_reload::record_flood_settings(flood_burst, flood_rate.as_millis() as u64);
+        crate::hot_reload::record_flood_settings(
+            state.flood_burst(),
+            state.flood_rate().as_millis() as u64,
+        );
 
         let mut current_state = state;
 
@@ -157,13 +156,8 @@ pub mod internal {
             tracing::info!(%server, delay = ?RECONNECT_DELAY, "reconnecting");
             tokio::time::sleep(RECONNECT_DELAY).await;
 
-            match State::connect(nick.clone(), server.clone(), channels.clone()).await {
-                Ok(mut new_state) => {
-                    new_state.keepalive_interval = keepalive_interval;
-                    new_state.keepalive_timeout = keepalive_timeout;
-                    new_state.flood_burst = flood_burst;
-                    new_state.flood_rate = flood_rate;
-                    new_state.roles = roles.clone();
+            match blueprint.connect().await {
+                Ok(new_state) => {
                     current_state = new_state;
                 }
                 Err(e) => {

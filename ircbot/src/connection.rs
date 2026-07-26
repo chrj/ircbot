@@ -22,14 +22,14 @@ pub const DEFAULT_FLOOD_RATE: Duration = Duration::from_millis(500);
 /// enabled via [`State::with_keepnick`].
 pub const DEFAULT_KEEPNICK_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Holds the established connection to an IRC server plus join-on-connect metadata.
-pub struct State {
-    pub nick: Nick,
-    pub channels: Vec<Channel>,
-    /// The server this connection was made to, including its transport. Reused
-    /// verbatim when reconnecting, so a TLS connection can never come back as
-    /// plaintext.
-    pub server: Server,
+/// Everything a caller configures through the `with_*` builders — that is,
+/// everything that must outlive the socket it was configured on.
+///
+/// Kept as one value so [`Blueprint`] can carry it across a reconnect with a
+/// single assignment. A new `with_*` setting therefore survives a reconnect by
+/// construction: there is no second list of fields to remember to update.
+#[derive(Clone, Debug)]
+pub(crate) struct Settings {
     pub(crate) keepalive_interval: Duration,
     pub(crate) keepalive_timeout: Duration,
     /// Token-bucket burst: how many messages may be sent immediately before
@@ -50,6 +50,66 @@ pub struct State {
     /// hostmask glob patterns. A command with `role = Some(name)` only fires for
     /// senders matching one of that role's patterns. Set via [`State::with_role`].
     pub(crate) roles: Vec<(String, Vec<String>)>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            keepalive_interval: DEFAULT_KEEPALIVE_INTERVAL,
+            keepalive_timeout: DEFAULT_KEEPALIVE_TIMEOUT,
+            flood_burst: DEFAULT_FLOOD_BURST,
+            flood_rate: DEFAULT_FLOOD_RATE,
+            ctcp_version: None,
+            keepnick_interval: None,
+            roles: Vec::new(),
+        }
+    }
+}
+
+/// Everything needed to establish an equivalent connection: where to connect,
+/// as whom, and with which [`Settings`].
+///
+/// [`crate::internal::run_bot`] takes one before handing the live [`State`] to
+/// the read loop, which consumes it. Reconnecting then goes through
+/// [`Blueprint::connect`], so the reconnected `State` is configured exactly like
+/// the one it replaces.
+#[derive(Clone, Debug)]
+pub(crate) struct Blueprint {
+    nick: Nick,
+    server: Server,
+    channels: Vec<Channel>,
+    settings: Settings,
+}
+
+impl Blueprint {
+    /// Open a fresh connection configured identically to the one this blueprint
+    /// was taken from.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection or handshake fails, exactly as
+    /// [`State::connect`] does.
+    pub(crate) async fn connect(&self) -> Result<State, Box<dyn std::error::Error + Send + Sync>> {
+        let mut state = State::connect(
+            self.nick.clone(),
+            self.server.clone(),
+            self.channels.clone(),
+        )
+        .await?;
+        state.settings = self.settings.clone();
+        Ok(state)
+    }
+}
+
+/// Holds the established connection to an IRC server plus join-on-connect metadata.
+pub struct State {
+    pub nick: Nick,
+    pub channels: Vec<Channel>,
+    /// The server this connection was made to, including its transport. Reused
+    /// verbatim when reconnecting, so a TLS connection can never come back as
+    /// plaintext.
+    pub server: Server,
+    pub(crate) settings: Settings,
     pub(crate) reader: tokio::io::BufReader<transport::ReadHalf>,
     /// The raw write half; `run_bot_internal` wraps this in a buffered writer and a
     /// dedicated write-loop task.
@@ -139,18 +199,25 @@ impl State {
             nick,
             channels,
             server,
-            keepalive_interval: DEFAULT_KEEPALIVE_INTERVAL,
-            keepalive_timeout: DEFAULT_KEEPALIVE_TIMEOUT,
-            flood_burst: DEFAULT_FLOOD_BURST,
-            flood_rate: DEFAULT_FLOOD_RATE,
-            ctcp_version: None,
-            keepnick_interval: None,
-            roles: Vec::new(),
+            settings: Settings::default(),
             reader,
             write_half,
             #[cfg(unix)]
             raw_fd,
         })
+    }
+
+    /// Capture everything needed to re-establish an equivalent connection.
+    ///
+    /// Taken before the `State` is consumed by the read loop, so the reconnect
+    /// that follows can restore the caller's configuration in full.
+    pub(crate) fn blueprint(&self) -> Blueprint {
+        Blueprint {
+            nick: self.nick.clone(),
+            server: self.server.clone(),
+            channels: self.channels.clone(),
+            settings: self.settings.clone(),
+        }
     }
 
     /// Attempt to reconstruct a [`State`] from an inherited TCP file descriptor.
@@ -232,17 +299,16 @@ impl State {
             // An inherited connection is always plaintext; TLS sessions cannot
             // survive the `exec` and so are never handed over.
             server: Server::plain(server),
-            keepalive_interval: Duration::from_millis(ka_interval_ms),
-            keepalive_timeout: Duration::from_millis(ka_timeout_ms),
-            flood_burst,
-            flood_rate,
-            // Re-applied by the bot builder on the re-exec'd process, so it need
-            // not be carried through the hot-reload environment.
-            ctcp_version: None,
-            // Likewise re-applied by the builder on restart (see `ctcp_version`).
-            keepnick_interval: None,
-            // Re-applied by the builder on restart (see `ctcp_version`).
-            roles: Vec::new(),
+            settings: Settings {
+                keepalive_interval: Duration::from_millis(ka_interval_ms),
+                keepalive_timeout: Duration::from_millis(ka_timeout_ms),
+                flood_burst,
+                flood_rate,
+                // `ctcp_version`, `keepnick_interval`, and `roles` are re-applied
+                // by the bot builder on the re-exec'd process, so they need not
+                // be carried through the hot-reload environment.
+                ..Settings::default()
+            },
             reader,
             write_half: connection.writer,
             raw_fd: connection.raw_fd,
@@ -256,8 +322,8 @@ impl State {
     /// triggering a reconnect.  Call this method (before starting the bot) to
     /// use different values.
     pub fn with_keepalive(mut self, interval: Duration, timeout: Duration) -> Self {
-        self.keepalive_interval = interval;
-        self.keepalive_timeout = timeout;
+        self.settings.keepalive_interval = interval;
+        self.settings.keepalive_timeout = timeout;
         self
     }
 
@@ -267,8 +333,8 @@ impl State {
     /// rate-limiting kicks in.  `rate` is the minimum interval between messages
     /// once the burst budget is exhausted.
     pub fn with_flood_control(mut self, burst: usize, rate: Duration) -> Self {
-        self.flood_burst = burst;
-        self.flood_rate = rate;
+        self.settings.flood_burst = burst;
+        self.settings.flood_rate = rate;
         self
     }
 
@@ -278,7 +344,7 @@ impl State {
     /// `ircbot <crate-version>`. Call this (before starting the bot) to reply
     /// with your own identifier instead, e.g. `"mybot 1.2.3"`.
     pub fn with_ctcp_version(mut self, version: impl Into<String>) -> Self {
-        self.ctcp_version = Some(version.into());
+        self.settings.ctcp_version = Some(version.into());
         self
     }
 
@@ -298,7 +364,7 @@ impl State {
     /// starting the bot); see also [`State::with_keepnick`] for the default
     /// interval.
     pub fn with_keepnick_interval(mut self, interval: Duration) -> Self {
-        self.keepnick_interval = Some(interval);
+        self.settings.keepnick_interval = Some(interval);
         self
     }
 
@@ -328,35 +394,35 @@ impl State {
         masks: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         let patterns: Vec<String> = masks.into_iter().map(Into::into).collect();
-        self.roles.push((name.into(), patterns));
+        self.settings.roles.push((name.into(), patterns));
         self
     }
 
     /// Returns the configured keepalive interval.
     pub fn keepalive_interval(&self) -> Duration {
-        self.keepalive_interval
+        self.settings.keepalive_interval
     }
 
     /// Returns the configured keepalive timeout.
     pub fn keepalive_timeout(&self) -> Duration {
-        self.keepalive_timeout
+        self.settings.keepalive_timeout
     }
 
     /// Returns the configured flood-control burst size.
     pub fn flood_burst(&self) -> usize {
-        self.flood_burst
+        self.settings.flood_burst
     }
 
     /// Returns the configured minimum interval between messages once the burst
     /// budget is exhausted.
     pub fn flood_rate(&self) -> Duration {
-        self.flood_rate
+        self.settings.flood_rate
     }
 
     /// Returns the configured keepnick reclaim interval, or `None` when the
     /// feature is disabled (the default).
     pub fn keepnick_interval(&self) -> Option<Duration> {
-        self.keepnick_interval
+        self.settings.keepnick_interval
     }
 }
 
@@ -401,6 +467,86 @@ mod tests {
     async fn connect_normalises_channels() {
         let state = connect_loopback().await;
         assert_eq!(state.channels, vec![Channel::from("#general")]);
+    }
+
+    // ── reconnect ──────────────────────────────────────────────────────────────
+
+    /// A loopback listener that keeps accepting, so the same address can be
+    /// connected to more than once.
+    async fn serve_loopback() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            // Hold every accepted socket so the client side stays connected.
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
+        addr
+    }
+
+    /// Given a connection configured through every `with_*` builder, when it is
+    /// re-established from its blueprint, then every setting is still in effect.
+    ///
+    /// The reconnect path used to copy a hand-maintained subset of the fields,
+    /// silently dropping the CTCP version, keepnick, and any future setting.
+    #[tokio::test]
+    async fn reconnect_preserves_every_configured_setting() {
+        let addr = serve_loopback().await;
+
+        let original = State::connect("tester", &addr, vec![Channel::from("general")])
+            .await
+            .expect("loopback connect failed")
+            .with_keepalive(Duration::from_secs(12), Duration::from_secs(4))
+            .with_flood_control(9, Duration::from_millis(750))
+            .with_ctcp_version("mybot 1.2.3")
+            .with_keepnick_interval(Duration::from_secs(15))
+            .with_role("admin", ["*!*@trusted.host"]);
+
+        let reconnected = original
+            .blueprint()
+            .connect()
+            .await
+            .expect("reconnect failed");
+
+        assert_eq!(reconnected.keepalive_interval(), Duration::from_secs(12));
+        assert_eq!(reconnected.keepalive_timeout(), Duration::from_secs(4));
+        assert_eq!(reconnected.flood_burst(), 9);
+        assert_eq!(reconnected.flood_rate(), Duration::from_millis(750));
+        assert_eq!(
+            reconnected.keepnick_interval(),
+            Some(Duration::from_secs(15))
+        );
+        assert_eq!(
+            reconnected.settings.ctcp_version.as_deref(),
+            Some("mybot 1.2.3")
+        );
+        assert_eq!(
+            reconnected.settings.roles,
+            vec![("admin".to_string(), vec!["*!*@trusted.host".to_string()])]
+        );
+    }
+
+    /// The identity of the connection is carried across too, not just its
+    /// tunables.
+    #[tokio::test]
+    async fn reconnect_preserves_nick_server_and_channels() {
+        let addr = serve_loopback().await;
+
+        let original = State::connect("tester", &addr, vec![Channel::from("general")])
+            .await
+            .expect("loopback connect failed");
+
+        let reconnected = original
+            .blueprint()
+            .connect()
+            .await
+            .expect("reconnect failed");
+
+        assert_eq!(reconnected.nick, "tester");
+        assert_eq!(reconnected.server.addr(), addr);
+        assert_eq!(reconnected.channels, vec![Channel::from("#general")]);
     }
 
     #[tokio::test]
