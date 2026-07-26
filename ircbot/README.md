@@ -74,7 +74,7 @@ Full API reference: **[docs.rs/ircbot](https://docs.rs/ircbot)**
 
 ```toml
 [dependencies]
-ircbot = "0.3"
+ircbot = "0.4"
 tokio  = { version = "1", features = ["full"] }
 ```
 
@@ -87,7 +87,7 @@ TLS is behind the optional `tls` feature, which pulls in
 
 ```toml
 [dependencies]
-ircbot = { version = "0.3", features = ["tls"] }
+ircbot = { version = "0.4", features = ["tls"] }
 ```
 
 The second argument to `new` is the server, and it decides the transport. A bare
