@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc;
 
 use crate::{
-    connection::State,
+    connection::{Settings, State},
     context::{Context, User},
     handler::{HandlerEntry, Trigger},
     irc::{CtcpMessage, Message},
@@ -68,13 +68,16 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         nick,
         channels,
         server: _,
-        keepalive_interval,
-        keepalive_timeout,
-        flood_burst,
-        flood_rate,
-        ctcp_version,
-        keepnick_interval,
-        roles,
+        settings:
+            Settings {
+                keepalive_interval,
+                keepalive_timeout,
+                flood_burst,
+                flood_rate,
+                ctcp_version,
+                keepnick_interval,
+                roles,
+            },
         reader,
         write_half,
         #[cfg(unix)]
