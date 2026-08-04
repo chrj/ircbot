@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/chrj/ircbot/compare/v0.4.1...v0.4.2) - 2026-08-04
+
+### Other
+
+- release v0.4.2 ([#124](https://github.com/chrj/ircbot/pull/124))
+
 ## [0.4.1](https://github.com/chrj/ircbot/compare/v0.4.0...v0.4.1) - 2026-07-26
 
 ### Fixed
