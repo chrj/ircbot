@@ -1,3 +1,14 @@
+//! The live connection to an IRC server, and the settings that shape it.
+//!
+//! [`State`] is what [`State::connect`] returns: an open socket that has
+//! finished the `NICK`/`USER` handshake, plus the channels to join. The `with_*`
+//! methods on it configure keepalive, flood control, nick recovery, and roles
+//! before the bot starts.
+//!
+//! Each `DEFAULT_*` constant in this module gives the value the matching
+//! setting starts at. Nick recovery is the exception: it stays off until you
+//! call [`State::with_keepnick`] or [`State::with_keepnick_interval`].
+
 use std::time::Duration;
 
 use irc_proto::chan::ChannelExt;
@@ -103,7 +114,9 @@ impl Blueprint {
 
 /// Holds the established connection to an IRC server plus join-on-connect metadata.
 pub struct State {
+    /// The nick registered with the server during the handshake.
     pub nick: Nick,
+    /// The channels joined after connect, and rejoined after a reconnect.
     pub channels: Vec<Channel>,
     /// The server this connection was made to, including its transport. Reused
     /// verbatim when reconnecting, so a TLS connection can never come back as
