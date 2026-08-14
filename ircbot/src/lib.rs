@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
 
 mod args;
 pub mod bot;
@@ -41,6 +42,8 @@ pub type Result = std::result::Result<(), BoxError>;
 /// Errors specific to the bot framework.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    /// A handler asked for a piece of context that the message did not carry.
+    /// The payload names the missing piece, for example `"sender"`.
     #[error("missing context: {0}")]
     MissingContext(&'static str),
 }
