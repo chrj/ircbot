@@ -1,3 +1,15 @@
+//! What a handler receives, and how it replies.
+//!
+//! The dispatch loop builds one [`Context`] per matched message and passes it to
+//! the handler. It carries who sent the message, where it arrived, and any
+//! captures from the trigger pattern.
+//!
+//! Replies go back through the `say`, `reply`, and `notice` methods on
+//! [`Context`]. These queue the line on the connection's single write task, so
+//! flood control applies to every handler alike. Each method strips `\r`, `\n`,
+//! and `\0` from the text, then splits it to respect the 512-byte line limit
+//! that IRC imposes.
+
 use irc_proto::Message;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -11,8 +23,11 @@ const MAX_IRC_LINE: usize = 510;
 /// A user on IRC (nick!user@host).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct User {
+    /// The nickname the user currently goes by.
     pub nick: Nick,
+    /// The `user` part of the `nick!user@host` hostmask.
     pub user: String,
+    /// The `host` part of the `nick!user@host` hostmask.
     pub host: String,
 }
 

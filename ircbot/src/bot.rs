@@ -1,3 +1,15 @@
+//! The dispatch loop and the trigger matching behind it.
+//!
+//! [`run_bot_internal`] owns a connected [`State`] and runs until the
+//! connection ends. It reads a line, parses it, and tests it against every
+//! [`HandlerEntry`] in the current [`HandlerSet`], then spawns a task per match.
+//!
+//! Most users reach this module through the `#[bot]` macro rather than
+//! directly. The matching functions are public so that handlers and tests can
+//! ask the same questions the loop asks: [`check_trigger`] reports whether a
+//! message fires a trigger, [`glob_match`] backs the `*` patterns, and
+//! [`authorized`] tests a hostmask against a role.
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};

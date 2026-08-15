@@ -77,7 +77,9 @@ secrets.
   documentation lives in doc comments. User-facing changes (new features, changed
   behaviour, new defaults, new API surface) must be reflected in `README.md`.
 - **Every public item gets a doc comment.** Look at any `pub fn`, `pub struct`, or
-  `pub const` in this repo — they all have `///` docs. Match that.
+  `pub const` in this repo — they all have `///` docs. Match that. Both crate
+  roots carry `#![warn(missing_docs)]`, and clippy runs with `-D warnings`, so an
+  undocumented public item fails CI. Struct fields and enum variants count.
 - **Document failure and panics.** Functions returning `Result` carry an
   `# Errors` section; functions that can panic carry a `# Panics` section. This is
   enforced by convention throughout (`connect`, `run_bot`, `take_ctx`, the `#[bot]`
