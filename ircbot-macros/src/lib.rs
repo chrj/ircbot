@@ -448,10 +448,12 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             ///
             /// On Unix, if this process was started by `exec_reload` the live
             /// TCP connection is inherited from the parent binary and no new
-            /// connection is made.  The `nick`, `server`, and `channels`
-            /// arguments are used only when no inherited connection is present.
-            /// A TLS connection is never inherited, so a reloaded TLS bot always
-            /// reconnects using the `server` given here.
+            /// connection is made.  The `nick` and `channels` arguments are then
+            /// taken from the inherited session rather than from here, but
+            /// `server` is still kept: a later reconnect re-runs the handshake
+            /// and needs its transport and credentials.  A TLS connection is
+            /// never inherited, so a reloaded TLS bot always reconnects using
+            /// the `server` given here.
             pub async fn new(
                 nick: impl Into<String>,
                 server: impl Into<ircbot::Server>,
@@ -459,8 +461,12 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
                 // On Unix, check for an inherited fd from a hot-reload exec.
                 #[cfg(unix)]
-                if let Some(state) = ircbot::State::try_inherit_from_env()? {
+                if let Some(mut state) = ircbot::State::try_inherit_from_env()? {
                     eprintln!("[ircbot] hot-reload: resumed on inherited connection");
+                    // The inherited socket is already registered, but a later
+                    // reconnect is not: it re-runs the handshake and needs the
+                    // credentials, which only the caller has.
+                    state.server = server.into();
                     return Ok(#struct_name { __state: Some(state) #state_field_init });
                 }
 
