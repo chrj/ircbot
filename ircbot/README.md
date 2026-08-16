@@ -60,6 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Access control** — define hostmask-based roles with `.with_role("admin", ["*!*@trusted.host"])` and gate commands with `#[command("op", role = "admin")]`; unauthorized senders are silently ignored.
 - **Message accessors** — `ctx.nick()`, `ctx.is_from_self()`, `ctx.mentions_me()` to inspect who sent a message and what it says.
 - **Keepalive & auto-reconnect** — periodic `PING`/`PONG` monitoring; reconnects and re-joins on drop. If the configured nick is already in use, the bot automatically retries with a suffixed alternative (`bot`, `bot_`, …).
+- **Authentication** — SASL `PLAIN` and `EXTERNAL` (CertFP) during registration, a `PASS` server password, and IRCv3 capability negotiation. A rejected login fails the connection instead of continuing unauthenticated.
 - **TLS** (optional) — `Server::tls("irc.libera.chat:6697")` behind the `tls` feature, with certificate verification against the platform root store, private-CA and self-signed support, and client certificates for CertFP.
 - **Hot reload** (Unix) — `SIGHUP` execs the new binary with the live TCP socket inherited; no reconnect, no missed messages.
 - **Flood protection** — token-bucket rate limiter (default: burst 4, 1 msg / 500 ms).
@@ -79,6 +80,49 @@ tokio  = { version = "1", features = ["full"] }
 ```
 
 See the [`basic_bot` example](ircbot/examples/basic_bot.rs) and the [docs](https://docs.rs/ircbot) for the complete API, hot-reload guide, testing helpers, and lower-level `State` / `internal` APIs.
+
+## Authentication
+
+Most networks want a bot to identify itself. The credentials live on `Server`,
+because the handshake needs them before the bot exists:
+
+```rust,ignore
+use ircbot::Server;
+
+MyBot::new(
+    "mybot",
+    Server::tls("irc.libera.chat:6697").with_sasl_plain("mybot", &password),
+    ["rust"],
+)
+```
+
+The bot authenticates during registration, before it joins a channel. It is
+therefore already identified when it arrives, which is what `+r` channels
+require and what earns the account its cloak.
+
+Three methods are available:
+
+- `with_sasl_plain(account, password)` — an account name and a password. The
+  password travels in a reversible encoding, so use it only over TLS.
+- `with_sasl_external()` — the server reads the account from the TLS client
+  certificate (CertFP), and no password is sent. Set the certificate with
+  `Server::tls(..).with_client_cert_pem(..)`, and register its fingerprint with
+  the network first.
+- `with_password(password)` — a server password (`PASS`). This authenticates to
+  the server itself, not to its services.
+
+**A failed SASL exchange fails the connection.** If the network offers no SASL,
+or rejects the credentials, `connect` returns an error. The bot does not
+continue unauthenticated: a bot that loses its identity without saying so is the
+fault SASL exists to prevent.
+
+`with_capabilities` asks for further IRCv3 capabilities, for example
+`server-time` or `multi-prefix`. The framework requests the ones the server
+advertises and skips the rest. It does not interpret them itself — what they
+change reaches handlers on the raw message.
+
+A bot with no credentials sends the same bare `NICK`/`USER` handshake as before,
+and no `CAP` line at all.
 
 ## TLS
 
@@ -114,8 +158,9 @@ Server::tls("irc.internal.example:6697")
     .with_extra_root_pem(std::fs::read("ca.pem")?)
 ```
 
-`with_client_cert_pem` presents a client certificate for CertFP / SASL EXTERNAL,
-and `with_sni` overrides the verified hostname when connecting by IP.
+`with_client_cert_pem` presents a client certificate for CertFP, which
+`with_sasl_external` then authenticates with. `with_sni` overrides the verified
+hostname when connecting by IP.
 `danger_accept_invalid_certs` disables verification entirely — it is meant for a
 development server on `localhost`, leaves the connection unauthenticated, and
 logs a warning on every connect.
