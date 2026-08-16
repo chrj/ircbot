@@ -29,12 +29,18 @@
 
 use std::fmt;
 
+use crate::auth::{Auth, Sasl};
+
 /// How to reach an IRC server.
 ///
 /// Build one with [`Server::plain`] or (with the `tls` feature)
 /// `Server::tls`. A `&str`, `String`, or `&String` holding a `"host:port"`
 /// address converts into a plaintext `Server` via [`From`], so anywhere a
 /// `Server` is accepted a bare address string works too.
+///
+/// Credentials live here too — see [`with_sasl_plain`](Server::with_sasl_plain)
+/// — because the handshake needs them before a [`State`](crate::State) exists
+/// to configure.
 #[derive(Clone)]
 pub struct Server {
     /// The `host:port` address to connect to, also used for reconnects.
@@ -42,6 +48,8 @@ pub struct Server {
     /// TLS configuration, or `None` for a plaintext connection. Without the
     /// `tls` feature [`TlsSettings`] is uninhabited, so this is always `None`.
     pub(crate) tls: Option<TlsSettings>,
+    /// Credentials and IRCv3 capabilities for the registration handshake.
+    pub(crate) auth: Auth,
 }
 
 impl Server {
@@ -53,6 +61,7 @@ impl Server {
         Server {
             addr: addr.into(),
             tls: None,
+            auth: Auth::default(),
         }
     }
 
@@ -71,6 +80,7 @@ impl Server {
         TlsServer {
             addr: addr.into(),
             settings: TlsSettings::default(),
+            auth: Auth::default(),
         }
     }
 
@@ -103,6 +113,93 @@ impl Server {
             .and_then(|h| h.strip_suffix(']'))
             .unwrap_or(host)
     }
+
+    /// Send a server password (`PASS`) before registering.
+    ///
+    /// This authenticates to the *server*, which is what a private or
+    /// password-gated network asks for. It is unrelated to services: to
+    /// identify to NickServ, use [`with_sasl_plain`](Server::with_sasl_plain)
+    /// instead.
+    ///
+    /// Calling this more than once replaces the previous password.
+    #[must_use]
+    pub fn with_password(mut self, password: impl Into<String>) -> Self {
+        self.auth.password = Some(password.into());
+        self
+    }
+
+    /// Authenticate to services with SASL `PLAIN`, using an account name and
+    /// password.
+    ///
+    /// This is how a bot logs in to NickServ on a modern network. It happens
+    /// during registration, before any channel is joined, so the bot is already
+    /// identified when it arrives — which is what `+r` channels require and
+    /// what earns the account's cloak.
+    ///
+    /// The password is sent to the server in a reversible encoding, so **use
+    /// this only over TLS** (`Server::tls`). On a plaintext connection anyone
+    /// on the path can read it. Prefer
+    /// [`with_sasl_external`](Server::with_sasl_external) where the network
+    /// supports it: it sends no password at all.
+    ///
+    /// If the server does not offer SASL, or rejects these credentials, the
+    /// connection fails rather than continuing unauthenticated — a bot that
+    /// silently loses its identity is worse than one that stops.
+    ///
+    /// Calling this more than once replaces the previous mechanism.
+    #[must_use]
+    pub fn with_sasl_plain(mut self, user: impl Into<String>, password: impl Into<String>) -> Self {
+        self.auth.sasl = Some(Sasl::Plain {
+            user: user.into(),
+            password: password.into(),
+        });
+        self
+    }
+
+    /// Authenticate to services with SASL `EXTERNAL`, using the TLS client
+    /// certificate (CertFP).
+    ///
+    /// No password is sent: the server matches the certificate presented during
+    /// the TLS handshake against the fingerprint registered with your account.
+    /// Set the certificate with `TlsServer::with_client_cert_pem` (the `tls`
+    /// feature), and register its fingerprint with the network's services first
+    /// (`/msg NickServ CERT ADD` on most networks).
+    ///
+    /// This needs a TLS connection; on a plaintext one there is no certificate
+    /// to present and the server will reject the exchange.
+    ///
+    /// If the server does not offer SASL, or rejects the certificate, the
+    /// connection fails rather than continuing unauthenticated.
+    ///
+    /// Calling this more than once replaces the previous mechanism.
+    #[must_use]
+    pub fn with_sasl_external(mut self) -> Self {
+        self.auth.sasl = Some(Sasl::External);
+        self
+    }
+
+    /// Request additional IRCv3 capabilities during registration.
+    ///
+    /// Capabilities the server does not advertise are skipped, so asking for
+    /// one a network lacks is harmless. What an acknowledged capability changes
+    /// on the wire reaches handlers through the raw message on
+    /// [`Context`](crate::Context); the framework does not interpret these
+    /// itself.
+    ///
+    /// `sasl` is requested automatically when a mechanism is configured; it
+    /// does not need to be listed here.
+    ///
+    /// May be called multiple times; capabilities accumulate.
+    #[must_use]
+    pub fn with_capabilities(
+        mut self,
+        capabilities: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.auth
+            .extra_caps
+            .extend(capabilities.into_iter().map(Into::into));
+        self
+    }
 }
 
 impl fmt::Debug for Server {
@@ -110,6 +207,7 @@ impl fmt::Debug for Server {
         f.debug_struct("Server")
             .field("addr", &self.addr)
             .field("tls", &self.tls)
+            .field("auth", &self.auth)
             .finish()
     }
 }
@@ -154,10 +252,56 @@ impl From<&String> for Server {
 pub struct TlsServer {
     addr: String,
     settings: TlsSettings,
+    auth: Auth,
 }
 
 #[cfg(feature = "tls")]
 impl TlsServer {
+    /// Send a server password (`PASS`) before registering.
+    ///
+    /// See [`Server::with_password`].
+    #[must_use]
+    pub fn with_password(mut self, password: impl Into<String>) -> Self {
+        self.auth.password = Some(password.into());
+        self
+    }
+
+    /// Authenticate to services with SASL `PLAIN`.
+    ///
+    /// See [`Server::with_sasl_plain`].
+    #[must_use]
+    pub fn with_sasl_plain(mut self, user: impl Into<String>, password: impl Into<String>) -> Self {
+        self.auth.sasl = Some(Sasl::Plain {
+            user: user.into(),
+            password: password.into(),
+        });
+        self
+    }
+
+    /// Authenticate to services with SASL `EXTERNAL`, using the client
+    /// certificate set by [`with_client_cert_pem`](TlsServer::with_client_cert_pem).
+    ///
+    /// See [`Server::with_sasl_external`].
+    #[must_use]
+    pub fn with_sasl_external(mut self) -> Self {
+        self.auth.sasl = Some(Sasl::External);
+        self
+    }
+
+    /// Request additional IRCv3 capabilities during registration.
+    ///
+    /// See [`Server::with_capabilities`].
+    #[must_use]
+    pub fn with_capabilities(
+        mut self,
+        capabilities: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.auth
+            .extra_caps
+            .extend(capabilities.into_iter().map(Into::into));
+        self
+    }
+
     /// Override the hostname used for SNI and certificate verification.
     ///
     /// By default the host part of the address is used. Set this when
@@ -234,6 +378,7 @@ impl From<TlsServer> for Server {
         Server {
             addr: tls.addr,
             tls: Some(tls.settings),
+            auth: tls.auth,
         }
     }
 }

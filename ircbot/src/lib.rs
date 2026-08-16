@@ -2,6 +2,7 @@
 #![warn(missing_docs)]
 
 mod args;
+mod auth;
 pub mod bot;
 pub mod connection;
 pub mod context;
@@ -17,7 +18,7 @@ pub mod types;
 pub use bot::HandlerSet;
 pub use connection::{
     State, DEFAULT_FLOOD_BURST, DEFAULT_FLOOD_RATE, DEFAULT_KEEPALIVE_INTERVAL,
-    DEFAULT_KEEPALIVE_TIMEOUT, DEFAULT_KEEPNICK_INTERVAL,
+    DEFAULT_KEEPALIVE_TIMEOUT, DEFAULT_KEEPNICK_INTERVAL, REGISTRATION_TIMEOUT,
 };
 pub use context::{make_messages, Context, User};
 pub use handler::{BoxFuture, HandlerEntry, HandlerFn, Trigger};
