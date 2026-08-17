@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.4.2...ircbot-macros-v0.4.3) - 2026-08-17
+
+### Added
+
+- SASL authentication and IRCv3 capability negotiation ([#138](https://github.com/chrj/ircbot/pull/138))
+
+### Other
+
+- warn on missing documentation ([#131](https://github.com/chrj/ircbot/pull/131))
+
 ## [0.4.2](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.4.1...ircbot-macros-v0.4.2) - 2026-08-04
 
 ### Other

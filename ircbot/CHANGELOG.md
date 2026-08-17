@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/chrj/ircbot/compare/v0.4.2...v0.4.3) - 2026-08-17
+
+### Added
+
+- SASL authentication and IRCv3 capability negotiation ([#138](https://github.com/chrj/ircbot/pull/138))
+
+### Other
+
+- *(deps)* bump testcontainers from 0.27.3 to 0.28.0 ([#135](https://github.com/chrj/ircbot/pull/135))
+- warn on missing documentation ([#131](https://github.com/chrj/ircbot/pull/131))
+
 ## [0.4.1](https://github.com/chrj/ircbot/compare/v0.4.0...v0.4.1) - 2026-07-26
 
 ### Fixed
