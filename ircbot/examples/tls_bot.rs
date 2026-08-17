@@ -33,13 +33,26 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sy
     //     Server::tls("irc.internal.example:6697")
     //         .with_extra_root_pem(std::fs::read("ca.pem")?)
     //
-    // A client certificate authenticates the bot via CertFP / SASL EXTERNAL:
+    // When connecting to an IP address whose certificate names a hostname,
+    // `with_sni("irc.example.net")` sets the name to verify against.
+    //
+    // Authentication happens during registration, so the credentials go on the
+    // server. SASL EXTERNAL proves the bot's identity with a client
+    // certificate, and sends no password at all — register the certificate's
+    // fingerprint with the network first:
     //
     //     Server::tls("irc.libera.chat:6697")
     //         .with_client_cert_pem(std::fs::read("bot.pem")?)
+    //         .with_sasl_external()
     //
-    // When connecting to an IP address whose certificate names a hostname,
-    // `with_sni("irc.example.net")` sets the name to verify against.
+    // SASL PLAIN uses an account name and a password instead. Read it from the
+    // environment rather than writing it into the source:
+    //
+    //     Server::tls("irc.libera.chat:6697")
+    //         .with_sasl_plain("mybot", std::env::var("IRC_PASSWORD")?)
+    //
+    // Either way, a network that refuses the login fails the connection rather
+    // than letting the bot arrive unauthenticated.
 
     println!("tls_bot example compiled successfully.");
     println!("Connecting for real is two lines:");

@@ -92,6 +92,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
             },
         reader,
         write_half,
+        pending_lines,
         #[cfg(unix)]
             raw_fd: _,
     } = state;
@@ -228,13 +229,16 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     // Number of alternate-nick attempts made so far (after the initial NICK).
     let mut nick_attempt = 0u32;
     let mut lines = reader.lines();
+    // Lines the capability exchange read ahead of this loop; drained before the
+    // socket so ordering is preserved.
+    let mut pending_lines = pending_lines.into_iter();
     let mut keepalive_fail_rx = keepalive_fail_rx;
 
     // Run the read loop; collect any IO error so we can clean up first.
     let loop_result: Result<(), BoxError> = async {
         loop {
             tokio::select! {
-                result = lines.next_line() => {
+                result = next_line(&mut pending_lines, &mut lines) => {
                     let Some(line) = result? else { break; };
                     let line = line.trim_end_matches('\r').to_string();
                     if line.is_empty() {
@@ -360,6 +364,22 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     let _ = write_task.await;
 
     loop_result
+}
+
+/// Yield the next line to dispatch: one the registration handshake read ahead
+/// of the loop if any are left, otherwise the next one off the socket.
+///
+/// Cancel-safe, as the `select!` in the read loop requires: the `pending`
+/// branch returns without ever awaiting, so it cannot be dropped part-way and
+/// lose a line, and `next_line` is cancel-safe in its own right.
+async fn next_line(
+    pending: &mut std::vec::IntoIter<String>,
+    lines: &mut tokio::io::Lines<tokio::io::BufReader<crate::transport::ReadHalf>>,
+) -> std::io::Result<Option<String>> {
+    match pending.next() {
+        Some(line) => Ok(Some(line)),
+        None => lines.next_line().await,
+    }
 }
 
 // ─── cron supervisor ─────────────────────────────────────────────────────────

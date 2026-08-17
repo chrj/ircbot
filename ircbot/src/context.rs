@@ -47,7 +47,7 @@ pub struct Context {
 }
 
 /// Strip characters that could be used for IRC message injection.
-fn sanitize(s: &str) -> String {
+pub(crate) fn sanitize(s: &str) -> String {
     s.chars()
         .filter(|&c| c != '\r' && c != '\n' && c != '\0')
         .collect()

@@ -1,9 +1,15 @@
 //! The live connection to an IRC server, and the settings that shape it.
 //!
 //! [`State`] is what [`State::connect`] returns: an open socket that has
-//! finished the `NICK`/`USER` handshake, plus the channels to join. The `with_*`
-//! methods on it configure keepalive, flood control, nick recovery, and roles
-//! before the bot starts.
+//! finished registering, plus the channels to join. The `with_*` methods on it
+//! configure keepalive, flood control, nick recovery, and roles before the bot
+//! starts.
+//!
+//! Registration is the `NICK`/`USER` handshake, and — when the [`Server`]
+//! carries credentials — the `PASS` line, the IRCv3 capability exchange, and
+//! SASL, all of which run before `CAP END` lets the server finish. Those
+//! credentials live on the `Server` rather than behind a `with_*` method
+//! because they are needed here, before any such method can be called.
 //!
 //! Each `DEFAULT_*` constant in this module gives the value the matching
 //! setting starts at. Nick recovery is the exception: it stays off until you
@@ -12,11 +18,16 @@
 use std::time::Duration;
 
 use irc_proto::chan::ChannelExt;
-use tokio::io::{AsyncWriteExt, BufWriter};
+use irc_proto::CapSubCommand;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufWriter};
 
+use crate::auth::Auth;
+use crate::context::sanitize;
+use crate::irc::{Command, Message, Response};
 use crate::server::Server;
 use crate::transport;
 use crate::types::{Channel, Nick};
+use crate::BoxError;
 
 /// Default interval between client-initiated keepalive pings.
 pub const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
@@ -32,6 +43,27 @@ pub const DEFAULT_FLOOD_RATE: Duration = Duration::from_millis(500);
 /// Default interval between keepnick reclaim attempts when the feature is
 /// enabled via [`State::with_keepnick`].
 pub const DEFAULT_KEEPNICK_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How long the IRCv3 capability and SASL exchange may take before the
+/// connection is given up on.
+///
+/// Generous enough for a services daemon that is slow to answer, while still
+/// bounding a server that stops replying part-way through: without a bound the
+/// bot would wait for `CAP ACK` forever, never reaching the read loop and never
+/// reconnecting.
+pub const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Longest `AUTHENTICATE` payload the protocol allows in one line; longer
+/// responses are split across several (IRCv3 SASL specification).
+const SASL_CHUNK_LEN: usize = 400;
+
+/// Most lines the capability exchange will read before giving up.
+///
+/// A real exchange takes under a dozen. The bound is what stops a server that
+/// streams lines instead of answering from growing the buffered-line list
+/// without limit — the timeout alone does not, since it bounds time rather than
+/// memory.
+const MAX_HANDSHAKE_LINES: usize = 1024;
 
 /// Everything a caller configures through the `with_*` builders — that is,
 /// everything that must outlive the socket it was configured on.
@@ -112,6 +144,324 @@ impl Blueprint {
     }
 }
 
+// ─── registration handshake ──────────────────────────────────────────────────
+
+/// Write one line to the server, appending the IRC line terminator and logging
+/// it on the protocol target.
+async fn send(
+    writer: &mut BufWriter<transport::WriteHalf>,
+    line: &str,
+) -> Result<(), std::io::Error> {
+    send_secret(writer, line, line).await
+}
+
+/// Write one line, logging `shown` in place of the line itself.
+///
+/// `PASS` and `AUTHENTICATE` carry credentials, and the protocol log is a
+/// `trace!` an operator may well have switched on — so what goes on the wire
+/// and what goes in the log deliberately differ for those two.
+async fn send_secret(
+    writer: &mut BufWriter<transport::WriteHalf>,
+    line: &str,
+    shown: &str,
+) -> Result<(), std::io::Error> {
+    tracing::trace!(target: crate::PROTOCOL_LOG_TARGET, dir = "send", line = %shown);
+    writer.write_all(line.as_bytes()).await?;
+    writer.write_all(b"\r\n").await?;
+    writer.flush().await
+}
+
+/// Send a SASL response, split into the chunks the protocol allows.
+///
+/// An empty response, and one whose length is an exact multiple of
+/// [`SASL_CHUNK_LEN`], is followed by a lone `+` so the server can tell the
+/// payload has ended rather than waiting for a continuation that never comes.
+async fn send_sasl_response(
+    writer: &mut BufWriter<transport::WriteHalf>,
+    response: &str,
+) -> Result<(), std::io::Error> {
+    // base64 output is pure ASCII, so chunking by byte offset can never land
+    // mid-character.
+    for chunk in response.as_bytes().chunks(SASL_CHUNK_LEN) {
+        let chunk = String::from_utf8_lossy(chunk);
+        send_secret(
+            writer,
+            &format!("AUTHENTICATE {chunk}"),
+            "AUTHENTICATE <redacted>",
+        )
+        .await?;
+    }
+    if response.len().is_multiple_of(SASL_CHUNK_LEN) {
+        send(writer, "AUTHENTICATE +").await?;
+    }
+    Ok(())
+}
+
+/// Split the payload of a `CAP … LS`/`ACK`/`NAK` line into "is this batch
+/// continued?" and the capability list itself.
+///
+/// `irc-proto` puts the list in the last populated parameter: a final
+/// `CAP * LS :a b` parses with the list in `arg` and nothing trailing, while a
+/// continued `CAP * LS * :a b` parses with the `*` marker in `arg` and the list
+/// trailing.
+fn cap_payload<'a>(arg: Option<&'a String>, trailing: Option<&'a String>) -> (bool, &'a str) {
+    match (arg, trailing) {
+        (Some(marker), Some(caps)) => (marker == "*", caps.as_str()),
+        (Some(caps), None) => (false, caps.as_str()),
+        (None, caps) => (false, caps.map_or("", String::as_str)),
+    }
+}
+
+/// Look up `name` among the capabilities the server advertised, returning its
+/// value (the part after `=`, empty when it has none).
+///
+/// Capability names are case-sensitive per the IRCv3 specification.
+fn advertised<'a>(available: &'a [String], name: &str) -> Option<&'a str> {
+    available.iter().find_map(|cap| {
+        let (cap_name, value) = cap.split_once('=').unwrap_or((cap.as_str(), ""));
+        (cap_name == name).then_some(value)
+    })
+}
+
+/// Run the IRCv3 capability exchange, and the SASL exchange inside it, until
+/// the server is ready to complete registration.
+///
+/// Returns the lines that arrived during the exchange but did not belong to it
+/// — `ERR_NICKNAMEINUSE` above all, which the server sends as soon as it reads
+/// our `NICK`. They are handed back in arrival order so the read loop can
+/// process them as if they had come in normally.
+///
+/// # Errors
+///
+/// Returns an error if the connection drops or stalls mid-exchange, or if SASL
+/// was configured and could not be completed — an unauthenticated connection is
+/// not silently accepted in its place.
+async fn negotiate(
+    reader: &mut tokio::io::BufReader<transport::ReadHalf>,
+    writer: &mut BufWriter<transport::WriteHalf>,
+    auth: &Auth,
+) -> Result<Vec<String>, BoxError> {
+    let mut pending: Vec<String> = Vec::new();
+    let wanted = auth.wanted_caps();
+    if wanted.is_empty() {
+        return Ok(pending);
+    }
+
+    // Capabilities advertised so far, each still in `name` or `name=value`
+    // form. `CAP LS` may be split across several lines, so they accumulate
+    // until the batch ends.
+    let mut available: Vec<String> = Vec::new();
+    // Whether an `AUTHENTICATE <mechanism>` has gone out. A success numeric that
+    // arrives before one did not answer anything we sent, so it does not count.
+    let mut sasl_started = false;
+    let deadline = tokio::time::Instant::now() + REGISTRATION_TIMEOUT;
+
+    for _ in 0..MAX_HANDSHAKE_LINES {
+        let mut line = String::new();
+        let read = tokio::time::timeout_at(deadline, reader.read_line(&mut line))
+            .await
+            .map_err(|_| -> BoxError {
+                format!(
+                    "the server stopped responding during IRCv3 capability negotiation \
+                     (waited {REGISTRATION_TIMEOUT:?}). Make sure that the port speaks IRC and \
+                     that the network supports CAP. A server without CAP support answers with an \
+                     error, not with silence"
+                )
+                .into()
+            })??;
+        if read == 0 {
+            return Err("the server closed the connection during IRCv3 capability \
+                        negotiation. A network does this when the server password passed to \
+                        Server::with_password is wrong"
+                .into());
+        }
+
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            continue;
+        }
+        tracing::trace!(target: crate::PROTOCOL_LOG_TARGET, dir = "recv", %line);
+
+        let Ok(msg) = line.parse::<Message>() else {
+            pending.push(line.to_string());
+            continue;
+        };
+
+        match &msg.command {
+            // A server may ping mid-handshake; an unanswered one gets us
+            // disconnected before registration ever completes.
+            Command::PING(server, _) => send(writer, &format!("PONG :{server}")).await?,
+
+            Command::CAP(_, CapSubCommand::LS, arg, trailing) => {
+                let (more, caps) = cap_payload(arg.as_ref(), trailing.as_ref());
+                available.extend(caps.split_whitespace().map(str::to_string));
+                if more {
+                    continue;
+                }
+
+                let requested: Vec<&str> = wanted
+                    .iter()
+                    .copied()
+                    .filter(|cap| advertised(&available, cap).is_some())
+                    .collect();
+
+                if let Some(sasl) = &auth.sasl {
+                    let Some(mechanisms) = advertised(&available, "sasl") else {
+                        return Err(format!(
+                            "SASL authentication was configured but {} does not offer the sasl \
+                             capability. Drop the with_sasl_* call, or connect to a server that \
+                             supports SASL",
+                            server_name(&msg)
+                        )
+                        .into());
+                    };
+                    // With `CAP LS 302` the value lists the mechanisms; older
+                    // servers advertise a bare `sasl` and accept any of them,
+                    // so an empty value is not a rejection.
+                    if !mechanisms.is_empty()
+                        && !mechanisms
+                            .split(',')
+                            .any(|m| m.eq_ignore_ascii_case(sasl.mechanism()))
+                    {
+                        return Err(format!(
+                            "the server does not support SASL {}. It offers {mechanisms}. Pick \
+                             a mechanism from that list",
+                            sasl.mechanism()
+                        )
+                        .into());
+                    }
+                }
+
+                for cap in wanted.iter().filter(|c| !requested.contains(c)) {
+                    tracing::debug!(capability = cap, "capability not advertised — skipping");
+                }
+
+                if requested.is_empty() {
+                    send(writer, "CAP END").await?;
+                    return Ok(pending);
+                }
+                send(writer, &format!("CAP REQ :{}", requested.join(" "))).await?;
+            }
+
+            Command::CAP(_, CapSubCommand::ACK, arg, trailing) => {
+                let (_, caps) = cap_payload(arg.as_ref(), trailing.as_ref());
+                tracing::debug!(capabilities = caps, "capabilities acknowledged");
+
+                let acked_sasl = caps.split_whitespace().any(|c| c == "sasl");
+                match (&auth.sasl, acked_sasl) {
+                    (Some(sasl), true) => {
+                        send(writer, &format!("AUTHENTICATE {}", sasl.mechanism())).await?;
+                        sasl_started = true;
+                    }
+                    (Some(sasl), false) => {
+                        return Err(format!(
+                            "the server acknowledged {caps} but not sasl, so the bot cannot \
+                             authenticate with SASL {}. Services are usually down when this \
+                             happens. Retry, or drop the with_sasl_* call to connect \
+                             unauthenticated",
+                            sasl.mechanism()
+                        )
+                        .into());
+                    }
+                    (None, _) => {
+                        send(writer, "CAP END").await?;
+                        return Ok(pending);
+                    }
+                }
+            }
+
+            Command::CAP(_, CapSubCommand::NAK, arg, trailing) => {
+                let (_, caps) = cap_payload(arg.as_ref(), trailing.as_ref());
+                if auth.sasl.is_some() && caps.split_whitespace().any(|c| c == "sasl") {
+                    return Err(format!(
+                        "the server refused the sasl capability ({caps}), so the bot cannot \
+                         authenticate. Services are usually down when this happens. Retry, or \
+                         drop the with_sasl_* call to connect unauthenticated"
+                    )
+                    .into());
+                }
+                tracing::warn!(capabilities = caps, "capabilities refused by the server");
+                send(writer, "CAP END").await?;
+                return Ok(pending);
+            }
+
+            // The server is ready for the mechanism's response. `+` means it
+            // sent no challenge of its own, which is all PLAIN and EXTERNAL
+            // ever see.
+            Command::AUTHENTICATE(_) => {
+                let Some(sasl) = &auth.sasl else {
+                    pending.push(line.to_string());
+                    continue;
+                };
+                send_sasl_response(writer, &sasl.response()).await?;
+            }
+
+            Command::Response(Response::RPL_LOGGEDIN, args) => {
+                // "<nick> <mask> <account> :You are now logged in as <account>"
+                if let Some(account) = args.get(2) {
+                    tracing::info!(%account, "authenticated with SASL");
+                }
+            }
+
+            Command::Response(Response::RPL_SASLSUCCESS, _) if sasl_started => {
+                send(writer, "CAP END").await?;
+                return Ok(pending);
+            }
+
+            Command::Response(
+                response @ (Response::ERR_NICKLOCKED
+                | Response::ERR_SASLFAIL
+                | Response::ERR_SASLTOOLONG
+                | Response::ERR_SASLABORT
+                | Response::ERR_SASLALREADY),
+                args,
+            ) => {
+                let detail = args.last().map_or("no detail given", String::as_str);
+                return Err(format!(
+                    "SASL authentication failed: {detail} ({response:?}). Correct the account \
+                     name and password passed to with_sasl_plain, or the client certificate \
+                     registered with the network for with_sasl_external"
+                )
+                .into());
+            }
+
+            // A server old enough to have no CAP command answers this way.
+            Command::Response(Response::ERR_UNKNOWNCOMMAND, args)
+                if args.iter().any(|a| a.eq_ignore_ascii_case("CAP")) =>
+            {
+                if auth.sasl.is_some() {
+                    return Err(
+                        "SASL authentication was configured but the server does not implement \
+                         CAP, so it cannot support SASL. Drop the with_sasl_* call, or connect to \
+                         a server that supports IRCv3"
+                            .into(),
+                    );
+                }
+                tracing::warn!("server does not support CAP — continuing without capabilities");
+                return Ok(pending);
+            }
+
+            // Everything else belongs to the read loop, not to this exchange.
+            _ => pending.push(line.to_string()),
+        }
+    }
+
+    Err(format!(
+        "the server sent more than {MAX_HANDSHAKE_LINES} lines without finishing IRCv3 \
+         capability negotiation. Make sure that the address points at an IRC server and not at \
+         another protocol"
+    )
+    .into())
+}
+
+/// The server's own name, taken from a message's prefix, for use in an error.
+fn server_name(msg: &Message) -> &str {
+    match msg.prefix.as_ref() {
+        Some(irc_proto::Prefix::ServerName(name)) => name.as_str(),
+        _ => "the server",
+    }
+}
+
 /// Holds the established connection to an IRC server plus join-on-connect metadata.
 pub struct State {
     /// The nick registered with the server during the handshake.
@@ -127,6 +477,11 @@ pub struct State {
     /// The raw write half; `run_bot_internal` wraps this in a buffered writer and a
     /// dedicated write-loop task.
     pub(crate) write_half: transport::WriteHalf,
+    /// Lines that arrived during the capability exchange but were not part of
+    /// it. The read loop drains these before reading the socket, so a message
+    /// the server sent early — `ERR_NICKNAMEINUSE`, typically — is dispatched
+    /// in arrival order rather than lost.
+    pub(crate) pending_lines: Vec<String>,
     /// The raw file descriptor of the underlying TCP socket, used by the
     /// hot-reload path to pass the live connection to a new binary.
     ///
@@ -169,10 +524,16 @@ impl State {
     /// (`#`, `&`, `+`, `!`) will automatically be prefixed with `#`, so both
     /// `"general"` and `"#general"` are accepted.
     ///
+    /// When the `server` carries credentials, this also runs the IRCv3
+    /// capability exchange and SASL before returning, so the connection is
+    /// already authenticated by the time the bot joins anything.
+    ///
     /// # Errors
     ///
     /// Returns an error if the TCP connection, the TLS handshake, or the
-    /// initial NICK/USER handshake fails.
+    /// registration handshake fails. A configured SASL exchange that the server
+    /// refuses counts as a failure: an unauthenticated connection is never
+    /// silently accepted in its place.
     pub async fn connect(
         nick: impl Into<Nick>,
         server: impl Into<Server>,
@@ -189,21 +550,28 @@ impl State {
         #[cfg(unix)]
         let raw_fd = connection.raw_fd;
 
-        let reader = tokio::io::BufReader::new(connection.reader);
+        let mut reader = tokio::io::BufReader::new(connection.reader);
         let mut writer = BufWriter::new(connection.writer);
 
-        let nick_line = format!("NICK {nick}\r\n");
-        let user_line = format!("USER {nick} 0 * :{nick}\r\n");
-        for line in [&nick_line, &user_line] {
-            tracing::trace!(
-                target: crate::PROTOCOL_LOG_TARGET,
-                dir = "send",
-                line = %line.trim_end_matches(['\r', '\n']),
-            );
+        // `CAP LS` goes first: a server that sees it holds registration open
+        // until `CAP END`, which is the window SASL has to complete in. Sent
+        // after `NICK`/`USER` it would race the server's own completion of
+        // registration, and SASL is refused once registration is done.
+        if server.auth.negotiates_caps() {
+            send(&mut writer, "CAP LS 302").await?;
         }
-        writer.write_all(nick_line.as_bytes()).await?;
-        writer.write_all(user_line.as_bytes()).await?;
-        writer.flush().await?;
+        if let Some(password) = &server.auth.password {
+            send_secret(
+                &mut writer,
+                &format!("PASS :{}", sanitize(password)),
+                "PASS :<redacted>",
+            )
+            .await?;
+        }
+        send(&mut writer, &format!("NICK {nick}")).await?;
+        send(&mut writer, &format!("USER {nick} 0 * :{nick}")).await?;
+
+        let pending_lines = negotiate(&mut reader, &mut writer, &server.auth).await?;
 
         // Recover the inner write half from the BufWriter.
         let write_half = writer.into_inner();
@@ -215,6 +583,7 @@ impl State {
             settings: Settings::default(),
             reader,
             write_half,
+            pending_lines,
             #[cfg(unix)]
             raw_fd,
         })
@@ -324,6 +693,9 @@ impl State {
             },
             reader,
             write_half: connection.writer,
+            // An inherited connection is already registered, so no capability
+            // exchange runs and nothing can have been read ahead of the loop.
+            pending_lines: Vec::new(),
             raw_fd: connection.raw_fd,
         }))
     }
@@ -456,6 +828,73 @@ mod tests {
         for ch in ["#rust", "&local", "+modeless", "!network"] {
             assert_eq!(State::normalise_channel(ch), ch);
         }
+    }
+
+    // ── CAP line payloads ──────────────────────────────────────────────────────
+    //
+    // `cap_payload` exists because `irc-proto` places the capability list in a
+    // different parameter depending on whether the batch is continued. These
+    // tests parse real wire lines rather than constructing `Command::CAP` by
+    // hand, so they would catch that placement changing.
+
+    fn parse_cap(line: &str) -> (bool, String) {
+        let msg: Message = line.parse().expect("a valid CAP line");
+        let Command::CAP(_, _, arg, trailing) = &msg.command else {
+            panic!("not a CAP command: {line}");
+        };
+        let (more, caps) = cap_payload(arg.as_ref(), trailing.as_ref());
+        (more, caps.to_string())
+    }
+
+    #[test]
+    fn a_final_cap_ls_yields_its_capability_list() {
+        let (more, caps) = parse_cap(":srv CAP * LS :sasl=PLAIN multi-prefix");
+        assert!(!more);
+        assert_eq!(caps, "sasl=PLAIN multi-prefix");
+    }
+
+    #[test]
+    fn a_continued_cap_ls_is_flagged_and_still_yields_its_list() {
+        let (more, caps) = parse_cap(":srv CAP * LS * :sasl=PLAIN multi-prefix");
+        assert!(more);
+        assert_eq!(caps, "sasl=PLAIN multi-prefix");
+    }
+
+    #[test]
+    fn a_cap_ack_yields_its_capability_list() {
+        let (more, caps) = parse_cap(":srv CAP * ACK :sasl");
+        assert!(!more);
+        assert_eq!(caps, "sasl");
+    }
+
+    // ── advertised capabilities ────────────────────────────────────────────────
+
+    #[test]
+    fn advertised_returns_the_value_after_the_equals_sign() {
+        let caps = vec!["sasl=PLAIN,EXTERNAL".to_string(), "server-time".to_string()];
+        assert_eq!(advertised(&caps, "sasl"), Some("PLAIN,EXTERNAL"));
+    }
+
+    /// A pre-302 server advertises a bare `sasl` with no mechanism list. That
+    /// is "supported, mechanisms unknown", not "unsupported".
+    #[test]
+    fn advertised_returns_an_empty_value_for_a_valueless_capability() {
+        let caps = vec!["sasl".to_string()];
+        assert_eq!(advertised(&caps, "sasl"), Some(""));
+    }
+
+    #[test]
+    fn advertised_returns_none_when_absent() {
+        let caps = vec!["server-time".to_string()];
+        assert_eq!(advertised(&caps, "sasl"), None);
+    }
+
+    /// A capability whose name merely starts with the one we want must not
+    /// count as a match.
+    #[test]
+    fn advertised_does_not_match_a_name_prefix() {
+        let caps = vec!["sasl-not-really".to_string()];
+        assert_eq!(advertised(&caps, "sasl"), None);
     }
 
     // ── builders / getters ─────────────────────────────────────────────────────

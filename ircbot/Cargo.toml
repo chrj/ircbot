@@ -39,6 +39,9 @@ tokio-rustls = { version = "0.26", default-features = false, features = [
 rustls-native-certs = { version = "0.8", optional = true }
 
 [dev-dependencies]
+# `test-util` lets the SASL tests run the registration timeout on a paused
+# clock instead of waiting REGISTRATION_TIMEOUT in real time.
+tokio = { version = "1", features = ["full", "test-util"] }
 testcontainers = "0.28"
 irc = { version = "1", default-features = false }
 trybuild = "1.0"
