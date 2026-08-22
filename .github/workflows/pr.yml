@@ -46,7 +46,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly-2026-07-20
-      - uses: taiki-e/install-action@v2.85.12
+      - uses: taiki-e/install-action@v2.86.3
         with:
           tool: cargo-semver-checks@0.49.0
       - name: Detect breaking API changes
