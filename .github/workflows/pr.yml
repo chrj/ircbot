@@ -43,7 +43,7 @@ jobs:
       # unpinned pair silently drifts apart and breaks this job. This combination
       # is known good: nightly-2026-07-20 emits format v60, which
       # cargo-semver-checks 0.49.0 supports.
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: nightly-2026-07-20
       - uses: taiki-e/install-action@v2.87.9
