@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     connection::{Settings, State},
-    context::{Context, User},
+    context::{make_messages, sanitize, Context, User},
     handler::{HandlerEntry, Trigger},
     irc::{CtcpMessage, Message},
     logging::PROTOCOL_LOG_TARGET,
@@ -791,11 +791,7 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
         match ctcp.command.as_str() {
             "PING" => {
                 if let Some(sender) = msg.source_nickname() {
-                    let reply = format!(
-                        "NOTICE {sender} :\x01PING{}{}\x01\r\n",
-                        if ctcp.arg.is_empty() { "" } else { " " },
-                        ctcp.arg,
-                    );
+                    let reply = ctcp_reply(sender, "PING", &ctcp.arg);
                     if let Err(e) = tx.send(reply) {
                         tracing::error!(error = %e, "failed to send CTCP PING reply");
                     }
@@ -810,7 +806,7 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
                         || format!("ircbot {}", env!("CARGO_PKG_VERSION")),
                         ToString::to_string,
                     );
-                    let reply = format!("NOTICE {sender} :\x01VERSION {version}\x01\r\n");
+                    let reply = ctcp_reply(sender, "VERSION", &version);
                     if let Err(e) = tx.send(reply) {
                         tracing::error!(error = %e, "failed to send CTCP VERSION reply");
                     }
@@ -821,6 +817,22 @@ async fn handle_privmsg<T: Send + Sync + 'static>(
         }
     }
     dispatch(bot, handlers, msg, bot_nick, roles, tx).await;
+}
+
+/// Build the `NOTICE` line that answers the CTCP `command` from `nick`.
+///
+/// The nick and the argument are sanitised, because the argument comes from the
+/// wire or from the configured version string. A reply longer than the IRC line
+/// limit is cut to one line: a CTCP reply split over several lines is several
+/// replies.
+fn ctcp_reply(nick: &str, command: &str, arg: &str) -> String {
+    let arg = sanitize(arg);
+    let separator = if arg.is_empty() { "" } else { " " };
+    let header = format!("NOTICE {} :\x01{command}{separator}", sanitize(nick));
+    make_messages(&header, &arg, "\x01")
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| format!("{header}\x01\r\n"))
 }
 
 async fn dispatch<T: Send + Sync + 'static>(
@@ -909,6 +921,40 @@ pub fn authorized(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── ctcp_reply ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ctcp_reply_with_argument() {
+        assert_eq!(
+            ctcp_reply("alice", "PING", "12345"),
+            "NOTICE alice :\x01PING 12345\x01\r\n"
+        );
+    }
+
+    #[test]
+    fn ctcp_reply_without_argument_has_no_trailing_space() {
+        assert_eq!(
+            ctcp_reply("alice", "PING", ""),
+            "NOTICE alice :\x01PING\x01\r\n"
+        );
+    }
+
+    #[test]
+    fn ctcp_reply_strips_nul_and_line_breaks() {
+        assert_eq!(
+            ctcp_reply("alice", "PING", "a\0b\r\nc"),
+            "NOTICE alice :\x01PING abc\x01\r\n"
+        );
+    }
+
+    #[test]
+    fn ctcp_reply_is_one_line_within_the_limit() {
+        let reply = ctcp_reply("alice", "PING", &"x ".repeat(400));
+        assert!(reply.len() <= 512, "reply is {} bytes", reply.len());
+        assert_eq!(reply.matches("\r\n").count(), 1);
+        assert!(reply.ends_with("\x01\r\n"), "{reply:?}");
+    }
 
     // ── fallback_nick ──────────────────────────────────────────────────────────
 
