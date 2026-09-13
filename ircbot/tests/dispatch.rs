@@ -245,6 +245,39 @@ async fn ctcp_ping_without_sender_produces_no_reply() {
     bot_task.abort();
 }
 
+// ─── A3b: CTCP messages and text triggers ────────────────────────────────────
+
+/// A handler that says `text` in the context where it fired.
+fn replying_handler(text: &'static str) -> HandlerFn<()> {
+    Box::new(
+        move |_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
+            Box::pin(async move { ctx.say(text) })
+        },
+    )
+}
+
+#[tokio::test]
+async fn ctcp_action_does_not_reach_privmsg_event_handler() {
+    let mut server = MockServer::start().await;
+    let handlers = vec![HandlerEntry {
+        trigger: Trigger::Event {
+            event: "PRIVMSG".to_string(),
+            target: None,
+            regex: None,
+        },
+        handler: replying_handler("event"),
+    }];
+    let bot_task = spawn_bot(&server.addr, Arc::new(()), handlers).await;
+    server.send_welcome();
+
+    server.send(":alice!a@h PRIVMSG #chan :\x01ACTION waves\x01\r\n");
+    server
+        .expect_no_line(Duration::from_millis(400), |l| l.starts_with("PRIVMSG"))
+        .await;
+
+    bot_task.abort();
+}
+
 // ─── A4: server PING → PONG ──────────────────────────────────────────────────
 
 #[tokio::test]

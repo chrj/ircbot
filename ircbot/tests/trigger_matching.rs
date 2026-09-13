@@ -430,3 +430,49 @@ fn event_raw_command_matches_name_target_and_trailing() {
     let caps = check_trigger(&trigger, &msg, "bot").unwrap();
     assert_eq!(caps, vec!["world"]);
 }
+
+// ─── check_trigger: CTCP messages never match text triggers ──────────────────
+
+#[test]
+fn event_privmsg_trigger_ignores_ctcp_action() {
+    let trigger = Trigger::Event {
+        event: "PRIVMSG".to_string(),
+        target: None,
+        regex: None,
+    };
+    let msg = privmsg("#chan", "\x01ACTION waves\x01");
+    assert!(check_trigger(&trigger, &msg, "bot").is_none());
+}
+
+#[test]
+fn event_privmsg_trigger_ignores_ctcp_without_closing_byte() {
+    // Some clients omit the closing \x01.
+    let trigger = Trigger::Event {
+        event: "PRIVMSG".to_string(),
+        target: None,
+        regex: None,
+    };
+    let msg = privmsg("#chan", "\x01ACTION waves");
+    assert!(check_trigger(&trigger, &msg, "bot").is_none());
+}
+
+#[test]
+fn event_privmsg_regex_trigger_ignores_ctcp_action() {
+    let trigger = Trigger::Event {
+        event: "PRIVMSG".to_string(),
+        target: None,
+        regex: Some("(.*)".to_string()),
+    };
+    let msg = privmsg("#chan", "\x01ACTION waves\x01");
+    assert!(check_trigger(&trigger, &msg, "bot").is_none());
+}
+
+#[test]
+fn message_trigger_ignores_ctcp_action() {
+    let trigger = Trigger::Message {
+        pattern: "*".to_string(),
+        target: None,
+    };
+    let msg = privmsg("#chan", "\x01ACTION waves\x01");
+    assert!(check_trigger(&trigger, &msg, "bot").is_none());
+}

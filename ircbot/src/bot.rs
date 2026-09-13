@@ -500,8 +500,14 @@ fn synthesize_cron_message(bot_nick: &str) -> Message {
 // ─── trigger matching ────────────────────────────────────────────────────────
 
 /// Returns `Some(captures)` if `msg` matches `trigger`, `None` otherwise.
+///
+/// A `PRIVMSG` that carries a CTCP message (for example a `/me` action) is not
+/// chat text, so no trigger matches it.
 #[must_use]
 pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option<Vec<String>> {
+    if privmsg_ctcp(msg).is_some() {
+        return None;
+    }
     match trigger {
         Trigger::Command { name, target, .. } => {
             let Command::PRIVMSG(msg_target, text) = &msg.command else {
@@ -631,6 +637,15 @@ fn command_name(msg: &Message) -> std::borrow::Cow<'_, str> {
             Cow::Owned(s[..end].to_ascii_uppercase())
         }
     }
+}
+
+/// The target and the parsed CTCP message of a `PRIVMSG`. `None` when `msg` is
+/// not a `PRIVMSG`, or when its text is not a CTCP message.
+fn privmsg_ctcp(msg: &Message) -> Option<(&str, CtcpMessage)> {
+    let Command::PRIVMSG(target, text) = &msg.command else {
+        return None;
+    };
+    CtcpMessage::parse(text).map(|ctcp| (target.as_str(), ctcp))
 }
 
 /// The trailing parameter — the main text content of the message.
