@@ -468,6 +468,24 @@ fn event_privmsg_regex_trigger_ignores_ctcp_action() {
 }
 
 #[test]
+fn command_trigger_ignores_ctcp_message() {
+    let trigger = Trigger::Command {
+        name: "ping".to_string(),
+        target: None,
+        role: None,
+    };
+    let msg = privmsg("#chan", "\x01!ping\x01");
+    assert!(check_trigger(&trigger, &msg, "bot").is_none());
+}
+
+#[test]
+fn mention_trigger_ignores_ctcp_message() {
+    let trigger = Trigger::Mention { target: None };
+    let msg = privmsg("#chan", "\x01rustbot: hello\x01");
+    assert!(check_trigger(&trigger, &msg, "rustbot").is_none());
+}
+
+#[test]
 fn message_trigger_ignores_ctcp_action() {
     let trigger = Trigger::Message {
         pattern: "*".to_string(),
