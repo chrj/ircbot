@@ -502,13 +502,40 @@ fn synthesize_cron_message(bot_nick: &str) -> Message {
 /// Returns `Some(captures)` if `msg` matches `trigger`, `None` otherwise.
 ///
 /// A `PRIVMSG` that carries a CTCP message (for example a `/me` action) is not
-/// chat text, so no trigger matches it.
+/// chat text. Only [`Trigger::Action`] and [`Trigger::Ctcp`] can match it.
 #[must_use]
 pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option<Vec<String>> {
-    if privmsg_ctcp(msg).is_some() {
-        return None;
-    }
+    let ctcp = privmsg_ctcp(msg);
     match trigger {
+        Trigger::Action { pattern, target } => {
+            let (msg_target, ctcp) = ctcp?;
+            if ctcp.command != "ACTION" {
+                return None;
+            }
+            if let Some(t) = target {
+                if msg_target != t.as_str() {
+                    return None;
+                }
+            }
+            glob_match(pattern, &ctcp.arg)
+        }
+
+        Trigger::Ctcp { command, target } => {
+            let (msg_target, ctcp) = ctcp?;
+            if !ctcp.command.eq_ignore_ascii_case(command) {
+                return None;
+            }
+            if let Some(t) = target {
+                if msg_target != t.as_str() {
+                    return None;
+                }
+            }
+            Some(vec![ctcp.arg])
+        }
+
+        // Every other trigger matches chat text or other events, never CTCP.
+        _ if ctcp.is_some() => None,
+
         Trigger::Command { name, target, .. } => {
             let Command::PRIVMSG(msg_target, text) = &msg.command else {
                 return None;

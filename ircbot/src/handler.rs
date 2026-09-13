@@ -37,6 +37,9 @@ pub enum Trigger {
         role: Option<String>,
     },
     /// Fires when an incoming PRIVMSG matches a glob pattern (`*` as wildcard).
+    ///
+    /// A PRIVMSG that carries a CTCP message does not match. Use
+    /// [`Trigger::Action`] or [`Trigger::Ctcp`] for these messages.
     Message {
         /// The glob pattern matched against the message text.
         pattern: String,
@@ -44,6 +47,9 @@ pub enum Trigger {
         target: Option<String>,
     },
     /// Fires on a specific IRC event (e.g. "JOIN"), with optional target/regex filter.
+    ///
+    /// A PRIVMSG that carries a CTCP message does not match `"PRIVMSG"`. Use
+    /// [`Trigger::Action`] or [`Trigger::Ctcp`] for these messages.
     Event {
         /// The IRC command or numeric that fires the handler, compared
         /// without case sensitivity.
@@ -58,6 +64,27 @@ pub enum Trigger {
     /// message (e.g. `"botname: hello"` or `"botname, ping"`).
     /// The text following the address prefix is provided as a capture.
     Mention {
+        /// When set, the handler fires only for messages sent to this target.
+        target: Option<String>,
+    },
+    /// Fires when the text of a CTCP `ACTION` (a `/me` message) matches a glob
+    /// pattern (`*` as wildcard). Each `*` becomes a capture.
+    Action {
+        /// The glob pattern matched against the action text, without the
+        /// `ACTION` command word.
+        pattern: String,
+        /// When set, the pattern applies only to actions sent to this target.
+        target: Option<String>,
+    },
+    /// Fires when a PRIVMSG carries a CTCP message with the given command (e.g.
+    /// `"TIME"`). The argument after the command is the only capture, and it is
+    /// empty when the message has no argument.
+    ///
+    /// The framework answers CTCP `PING` and `VERSION` itself and does not
+    /// dispatch them, so a handler for these commands never fires.
+    Ctcp {
+        /// The CTCP command, compared without case sensitivity.
+        command: String,
         /// When set, the handler fires only for messages sent to this target.
         target: Option<String>,
     },

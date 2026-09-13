@@ -110,6 +110,18 @@ impl MacroBot {
         ctx.say("banned")
     }
 
+    // [14] — Action trigger with a String capture arg
+    #[on(action = "slaps * around a bit with a large trout")]
+    async fn trout(&self, ctx: Context, victim: String) -> Result {
+        ctx.say(format!("poor {victim}"))
+    }
+
+    // [15] — Ctcp trigger with a target
+    #[on(ctcp = "TIME", target = "#rust")]
+    async fn time(&self, ctx: Context) -> Result {
+        ctx.say("time")
+    }
+
     // Plain (non-annotated) method — must remain callable and produce NO entry.
     fn helper(&self) -> u32 {
         42
@@ -198,6 +210,28 @@ fn on_cron_yields_cron_trigger() {
 }
 
 #[test]
+fn on_action_yields_action_trigger() {
+    match &handlers()[14].trigger {
+        Trigger::Action { pattern, target } => {
+            assert_eq!(pattern, "slaps * around a bit with a large trout");
+            assert_eq!(target.as_deref(), None);
+        }
+        other => panic!("expected Action, got {other:?}"),
+    }
+}
+
+#[test]
+fn on_ctcp_yields_ctcp_trigger() {
+    match &handlers()[15].trigger {
+        Trigger::Ctcp { command, target } => {
+            assert_eq!(command, "TIME");
+            assert_eq!(target.as_deref(), Some("#rust"));
+        }
+        other => panic!("expected Ctcp, got {other:?}"),
+    }
+}
+
+#[test]
 fn message_wins_trigger_precedence() {
     // message > command > event > mention > cron — only the message survives.
     match &handlers()[6].trigger {
@@ -210,8 +244,8 @@ fn message_wins_trigger_precedence() {
 
 #[test]
 fn only_annotated_methods_produce_handler_entries() {
-    // 14 annotated methods; the plain `helper` produces no entry.
-    assert_eq!(handlers().len(), 14);
+    // 16 annotated methods; the plain `helper` produces no entry.
+    assert_eq!(handlers().len(), 16);
 }
 
 #[test]
@@ -279,6 +313,19 @@ async fn two_string_args_pull_successive_captures() {
     assert_eq!(
         invoke(entry, tc).await,
         Some("PRIVMSG #test :foo-bar\r\n".to_string())
+    );
+}
+
+#[tokio::test]
+async fn action_string_arg_filled_from_captures() {
+    let entry = &handlers()[14]; // trout(victim: String)
+    let tc = TestContext::builder()
+        .target("#test")
+        .captures(vec!["bob".to_string()])
+        .build();
+    assert_eq!(
+        invoke(entry, tc).await,
+        Some("PRIVMSG #test :poor bob\r\n".to_string())
     );
 }
 

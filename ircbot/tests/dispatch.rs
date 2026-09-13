@@ -278,6 +278,48 @@ async fn ctcp_action_does_not_reach_privmsg_event_handler() {
     bot_task.abort();
 }
 
+#[tokio::test]
+async fn ctcp_action_reaches_action_handler() {
+    let mut server = MockServer::start().await;
+    let handlers = vec![HandlerEntry {
+        trigger: Trigger::Action {
+            pattern: "*".to_string(),
+            target: None,
+        },
+        handler: replying_handler("action"),
+    }];
+    let bot_task = spawn_bot(&server.addr, Arc::new(()), handlers).await;
+    server.send_welcome();
+
+    server.send(":alice!a@h PRIVMSG #chan :\x01ACTION waves\x01\r\n");
+    let line = server.expect_line(|l| l.starts_with("PRIVMSG")).await;
+    assert_eq!(line, "PRIVMSG #chan :action");
+
+    bot_task.abort();
+}
+
+#[tokio::test]
+async fn ctcp_ping_does_not_reach_ctcp_handler() {
+    // The framework answers CTCP PING itself and does not dispatch it.
+    let mut server = MockServer::start().await;
+    let handlers = vec![HandlerEntry {
+        trigger: Trigger::Ctcp {
+            command: "PING".to_string(),
+            target: None,
+        },
+        handler: replying_handler("handler"),
+    }];
+    let bot_task = spawn_bot(&server.addr, Arc::new(()), handlers).await;
+    server.send_welcome();
+
+    server.send(":alice!a@h PRIVMSG testbot :\x01PING 1\x01\r\n");
+    server
+        .expect_no_line(Duration::from_millis(400), |l| l.starts_with("PRIVMSG"))
+        .await;
+
+    bot_task.abort();
+}
+
 // ─── A4: server PING → PONG ──────────────────────────────────────────────────
 
 #[tokio::test]

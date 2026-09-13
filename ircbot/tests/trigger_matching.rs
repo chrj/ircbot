@@ -476,3 +476,152 @@ fn message_trigger_ignores_ctcp_action() {
     let msg = privmsg("#chan", "\x01ACTION waves\x01");
     assert!(check_trigger(&trigger, &msg, "bot").is_none());
 }
+
+// ─── check_trigger: Action ───────────────────────────────────────────────────
+
+#[test]
+fn action_trigger_glob_captures_wildcards() {
+    let trigger = Trigger::Action {
+        pattern: "slaps * around a bit with a large trout".to_string(),
+        target: None,
+    };
+    let msg = privmsg(
+        "#chan",
+        "\x01ACTION slaps bob around a bit with a large trout\x01",
+    );
+    let caps = check_trigger(&trigger, &msg, "bot").unwrap();
+    assert_eq!(caps, vec!["bob"]);
+}
+
+#[test]
+fn action_trigger_wildcard_matches_any_action() {
+    let trigger = Trigger::Action {
+        pattern: "*".to_string(),
+        target: None,
+    };
+    let caps = check_trigger(&trigger, &privmsg("#chan", "\x01ACTION waves\x01"), "bot").unwrap();
+    assert_eq!(caps, vec!["waves"]);
+}
+
+#[test]
+fn action_trigger_without_closing_byte() {
+    let trigger = Trigger::Action {
+        pattern: "*".to_string(),
+        target: None,
+    };
+    let caps = check_trigger(&trigger, &privmsg("#chan", "\x01ACTION waves"), "bot").unwrap();
+    assert_eq!(caps, vec!["waves"]);
+}
+
+#[test]
+fn action_trigger_ignores_other_ctcp_commands() {
+    let trigger = Trigger::Action {
+        pattern: "*".to_string(),
+        target: None,
+    };
+    let msg = privmsg("#chan", "\x01DCC SEND file 1 2 3\x01");
+    assert!(check_trigger(&trigger, &msg, "bot").is_none());
+}
+
+#[test]
+fn action_trigger_ignores_plain_privmsg() {
+    let trigger = Trigger::Action {
+        pattern: "*".to_string(),
+        target: None,
+    };
+    assert!(check_trigger(&trigger, &privmsg("#chan", "waves"), "bot").is_none());
+}
+
+#[test]
+fn action_trigger_ignores_notice() {
+    let trigger = Trigger::Action {
+        pattern: "*".to_string(),
+        target: None,
+    };
+    let msg: Message = ":nick!u@h NOTICE #chan :\x01ACTION waves\x01"
+        .parse()
+        .unwrap();
+    assert!(check_trigger(&trigger, &msg, "bot").is_none());
+}
+
+#[test]
+fn action_trigger_target_filter() {
+    let trigger = Trigger::Action {
+        pattern: "*".to_string(),
+        target: Some("#rust".to_string()),
+    };
+    let action = "\x01ACTION waves\x01";
+    assert!(check_trigger(&trigger, &privmsg("#rust", action), "bot").is_some());
+    assert!(check_trigger(&trigger, &privmsg("#other", action), "bot").is_none());
+}
+
+// ─── check_trigger: Ctcp ─────────────────────────────────────────────────────
+
+#[test]
+fn ctcp_trigger_captures_argument() {
+    let trigger = Trigger::Ctcp {
+        command: "DCC".to_string(),
+        target: None,
+    };
+    let msg = privmsg("testbot", "\x01DCC SEND file 1 2 3\x01");
+    let caps = check_trigger(&trigger, &msg, "testbot").unwrap();
+    assert_eq!(caps, vec!["SEND file 1 2 3"]);
+}
+
+#[test]
+fn ctcp_trigger_captures_empty_argument() {
+    let trigger = Trigger::Ctcp {
+        command: "TIME".to_string(),
+        target: None,
+    };
+    let caps = check_trigger(&trigger, &privmsg("testbot", "\x01TIME\x01"), "testbot").unwrap();
+    assert_eq!(caps, vec![""]);
+}
+
+#[test]
+fn ctcp_trigger_case_insensitive_command() {
+    let trigger = Trigger::Ctcp {
+        command: "time".to_string(),
+        target: None,
+    };
+    assert!(check_trigger(&trigger, &privmsg("testbot", "\x01TIME\x01"), "testbot").is_some());
+}
+
+#[test]
+fn ctcp_trigger_wrong_command() {
+    let trigger = Trigger::Ctcp {
+        command: "TIME".to_string(),
+        target: None,
+    };
+    let msg = privmsg("testbot", "\x01CLIENTINFO\x01");
+    assert!(check_trigger(&trigger, &msg, "testbot").is_none());
+}
+
+#[test]
+fn ctcp_trigger_matches_action() {
+    let trigger = Trigger::Ctcp {
+        command: "ACTION".to_string(),
+        target: None,
+    };
+    let caps = check_trigger(&trigger, &privmsg("#chan", "\x01ACTION waves\x01"), "bot").unwrap();
+    assert_eq!(caps, vec!["waves"]);
+}
+
+#[test]
+fn ctcp_trigger_ignores_plain_privmsg() {
+    let trigger = Trigger::Ctcp {
+        command: "TIME".to_string(),
+        target: None,
+    };
+    assert!(check_trigger(&trigger, &privmsg("testbot", "TIME"), "testbot").is_none());
+}
+
+#[test]
+fn ctcp_trigger_target_filter() {
+    let trigger = Trigger::Ctcp {
+        command: "TIME".to_string(),
+        target: Some("#rust".to_string()),
+    };
+    assert!(check_trigger(&trigger, &privmsg("#rust", "\x01TIME\x01"), "bot").is_some());
+    assert!(check_trigger(&trigger, &privmsg("#other", "\x01TIME\x01"), "bot").is_none());
+}
