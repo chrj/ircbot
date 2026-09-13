@@ -1,7 +1,7 @@
 Registers the annotated method as an event handler inside a [`#[bot]`](macro@bot) impl block.
 
 The general-purpose trigger attribute.  Exactly one of `command`,
-`message`, `event`, `mention`, or `cron` must be present.  `target`,
+`message`, `event`, `mention`, `action`, `ctcp`, or `cron` must be present.  `target`,
 `regex`, and `tz` are optional modifiers.
 
 # Keys
@@ -12,13 +12,19 @@ The general-purpose trigger attribute.  Exactly one of `command`,
 | `message = "pattern"` | Glob pattern on PRIVMSG text; each `*` captures the matched portion as a `String` parameter |
 | `event = "IRC_CMD"` | Any raw IRC command (e.g. `"JOIN"`, `"PRIVMSG"`, `"PART"`, `"NICK"`) |
 | `mention` | Fires when a PRIVMSG addresses the bot by name (`"botname: …"` or `"botname, …"`); matched text is passed as first `String` parameter |
+| `action = "pattern"` | Glob pattern on the text of a `/me` action (CTCP `ACTION`); each `*` captures the matched portion as a `String` parameter |
+| `ctcp = "COMMAND"` | Fires on a CTCP command (e.g. `"TIME"`); the argument after the command is passed as first `String` parameter. `PING` and `VERSION` are rejected at compile time, because the framework answers them itself |
 | `cron = "expr"` | Fires on a cron schedule independent of any IRC message; uses the 6-field Quartz format (`sec min hour dom month dow`) with an optional 7th year field, validated at compile time |
 | `target = "#channel"` | *(optional)* Restrict the trigger to a specific channel |
 | `regex = "pattern"` | *(optional, with `event`)* Further filter by a regex on the message text; capture groups become `String` parameters |
 | `tz = "Timezone"` | *(optional, with `cron`)* IANA timezone for evaluating the schedule (default: `"UTC"`), validated at compile time |
 
 When multiple trigger keys are present, the first one in this precedence
-order wins: `message` › `command` › `event` › `mention` › `cron`.
+order wins: `message` › `command` › `event` › `mention` › `action` › `ctcp` › `cron`.
+
+A PRIVMSG that carries a CTCP message (for example a `/me` action) is not
+chat text. It does not match `message`, `command`, `mention`, or
+`event = "PRIVMSG"`. Use `action` or `ctcp` for these messages.
 
 # Examples
 
@@ -98,6 +104,30 @@ async fn on_mention(&self, ctx: Context, text: String) -> Result {
 #[on(mention, target = "#rust")]
 async fn on_mention_rust(&self, ctx: Context) -> Result {
     ctx.notice("I heard you!")
+}
+```
+
+**`action`** — glob pattern on the text of a `/me` action.  The pattern
+does not include the `ACTION` command word.  Each `*` captures the
+corresponding portion of the text as a `String` parameter:
+
+```rust,ignore
+// Fires when a user writes "/me slaps bob around a bit with a large trout".
+#[on(action = "slaps * around a bit with a large trout")]
+async fn trout(&self, ctx: Context, victim: String) -> Result {
+    ctx.action(format!("hands {} a towel", victim))
+}
+```
+
+**`ctcp`** — any other CTCP command.  The argument after the command is
+passed as the first `String` parameter, and it is empty when the message
+has no argument:
+
+```rust,ignore
+// Fires when a user sends a CTCP TIME request to the bot.
+#[on(ctcp = "TIME")]
+async fn time(&self, ctx: Context) -> Result {
+    ctx.notice("\x01TIME 12:00 UTC\x01")
 }
 ```
 

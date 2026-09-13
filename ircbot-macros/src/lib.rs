@@ -211,6 +211,8 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                             let mut target: Option<String> = None;
                             let mut regex: Option<String> = None;
                             let mut mention = false;
+                            let mut action: Option<String> = None;
+                            let mut ctcp: Option<String> = None;
                             let mut cron_interval: Option<String> = None;
                             let mut cron_tz: Option<String> = None;
                             let mut role: Option<String> = None;
@@ -238,6 +240,8 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                                     "command" => command_on = Some(v),
                                                     "target" => target = Some(v),
                                                     "regex" => regex = Some(v),
+                                                    "action" => action = Some(v),
+                                                    "ctcp" => ctcp = Some(v),
                                                     "cron" => cron_interval = Some(v),
                                                     "tz" => cron_tz = Some(v),
                                                     "role" => role = Some(v),
@@ -252,7 +256,8 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                             let target_ts = opt_str_ts(target.as_deref());
                             let role_ts = opt_str_ts(role.as_deref());
-                            // Precedence: message > command > event > mention > cron.
+                            // Precedence: message > command > event > mention > action
+                            // > ctcp > cron.
                             // Only the first matching key wins; combining multiple
                             // trigger types in one `#[on(...)]` is not supported.
                             if let Some(msg_pat) = message {
@@ -283,6 +288,21 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                             } else if mention {
                                 trigger_tokens = Some(quote! {
                                     ircbot::Trigger::Mention {
+                                        target: #target_ts,
+                                    }
+                                });
+                            } else if let Some(action_pat) = action {
+                                trigger_tokens = Some(quote! {
+                                    ircbot::Trigger::Action {
+                                        pattern: #action_pat.to_string(),
+                                        target: #target_ts,
+                                    }
+                                });
+                            } else if let Some(ctcp_cmd) = ctcp {
+                                validate_ctcp_command(&ctcp_cmd);
+                                trigger_tokens = Some(quote! {
+                                    ircbot::Trigger::Ctcp {
+                                        command: #ctcp_cmd.to_string(),
                                         target: #target_ts,
                                     }
                                 });
@@ -710,7 +730,34 @@ fn build_wrapper(
     }
 }
 
-/// Argument extraction for non-command triggers (message/event/mention).
+/// Reject a CTCP command that can never fire, at compile time.
+///
+/// # Panics
+///
+/// Panics when `command` is not a single word, or when it names a command that
+/// the framework answers itself (`PING`, `VERSION`).
+fn validate_ctcp_command(command: &str) {
+    if command.is_empty() || command.chars().any(|c| c.is_whitespace() || c == '\x01') {
+        panic!(
+            "invalid CTCP command {command:?}\n\
+             \n\
+             Use a single word, without spaces or \\x01 bytes, such as:\n\
+             \"TIME\", \"CLIENTINFO\", \"DCC\"\n\
+             \n\
+             To match the text of a /me action, use `action = \"pattern\"`."
+        );
+    }
+    if command.eq_ignore_ascii_case("PING") || command.eq_ignore_ascii_case("VERSION") {
+        panic!(
+            "a handler for CTCP {command:?} never fires\n\
+             \n\
+             The framework answers CTCP PING and VERSION itself.\n\
+             To change the VERSION reply, use `State::with_ctcp_version`."
+        );
+    }
+}
+
+/// Argument extraction for non-command triggers (message/event/mention/action/ctcp).
 ///
 /// Preserves historical behaviour: each `String` parameter maps to the trigger
 /// capture group at its positional index, `User` becomes the sender, and any

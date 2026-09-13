@@ -245,6 +245,125 @@ async fn ctcp_ping_without_sender_produces_no_reply() {
     bot_task.abort();
 }
 
+#[tokio::test]
+async fn ctcp_ping_reply_fits_irc_line_limit() {
+    let mut server = MockServer::start().await;
+    let bot_task = spawn_bot(&server.addr, Arc::new(()), no_handlers()).await;
+    server.send_welcome();
+
+    let token = "x".repeat(600);
+    server.send(&format!(
+        ":alice!a@h PRIVMSG testbot :\x01PING {token}\x01\r\n"
+    ));
+    let line = server.expect_line(|l| l.starts_with("NOTICE")).await;
+    // 510 bytes is the IRC limit without the trailing CRLF.
+    assert!(line.len() <= 510, "reply is {} bytes", line.len());
+    assert!(line.starts_with("NOTICE alice :\x01PING xxx"), "{line:?}");
+    assert!(
+        line.ends_with('\x01'),
+        "reply must stay CTCP-framed: {line:?}"
+    );
+    // A CTCP reply split over two lines is two replies, so only one is sent.
+    server
+        .expect_no_line(Duration::from_millis(300), |l| l.starts_with("NOTICE"))
+        .await;
+
+    bot_task.abort();
+}
+
+#[tokio::test]
+async fn ctcp_version_reply_strips_line_breaks_from_configured_version() {
+    let mut server = MockServer::start().await;
+    let state = State::connect("testbot".to_string(), &server.addr, vec![])
+        .await
+        .expect("failed to connect to mock server")
+        .with_ctcp_version("evil\r\nQUIT :bye");
+    let handler_set = ircbot::internal::make_handler_set(no_handlers());
+    let bot_task = tokio::spawn(run_bot_internal(Arc::new(()), state, handler_set));
+    server.send_welcome();
+
+    server.send(":alice!a@h PRIVMSG testbot :\x01VERSION\x01\r\n");
+    let line = server.expect_line(|l| l.starts_with("NOTICE")).await;
+    assert_eq!(line, "NOTICE alice :\x01VERSION evilQUIT :bye\x01");
+
+    bot_task.abort();
+}
+
+// ─── A3b: CTCP messages and text triggers ────────────────────────────────────
+
+/// A handler that says `text` in the context where it fired.
+fn replying_handler(text: &'static str) -> HandlerFn<()> {
+    Box::new(
+        move |_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
+            Box::pin(async move { ctx.say(text) })
+        },
+    )
+}
+
+#[tokio::test]
+async fn ctcp_action_does_not_reach_privmsg_event_handler() {
+    let mut server = MockServer::start().await;
+    let handlers = vec![HandlerEntry {
+        trigger: Trigger::Event {
+            event: "PRIVMSG".to_string(),
+            target: None,
+            regex: None,
+        },
+        handler: replying_handler("event"),
+    }];
+    let bot_task = spawn_bot(&server.addr, Arc::new(()), handlers).await;
+    server.send_welcome();
+
+    server.send(":alice!a@h PRIVMSG #chan :\x01ACTION waves\x01\r\n");
+    server
+        .expect_no_line(Duration::from_millis(400), |l| l.starts_with("PRIVMSG"))
+        .await;
+
+    bot_task.abort();
+}
+
+#[tokio::test]
+async fn ctcp_action_reaches_action_handler() {
+    let mut server = MockServer::start().await;
+    let handlers = vec![HandlerEntry {
+        trigger: Trigger::Action {
+            pattern: "*".to_string(),
+            target: None,
+        },
+        handler: replying_handler("action"),
+    }];
+    let bot_task = spawn_bot(&server.addr, Arc::new(()), handlers).await;
+    server.send_welcome();
+
+    server.send(":alice!a@h PRIVMSG #chan :\x01ACTION waves\x01\r\n");
+    let line = server.expect_line(|l| l.starts_with("PRIVMSG")).await;
+    assert_eq!(line, "PRIVMSG #chan :action");
+
+    bot_task.abort();
+}
+
+#[tokio::test]
+async fn ctcp_ping_does_not_reach_ctcp_handler() {
+    // The framework answers CTCP PING itself and does not dispatch it.
+    let mut server = MockServer::start().await;
+    let handlers = vec![HandlerEntry {
+        trigger: Trigger::Ctcp {
+            command: "PING".to_string(),
+            target: None,
+        },
+        handler: replying_handler("handler"),
+    }];
+    let bot_task = spawn_bot(&server.addr, Arc::new(()), handlers).await;
+    server.send_welcome();
+
+    server.send(":alice!a@h PRIVMSG testbot :\x01PING 1\x01\r\n");
+    server
+        .expect_no_line(Duration::from_millis(400), |l| l.starts_with("PRIVMSG"))
+        .await;
+
+    bot_task.abort();
+}
+
 // ─── A4: server PING → PONG ──────────────────────────────────────────────────
 
 #[tokio::test]
