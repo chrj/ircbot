@@ -247,100 +247,98 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
 
                     tracing::trace!(target: PROTOCOL_LOG_TARGET, dir = "recv", %line);
 
-                    if let Ok(msg) = line.parse::<Message>() {
-                        match &msg.command {
-                            Command::PING(srv, _) => {
-                                if let Err(e) = write_tx.send(format!("PONG :{srv}\r\n")) {
-                                    tracing::error!(error = %e, "failed to send PONG");
-                                }
-                            }
-                            Command::PONG(a, b) => {
-                                // The keepalive token is echoed back in the
-                                // trailing position: "PONG server :token" → b,
-                                // or without a server: "PONG :token" → a.
-                                let token = b.as_deref().unwrap_or(a.as_str());
-                                if token == KEEPALIVE_TOKEN {
-                                    pong_received.store(true, Ordering::Relaxed);
-                                }
-                            }
-                            Command::Response(Response::RPL_WELCOME, _) => {
-                                registered.store(true, Ordering::Relaxed);
-                                if !joined {
-                                    joined = true;
-                                    for ch in &channels {
-                                        if let Err(e) = write_tx.send(format!("JOIN {ch}\r\n")) {
-                                            tracing::error!(channel = %ch, error = %e, "failed to send JOIN");
-                                        }
-                                    }
-                                }
-                                dispatch(&bot, &handlers, &msg, &bot_nick, &roles, write_tx.clone()).await;
-                            }
-                            Command::Response(
-                                Response::ERR_NICKNAMEINUSE | Response::ERR_UNAVAILRESOURCE,
-                                _,
-                            ) => {
-                                // Only renegotiate before registration completes.
-                                // A 433/437 after we've joined refers to a later
-                                // NICK-change attempt and is left for handlers.
-                                if !joined {
-                                    nick_attempt += 1;
-                                    if nick_attempt <= MAX_NICK_ATTEMPTS {
-                                        let candidate = fallback_nick(nick.as_str(), nick_attempt);
-                                        tracing::warn!(
-                                            current = %bot_nick,
-                                            %candidate,
-                                            "nick unavailable — retrying"
-                                        );
-                                        if let Err(e) =
-                                            write_tx.send(format!("NICK {candidate}\r\n"))
-                                        {
-                                            tracing::error!(%candidate, error = %e, "failed to send NICK");
-                                        }
-                                        bot_nick = Nick::from(candidate);
-                                        *current_nick
-                                            .write()
-                                            .unwrap_or_else(|e| e.into_inner()) =
-                                            bot_nick.clone();
-                                    } else {
-                                        tracing::error!(
-                                            attempts = MAX_NICK_ATTEMPTS,
-                                            "giving up on registration"
-                                        );
-                                    }
-                                }
-                                dispatch(&bot, &handlers, &msg, &bot_nick, &roles, write_tx.clone()).await;
-                            }
-                            Command::NICK(new_nick) => {
-                                // Keep `bot_nick` in sync when the change is our
-                                // own, so the keepnick knows once it has
-                                // succeeded (and stops retrying).
-                                if let Some(Prefix::Nickname(old, ..)) = msg.prefix.as_ref() {
-                                    if old.as_str() == bot_nick.as_str() {
-                                        bot_nick = Nick::from(new_nick.clone());
-                                        *current_nick
-                                            .write()
-                                            .unwrap_or_else(|e| e.into_inner()) =
-                                            bot_nick.clone();
-                                    }
-                                }
-                                dispatch(&bot, &handlers, &msg, &bot_nick, &roles, write_tx.clone()).await;
-                            }
-                            Command::PRIVMSG(_, _) => {
-                                handle_privmsg(
-                                    &bot,
-                                    &handlers,
-                                    &msg,
-                                    &bot_nick,
-                                    ctcp_version.as_deref(),
-                                    &roles,
-                                    write_tx.clone(),
-                                )
-                                .await;
-                            }
-                            _ => {
-                                dispatch(&bot, &handlers, &msg, &bot_nick, &roles, write_tx.clone()).await;
+                    let Ok(msg) = line.parse::<Message>() else {
+                        continue;
+                    };
+                    match &msg.command {
+                        Command::PING(srv, _) => {
+                            if let Err(e) = write_tx.send(format!("PONG :{srv}\r\n")) {
+                                tracing::error!(error = %e, "failed to send PONG");
                             }
                         }
+                        Command::PONG(a, b) => {
+                            // The keepalive token is echoed back in the
+                            // trailing position: "PONG server :token" → b,
+                            // or without a server: "PONG :token" → a.
+                            let token = b.as_deref().unwrap_or(a.as_str());
+                            if token == KEEPALIVE_TOKEN {
+                                pong_received.store(true, Ordering::Relaxed);
+                            }
+                        }
+                        Command::Response(Response::RPL_WELCOME, _) => {
+                            registered.store(true, Ordering::Relaxed);
+                            if !joined {
+                                joined = true;
+                                for ch in &channels {
+                                    if let Err(e) = write_tx.send(format!("JOIN {ch}\r\n")) {
+                                        tracing::error!(channel = %ch, error = %e, "failed to send JOIN");
+                                    }
+                                }
+                            }
+                        }
+                        Command::Response(
+                            Response::ERR_NICKNAMEINUSE | Response::ERR_UNAVAILRESOURCE,
+                            _,
+                        ) => {
+                            // Only renegotiate before registration completes.
+                            // A 433/437 after we've joined refers to a later
+                            // NICK-change attempt and is left for handlers.
+                            if !joined {
+                                nick_attempt += 1;
+                                if nick_attempt <= MAX_NICK_ATTEMPTS {
+                                    let candidate = fallback_nick(nick.as_str(), nick_attempt);
+                                    tracing::warn!(
+                                        current = %bot_nick,
+                                        %candidate,
+                                        "nick unavailable — retrying"
+                                    );
+                                    if let Err(e) =
+                                        write_tx.send(format!("NICK {candidate}\r\n"))
+                                    {
+                                        tracing::error!(%candidate, error = %e, "failed to send NICK");
+                                    }
+                                    bot_nick = Nick::from(candidate);
+                                    *current_nick
+                                        .write()
+                                        .unwrap_or_else(|e| e.into_inner()) =
+                                        bot_nick.clone();
+                                } else {
+                                    tracing::error!(
+                                        attempts = MAX_NICK_ATTEMPTS,
+                                        "giving up on registration"
+                                    );
+                                }
+                            }
+                        }
+                        Command::NICK(new_nick) => {
+                            // Keep `bot_nick` in sync when the change is our
+                            // own, so the keepnick knows once it has
+                            // succeeded (and stops retrying).
+                            if let Some(Prefix::Nickname(old, ..)) = msg.prefix.as_ref() {
+                                if old.as_str() == bot_nick.as_str() {
+                                    bot_nick = Nick::from(new_nick.clone());
+                                    *current_nick
+                                        .write()
+                                        .unwrap_or_else(|e| e.into_inner()) =
+                                        bot_nick.clone();
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    let errors = handle_message(
+                        &bot,
+                        &handlers,
+                        &msg,
+                        &bot_nick,
+                        ctcp_version.as_deref(),
+                        &roles,
+                        write_tx.clone(),
+                    )
+                    .await;
+                    for error in errors {
+                        tracing::error!(%error, "handler error");
                     }
                 }
                 _ = &mut keepalive_fail_rx => {
@@ -774,49 +772,62 @@ fn glob_to_regex(pattern: &str) -> String {
 
 // ─── dispatch ────────────────────────────────────────────────────────────────
 
-async fn handle_privmsg<T: Send + Sync + 'static>(
+/// Run the handlers that match `msg`, and return the errors of the handlers
+/// that failed.
+///
+/// The read loop calls this for every line after its own connection work, and
+/// `testing::TestBot` calls it for the line of a test. Thus a
+/// test sees the same steps as a live bot. A server `PING` or `PONG` never gets
+/// to a handler. The framework answers CTCP `PING` and `VERSION` itself.
+pub(crate) async fn handle_message<T: Send + Sync + 'static>(
     bot: &Arc<T>,
     handlers: &HandlerSet<T>,
     msg: &Message,
     bot_nick: &Nick,
     ctcp_version: Option<&str>,
     roles: &[(String, Vec<String>)],
-    tx: tokio::sync::mpsc::UnboundedSender<String>,
-) {
-    let Command::PRIVMSG(_, text) = &msg.command else {
-        dispatch(bot, handlers, msg, bot_nick, roles, tx).await;
-        return;
+    tx: mpsc::UnboundedSender<String>,
+) -> Vec<BoxError> {
+    match &msg.command {
+        Command::PING(..) | Command::PONG(..) => return Vec::new(),
+        Command::PRIVMSG(_, text) => {
+            if let Some(ctcp) = CtcpMessage::parse(text) {
+                if answer_ctcp(msg, &ctcp, ctcp_version, &tx) {
+                    return Vec::new();
+                }
+            }
+        }
+        _ => {}
+    }
+    dispatch(bot, handlers, msg, bot_nick, roles, tx).await
+}
+
+/// Answer a CTCP `PING` or `VERSION` from the sender of `msg`. Returns `true`
+/// when `ctcp` is one of these commands, and `false` when a handler must get
+/// the message.
+fn answer_ctcp(
+    msg: &Message,
+    ctcp: &CtcpMessage,
+    ctcp_version: Option<&str>,
+    tx: &mpsc::UnboundedSender<String>,
+) -> bool {
+    let arg = match ctcp.command.as_str() {
+        "PING" => ctcp.arg.clone(),
+        // Use the caller-supplied version string if set, else the framework
+        // default of `ircbot <crate-version>`.
+        "VERSION" => ctcp_version.map_or_else(
+            || format!("ircbot {}", env!("CARGO_PKG_VERSION")),
+            ToString::to_string,
+        ),
+        _ => return false,
     };
-    if let Some(ctcp) = CtcpMessage::parse(text) {
-        match ctcp.command.as_str() {
-            "PING" => {
-                if let Some(sender) = msg.source_nickname() {
-                    let reply = ctcp_reply(sender, "PING", &ctcp.arg);
-                    if let Err(e) = tx.send(reply) {
-                        tracing::error!(error = %e, "failed to send CTCP PING reply");
-                    }
-                }
-                return;
-            }
-            "VERSION" => {
-                if let Some(sender) = msg.source_nickname() {
-                    // Use the caller-supplied version string if set, else the
-                    // framework default of `ircbot <crate-version>`.
-                    let version = ctcp_version.map_or_else(
-                        || format!("ircbot {}", env!("CARGO_PKG_VERSION")),
-                        ToString::to_string,
-                    );
-                    let reply = ctcp_reply(sender, "VERSION", &version);
-                    if let Err(e) = tx.send(reply) {
-                        tracing::error!(error = %e, "failed to send CTCP VERSION reply");
-                    }
-                }
-                return;
-            }
-            _ => {}
+    if let Some(sender) = msg.source_nickname() {
+        let reply = ctcp_reply(sender, &ctcp.command, &arg);
+        if let Err(e) = tx.send(reply) {
+            tracing::error!(command = %ctcp.command, error = %e, "failed to send CTCP reply");
         }
     }
-    dispatch(bot, handlers, msg, bot_nick, roles, tx).await;
+    true
 }
 
 /// Build the `NOTICE` line that answers the CTCP `command` from `nick`.
@@ -841,8 +852,8 @@ async fn dispatch<T: Send + Sync + 'static>(
     msg: &Message,
     bot_nick: &Nick,
     roles: &[(String, Vec<String>)],
-    tx: tokio::sync::mpsc::UnboundedSender<String>,
-) {
+    tx: mpsc::UnboundedSender<String>,
+) -> Vec<BoxError> {
     // Snapshot the current handler list under a brief read-lock, then release
     // immediately — no lock is held across any `.await` point.
     let current: Arc<Vec<HandlerEntry<T>>> = {
@@ -860,6 +871,7 @@ async fn dispatch<T: Send + Sync + 'static>(
     };
     let target = Target::from_raw(target_param(msg).unwrap_or(""));
 
+    let mut errors = Vec::new();
     for entry in current.iter() {
         if let Some(captures) = check_trigger(&entry.trigger, msg, bot_nick.as_str()) {
             // Enforce per-command role authorization; unauthorized senders are
@@ -878,10 +890,11 @@ async fn dispatch<T: Send + Sync + 'static>(
             let bot_clone = Arc::clone(bot);
             let fut = (entry.handler)(bot_clone, ctx);
             if let Err(e) = fut.await {
-                tracing::error!(error = %e, "handler error");
+                errors.push(e);
             }
         }
     }
+    errors
 }
 
 /// Decide whether `sender` may invoke a handler with the given `trigger`.
@@ -1060,7 +1073,7 @@ mod tests {
 
     // ── CTCP VERSION ───────────────────────────────────────────────────────────
 
-    /// Drive `handle_privmsg` with a CTCP VERSION request and return the line
+    /// Drive `handle_message` with a CTCP VERSION request and return the line
     /// the bot would send back.
     async fn ctcp_version_reply(custom: Option<&str>) -> String {
         let bot = std::sync::Arc::new(());
@@ -1069,7 +1082,9 @@ mod tests {
         let msg = ":alice!u@h PRIVMSG mybot :\x01VERSION\x01"
             .parse::<Message>()
             .unwrap();
-        handle_privmsg(&bot, &handlers, &msg, &Nick::from("mybot"), custom, &[], tx).await;
+        let errors =
+            handle_message(&bot, &handlers, &msg, &Nick::from("mybot"), custom, &[], tx).await;
+        assert!(errors.is_empty());
         rx.try_recv().expect("a CTCP VERSION reply was sent")
     }
 
@@ -1091,6 +1106,69 @@ mod tests {
                 env!("CARGO_PKG_VERSION")
             ),
         );
+    }
+
+    // ── handle_message ─────────────────────────────────────────────────────────
+
+    /// A handler set with one `#[on(event = …)]` handler that says "fired" and
+    /// then returns an error with the text "boom".
+    fn failing_event_handler(event: &str) -> HandlerSet<()> {
+        crate::internal::make_handler_set(vec![HandlerEntry {
+            trigger: Trigger::Event {
+                event: event.to_string(),
+                target: None,
+                regex: None,
+            },
+            handler: Box::new(|_, ctx: Context| {
+                Box::pin(async move {
+                    ctx.raw("PRIVMSG #chan :fired")?;
+                    Err("boom".into())
+                })
+            }),
+        }])
+    }
+
+    #[tokio::test]
+    async fn handle_message_returns_the_handler_errors() {
+        let handlers = failing_event_handler("PRIVMSG");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let msg = ":alice!u@h PRIVMSG #chan :hi".parse::<Message>().unwrap();
+
+        let errors = handle_message(
+            &Arc::new(()),
+            &handlers,
+            &msg,
+            &Nick::from("mybot"),
+            None,
+            &[],
+            tx,
+        )
+        .await;
+
+        let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        assert_eq!(errors, vec!["boom".to_string()]);
+        assert_eq!(rx.try_recv().as_deref(), Ok("PRIVMSG #chan :fired\r\n"));
+    }
+
+    #[tokio::test]
+    async fn handle_message_does_not_give_a_server_ping_to_handlers() {
+        let handlers = failing_event_handler("PING");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let msg = "PING :irc.example.net".parse::<Message>().unwrap();
+
+        let errors = handle_message(
+            &Arc::new(()),
+            &handlers,
+            &msg,
+            &Nick::from("mybot"),
+            None,
+            &[],
+            tx,
+        )
+        .await;
+
+        assert!(errors.is_empty());
+        assert!(rx.try_recv().is_err());
     }
 
     // ── protocol logging ───────────────────────────────────────────────────────
