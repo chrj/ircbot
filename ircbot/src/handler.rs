@@ -127,7 +127,7 @@ pub struct HandlerEntry<T> {
 /// The `#[bot]` macro implements this trait. Implement it yourself only for a
 /// bot that you make without the macro.
 ///
-/// `testing::TestBot` uses this trait to send a test line
+/// [`TestBot`](crate::testing::TestBot) uses this trait to send a test line
 /// through the handlers of the bot.
 pub trait Bot: Sized {
     /// Returns a new list with one entry for each handler of the bot.
