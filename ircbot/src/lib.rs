@@ -21,7 +21,7 @@ pub use connection::{
     DEFAULT_KEEPALIVE_TIMEOUT, DEFAULT_KEEPNICK_INTERVAL, REGISTRATION_TIMEOUT,
 };
 pub use context::{make_messages, Context, User};
-pub use handler::{BoxFuture, HandlerEntry, HandlerFn, Trigger};
+pub use handler::{Bot, BoxFuture, HandlerEntry, HandlerFn, Trigger};
 pub use irc::CtcpMessage;
 pub use ircbot_macros::bot;
 #[doc = include_str!("../docs/command.md")]

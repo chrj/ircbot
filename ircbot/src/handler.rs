@@ -3,6 +3,7 @@
 //! A [`Trigger`] describes a condition on an incoming message, or a schedule.
 //! A [`HandlerEntry`] pairs one trigger with the function to call. The bot holds
 //! a list of these entries and tests each incoming message against all of them.
+//! A [`Bot`] type gives this list.
 //!
 //! The `#[command]` and `#[on]` macros build these values for you. Construct
 //! them by hand only when you assemble a handler list without the macros.
@@ -119,4 +120,16 @@ pub struct HandlerEntry<T> {
     pub trigger: Trigger,
     /// The function called when the trigger matches.
     pub handler: HandlerFn<T>,
+}
+
+/// A bot type that gives its list of handlers.
+///
+/// The `#[bot]` macro implements this trait. Implement it yourself only for a
+/// bot that you make without the macro.
+///
+/// `testing::TestBot` uses this trait to send a test line
+/// through the handlers of the bot.
+pub trait Bot: Sized {
+    /// Returns a new list with one entry for each handler of the bot.
+    fn handlers() -> Vec<HandlerEntry<Self>>;
 }
