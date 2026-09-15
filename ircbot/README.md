@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Flood protection** — token-bucket rate limiter (default: burst 4, 1 msg / 500 ms).
 - **Auto message splitting** — long messages are word-wrapped and split within the 512-byte IRC limit.
 - **Output sanitization** — `\r`, `\n`, `\0` stripped from every outgoing message.
-- **Unit-testable** — `ircbot::testing::TestContext` lets you test handlers without a live server.
+- **Unit-testable** — `ircbot::testing::TestContext` lets you test handlers without a live server, and `ircbot::testing::TestBot` sends a raw IRC line through the real trigger matching and argument parsing.
 - **Structured logging** — diagnostics are emitted through [`tracing`](https://docs.rs/tracing); you pick the subscriber, level, and format. Raw IRC traffic is available opt-in on the `ircbot::protocol` target.
 
 Full API reference: **[docs.rs/ircbot](https://docs.rs/ircbot)**

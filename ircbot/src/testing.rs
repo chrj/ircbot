@@ -5,6 +5,9 @@
 //! connection.  Replies sent through the context are captured and can be
 //! inspected with [`TestContext::replies`] and [`TestContext::next_reply`].
 //!
+//! The [`TestBot`] type sends a raw IRC line through the dispatch of a bot, and
+//! returns the lines that the handlers sent.
+//!
 //! # Quick start
 //!
 //! ```rust,no_run
@@ -66,11 +69,44 @@
 //! }
 //! ```
 //!
+//! # Sending a raw line through the dispatch
+//!
+//! A [`TestContext`] test does not do a test of the trigger or of the argument
+//! parsing. The test gives the text and the arguments to the handler itself.
+//! Thus a test with a wrong input can pass. For example, an `#[on(mention)]`
+//! handler gets the text without the `nick: ` prefix, but the test can give
+//! the text with the prefix.
+//!
+//! [`TestBot`] sends a raw IRC line through the same steps as a live bot: the
+//! trigger match, the role check, and the wrapper that `#[bot]` generates.
+//!
+//! ```rust,no_run
+//! # use ircbot::{bot, Context, Result};
+//! # use ircbot::testing::TestBot;
+//! #[bot]
+//! impl Adder {
+//!     #[command("add")]
+//!     async fn add(&self, ctx: Context, a: i64, b: i64) -> Result {
+//!         ctx.reply(a + b)
+//!     }
+//! }
+//!
+//! #[tokio::test]
+//! async fn add_parses_both_numbers() {
+//!     let bot = TestBot::new(Adder::default());
+//!     let replies = bot
+//!         .deliver(":alice!a@host PRIVMSG #test :!add 2 3")
+//!         .await
+//!         .unwrap();
+//!     assert_eq!(replies, vec!["PRIVMSG #test :alice, 5\r\n"]);
+//! }
+//! ```
+//!
 //! # Best practices
 //!
-//! * **Test handlers, not the framework.** Call the handler method directly
-//!   with a [`TestContext`]-built [`Context`]; the macro's dispatch, matching,
-//!   and connection handling are covered by the crate's own tests.
+//! * **Use both styles.** Call a handler directly with a [`TestContext`] to do
+//!   a test of its logic. Use [`TestBot`] to make sure that a real line gets to
+//!   the handler, with the arguments that you expect.
 //! * **Build real, isolated state.** Prefer a genuine state value over mocks —
 //!   an in-memory store, or a temp-dir fixture (e.g. via the `tempfile` crate)
 //!   for file-backed state, created fresh per test so cases don't interleave.
@@ -83,7 +119,8 @@
 //!   [`TestContext::builder`] to reproduce the scenario each handler expects.
 //! * **Cover the silent paths.** A handler that filters or ignores some input
 //!   should produce no reply — assert that `next_reply()` returns `None`, not
-//!   just that the happy path works.
+//!   just that the happy path works. With [`TestBot`], assert that
+//!   [`TestBot::deliver`] returns no lines for a line that must not match.
 
 use std::fmt;
 use std::sync::Arc;

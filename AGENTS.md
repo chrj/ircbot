@@ -202,6 +202,12 @@ This crate talks to a hostile network; treat all wire input as untrusted.
   (`::channel`, `::private`, or `::builder()`), then assert on captured replies via
   `next_reply()` / `replies()`. New handler features should ship with this style of
   test.
+- **Test the dispatch path with `ircbot::testing::TestBot`.** It sends a raw IRC
+  line through `handle_message`, the same function that the read loop calls. Thus
+  a `TestBot` test sees changes to trigger matching, role checks, and the
+  generated argument wrappers. Put each new step between the read of a line and
+  the handler call in `handle_message`. If you put it in the read loop, `TestBot`
+  tests skip it.
 - Use `#[tokio::test]` for async tests; `#[should_panic(expected = "...")]` to pin
   panic messages.
 - Integration tests that need a real server are gated behind the `integration`

@@ -775,8 +775,8 @@ fn glob_to_regex(pattern: &str) -> String {
 /// Run the handlers that match `msg`, and return the errors of the handlers
 /// that failed.
 ///
-/// The read loop calls this for every line after its own connection work, and
-/// `testing::TestBot` calls it for the line of a test. Thus a
+/// The read loop calls this for every line after its own connection work.
+/// [`TestBot`](crate::testing::TestBot) calls it for the line of a test, so a
 /// test sees the same steps as a live bot. A server `PING` or `PONG` never gets
 /// to a handler. The framework answers CTCP `PING` and `VERSION` itself.
 pub(crate) async fn handle_message<T: Send + Sync + 'static>(
