@@ -5,6 +5,9 @@
 //! connection.  Replies sent through the context are captured and can be
 //! inspected with [`TestContext::replies`] and [`TestContext::next_reply`].
 //!
+//! The [`TestBot`] type sends a raw IRC line through the dispatch of a bot, and
+//! returns the lines that the handlers sent.
+//!
 //! # Quick start
 //!
 //! ```rust,no_run
@@ -66,11 +69,44 @@
 //! }
 //! ```
 //!
+//! # Sending a raw line through the dispatch
+//!
+//! A [`TestContext`] test does not do a test of the trigger or of the argument
+//! parsing. The test gives the text and the arguments to the handler itself.
+//! Thus a test with a wrong input can pass. For example, an `#[on(mention)]`
+//! handler gets the text without the `nick: ` prefix, but the test can give
+//! the text with the prefix.
+//!
+//! [`TestBot`] sends a raw IRC line through the same steps as a live bot: the
+//! trigger match, the role check, and the wrapper that `#[bot]` generates.
+//!
+//! ```rust,no_run
+//! # use ircbot::{bot, Context, Result};
+//! # use ircbot::testing::TestBot;
+//! #[bot]
+//! impl Adder {
+//!     #[command("add")]
+//!     async fn add(&self, ctx: Context, a: i64, b: i64) -> Result {
+//!         ctx.reply(a + b)
+//!     }
+//! }
+//!
+//! #[tokio::test]
+//! async fn add_parses_both_numbers() {
+//!     let bot = TestBot::new(Adder::default());
+//!     let replies = bot
+//!         .deliver(":alice!a@host PRIVMSG #test :!add 2 3")
+//!         .await
+//!         .unwrap();
+//!     assert_eq!(replies, vec!["PRIVMSG #test :alice, 5\r\n"]);
+//! }
+//! ```
+//!
 //! # Best practices
 //!
-//! * **Test handlers, not the framework.** Call the handler method directly
-//!   with a [`TestContext`]-built [`Context`]; the macro's dispatch, matching,
-//!   and connection handling are covered by the crate's own tests.
+//! * **Use both styles.** Call a handler directly with a [`TestContext`] to do
+//!   a test of its logic. Use [`TestBot`] to make sure that a real line gets to
+//!   the handler, with the arguments that you expect.
 //! * **Build real, isolated state.** Prefer a genuine state value over mocks —
 //!   an in-memory store, or a temp-dir fixture (e.g. via the `tempfile` crate)
 //!   for file-backed state, created fresh per test so cases don't interleave.
@@ -83,12 +119,25 @@
 //!   [`TestContext::builder`] to reproduce the scenario each handler expects.
 //! * **Cover the silent paths.** A handler that filters or ignores some input
 //!   should produce no reply — assert that `next_reply()` returns `None`, not
-//!   just that the happy path works.
+//!   just that the happy path works. With [`TestBot`], assert that
+//!   [`TestBot::deliver`] returns no lines for a line that must not match.
+
+use std::fmt;
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use crate::bot::{handle_message, HandlerSet};
 use crate::context::{Context, User};
+use crate::handler::Bot;
+use crate::internal::make_handler_set;
+use crate::irc::Message;
 use crate::types::{Channel, Nick, Target};
+use crate::BoxError;
+
+/// The bot nick that [`TestContextBuilder`] and [`TestBot`] use when the test
+/// does not set one.
+const DEFAULT_BOT_NICK: &str = "testbot";
 
 // ─── TestContext ──────────────────────────────────────────────────────────────
 
@@ -219,7 +268,7 @@ impl Default for TestContextBuilder {
             sender_nick: "tester".to_string(),
             sender_user: "tester".to_string(),
             sender_host: "test.host".to_string(),
-            bot_nick: "testbot".to_string(),
+            bot_nick: DEFAULT_BOT_NICK.to_string(),
             text: String::new(),
             captures: Vec::new(),
         }
@@ -313,6 +362,176 @@ impl TestContextBuilder {
         TestContext { ctx: Some(ctx), rx }
     }
 }
+
+// ─── TestBot ──────────────────────────────────────────────────────────────────
+
+/// A bot that gets raw IRC lines in a test, through the same dispatch as a live
+/// bot.
+///
+/// A [`TestContext`] test calls one handler with a context and arguments that
+/// the test makes. It does not do a test of the trigger match or of the
+/// argument parsing that `#[bot]` generates. A `TestBot` test does: it parses
+/// the line, finds the handlers with a matching trigger, applies the role
+/// check, and calls the generated wrappers.
+///
+/// Make one with [`TestBot::new`], then call [`TestBot::deliver`] for each line.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use ircbot::{bot, Context, Result};
+/// # use ircbot::testing::TestBot;
+/// #[bot]
+/// impl Greeter {
+///     #[on(mention)]
+///     async fn hello(&self, ctx: Context, text: String) -> Result {
+///         ctx.reply(format!("you said {text}"))
+///     }
+/// }
+///
+/// #[tokio::test]
+/// async fn mention_gets_text_without_the_nick() {
+///     let bot = TestBot::new(Greeter::default()).with_nick("greeter");
+///     let replies = bot
+///         .deliver(":alice!a@host PRIVMSG #chan :greeter: hi")
+///         .await
+///         .unwrap();
+///     assert_eq!(replies, vec!["PRIVMSG #chan :alice, you said hi\r\n"]);
+/// }
+/// ```
+pub struct TestBot<T> {
+    bot: Arc<T>,
+    handlers: HandlerSet<T>,
+    nick: Nick,
+    ctcp_version: Option<String>,
+    roles: Vec<(String, Vec<String>)>,
+}
+
+impl<T: Bot + Send + Sync + 'static> TestBot<T> {
+    /// Make a `TestBot` for `bot`, with the handlers of [`Bot::handlers`].
+    ///
+    /// The bot nick is `"testbot"`, no roles are set, and the CTCP `VERSION`
+    /// reply is the framework default.
+    pub fn new(bot: T) -> Self {
+        TestBot {
+            bot: Arc::new(bot),
+            handlers: make_handler_set(T::handlers()),
+            nick: Nick::from(DEFAULT_BOT_NICK),
+            ctcp_version: None,
+            roles: Vec::new(),
+        }
+    }
+
+    /// Set the nick of the bot (default: `"testbot"`). `#[on(mention)]`
+    /// handlers match on this nick.
+    #[must_use]
+    pub fn with_nick(mut self, nick: impl Into<String>) -> Self {
+        self.nick = Nick::from(nick.into());
+        self
+    }
+
+    /// Set the CTCP `VERSION` reply, as
+    /// [`State::with_ctcp_version`](crate::State::with_ctcp_version) does.
+    #[must_use]
+    pub fn with_ctcp_version(mut self, version: impl Into<String>) -> Self {
+        self.ctcp_version = Some(version.into());
+        self
+    }
+
+    /// Add an access-control role, as
+    /// [`State::with_role`](crate::State::with_role) does.
+    #[must_use]
+    pub fn with_role(
+        mut self,
+        name: impl Into<String>,
+        masks: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        let patterns: Vec<String> = masks.into_iter().map(Into::into).collect();
+        self.roles.push((name.into(), patterns));
+        self
+    }
+
+    /// Send one raw IRC line through the dispatch, and return the lines that
+    /// the handlers and the framework sent.
+    ///
+    /// Each returned line ends with `\r\n`. A `\r\n` at the end of `line` is
+    /// optional. The call returns when all matching handlers are complete. It
+    /// does not get the lines that a task started by a handler sends later.
+    /// Cron handlers never fire from a line.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeliverError::InvalidLine`] when `line` is not an IRC message.
+    /// Returns [`DeliverError::Handler`] when one or more handlers return an
+    /// error. This error also holds the lines that were sent.
+    pub async fn deliver(&self, line: &str) -> Result<Vec<String>, DeliverError> {
+        let line = line.trim_end_matches(['\r', '\n']);
+        let msg = line
+            .parse::<Message>()
+            .map_err(|e| DeliverError::InvalidLine {
+                line: line.to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let errors = handle_message(
+            &self.bot,
+            &self.handlers,
+            &msg,
+            &self.nick,
+            self.ctcp_version.as_deref(),
+            &self.roles,
+            tx,
+        )
+        .await;
+
+        let mut replies = Vec::new();
+        while let Ok(reply) = rx.try_recv() {
+            replies.push(reply);
+        }
+        if errors.is_empty() {
+            return Ok(replies);
+        }
+        Err(DeliverError::Handler { errors, replies })
+    }
+}
+
+// ─── DeliverError ─────────────────────────────────────────────────────────────
+
+/// The error of [`TestBot::deliver`].
+#[derive(Debug)]
+pub enum DeliverError {
+    /// The line is not an IRC message.
+    InvalidLine {
+        /// The line that the test gave, without the `\r\n` at the end.
+        line: String,
+        /// Why the parser did not accept the line.
+        reason: String,
+    },
+    /// One or more handlers returned an error.
+    Handler {
+        /// The errors, in the order of the handlers.
+        errors: Vec<BoxError>,
+        /// The lines that were sent before and after the errors.
+        replies: Vec<String>,
+    },
+}
+
+impl fmt::Display for DeliverError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DeliverError::InvalidLine { line, reason } => {
+                write!(f, "the line {line:?} is not an IRC message: {reason}")
+            }
+            DeliverError::Handler { errors, .. } => {
+                let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+                write!(f, "handlers returned errors: {}", errors.join("; "))
+            }
+        }
+    }
+}
+
+impl std::error::Error for DeliverError {}
 
 #[cfg(test)]
 mod tests {
@@ -553,5 +772,28 @@ mod tests {
         let mut tc = TestContext::private("alice", "msg");
         tc.take_ctx().reply("hi").unwrap();
         assert_eq!(tc.next_reply(), Some("PRIVMSG alice :hi\r\n".to_string()),);
+    }
+
+    // ── DeliverError ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn invalid_line_error_names_the_line_and_the_reason() {
+        let err = DeliverError::InvalidLine {
+            line: "".to_string(),
+            reason: "empty message".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "the line \"\" is not an IRC message: empty message"
+        );
+    }
+
+    #[test]
+    fn handler_error_lists_all_handler_errors() {
+        let err = DeliverError::Handler {
+            errors: vec!["boom".into(), "bang".into()],
+            replies: vec![],
+        };
+        assert_eq!(err.to_string(), "handlers returned errors: boom; bang");
     }
 }

@@ -82,6 +82,9 @@ impl syn::parse::Parse for CommandArgs {
 
 /// Derive-like attribute that turns an `impl` block into a runnable IRC bot.
 ///
+/// The macro also implements `ircbot::Bot` for the type. This trait gives the
+/// list of handlers, and `ircbot::testing::TestBot` uses it in tests.
+///
 /// # Custom state
 ///
 /// Pass `state = SomeType` to give the bot a public `state` field your handlers
@@ -610,14 +613,21 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                     });
                 }
 
-                ircbot::internal::run_bot(bot_arc, state, #struct_name::__handlers()).await
-            }
-
-            fn __handlers() -> Vec<ircbot::HandlerEntry<#struct_name>> {
-                vec![ #(#handler_entries),* ]
+                ircbot::internal::run_bot(
+                    bot_arc,
+                    state,
+                    <#struct_name as ircbot::Bot>::handlers(),
+                )
+                .await
             }
 
             #(#cleaned_methods)*
+        }
+
+        impl ircbot::Bot for #struct_name {
+            fn handlers() -> std::vec::Vec<ircbot::HandlerEntry<#struct_name>> {
+                std::vec![ #(#handler_entries),* ]
+            }
         }
     }
     .into()
