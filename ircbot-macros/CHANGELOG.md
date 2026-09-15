@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.4.3...ircbot-macros-v0.5.0) - 2026-09-15
+
+### Added
+
+- [**breaking**] add action and ctcp triggers, keep CTCP out of text triggers ([#150](https://github.com/chrj/ircbot/pull/150))
+
 ## [0.4.3](https://github.com/chrj/ircbot/compare/ircbot-macros-v0.4.2...ircbot-macros-v0.4.3) - 2026-08-17
 
 ### Added
