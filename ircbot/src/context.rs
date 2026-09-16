@@ -242,8 +242,11 @@ impl Context {
     /// Compares the sender's nick against the bot's own nick
     /// ([`Context::bot_nick`]).  The comparison is ASCII-case-insensitive,
     /// which covers the common case; it does not implement the full RFC 1459
-    /// nick-casemapping (where `{}|^` fold to `[]\~`).  Useful for ignoring the
-    /// bot's own echoes so a handler doesn't reply to itself.
+    /// nick-casemapping (where `{}|^` fold to `[]\~`).
+    ///
+    /// The dispatch already keeps the bot's own messages away from handlers, so
+    /// this check is only necessary in a handler whose entry sets
+    /// [`HandlerEntry::include_self`](crate::HandlerEntry::include_self).
     #[must_use]
     pub fn is_from_self(&self) -> bool {
         self.nick()

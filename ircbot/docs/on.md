@@ -18,6 +18,7 @@ The general-purpose trigger attribute.  Exactly one of `command`,
 | `target = "#channel"` | *(optional)* Restrict the trigger to a specific channel |
 | `regex = "pattern"` | *(optional, with `event`)* Further filter by a regex on the message text; capture groups become `String` parameters |
 | `tz = "Timezone"` | *(optional, with `cron`)* IANA timezone for evaluating the schedule (default: `"UTC"`), validated at compile time |
+| `include_self` | *(optional)* Also give the handler the messages of the bot itself; without it the dispatch keeps these messages away (see [Own messages](#own-messages)) |
 
 When multiple trigger keys are present, the first one in this precedence
 order wins: `message` › `command` › `event` › `mention` › `action` › `ctcp` › `cron`.
@@ -183,6 +184,37 @@ fresh from the current time.
 
 Cron handlers receive a synthetic `Context` whose `sender` is `None` and
 `captures` is empty.  Use `ctx.say()` to post to the configured `target`.
+
+# Own messages
+
+A server sends the bot its own `JOIN`, `PART` and `NICK` back. With the IRCv3
+`echo-message` capability, it sends the bot its own `PRIVMSG` and `NOTICE` too.
+A handler does not get these messages, so a handler cannot answer itself:
+
+```rust,ignore
+// Welcomes every user that joins, but not the bot itself.
+#[on(event = "JOIN")]
+async fn welcome(&self, ctx: Context, user: User) -> Result {
+    ctx.say(format!("Welcome, {}!", user.nick))
+}
+```
+
+Add `include_self` for a handler that must see them, for example one that waits
+for the join of the bot:
+
+```rust,ignore
+#[on(event = "JOIN", include_self)]
+async fn joined(&self, ctx: Context, user: User) -> Result {
+    if ctx.is_from_self() {
+        ctx.say("hello, everyone");
+    }
+    Ok(())
+}
+```
+
+The nicks are compared as ASCII without case. This comparison is the same one
+that `Context::is_from_self` makes.
+
 
 # Note
 

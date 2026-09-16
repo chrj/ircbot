@@ -13,6 +13,8 @@ same line is parsed into the method's parameters (see
   channel.  When omitted, the command responds everywhere.
 - `role = "name"` — *(optional)* restrict the command to senders authorised
   for that role (see [Access control](#access-control)).
+- `include_self` — *(optional)* also let the command fire for the messages of
+  the bot itself (see [Own messages](#own-messages)).
 
 # Access control
 
@@ -87,6 +89,20 @@ impl MyBot {
     }
 }
 ```
+
+# Own messages
+
+With the IRCv3 `echo-message` capability, the server sends the bot its own
+`PRIVMSG` back. A command does not fire for such a message, so a bot that says
+`!ping` does not answer itself. Add `include_self` to let it fire:
+
+```rust,ignore
+#[command("count", include_self)]
+async fn count(&self, ctx: Context) -> Result {
+    ctx.say("counted")
+}
+```
+
 
 # Note
 
