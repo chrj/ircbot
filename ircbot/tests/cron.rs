@@ -66,6 +66,7 @@ async fn test_cron_handler_fires_periodically() {
             tz: "UTC".to_string(),
             target: None,
         },
+        include_self: false,
         handler,
     }];
 
@@ -129,6 +130,7 @@ async fn test_cron_handler_context_target() {
             tz: "UTC".to_string(),
             target: Some("#chan".to_string()),
         },
+        include_self: false,
         handler,
     }];
 

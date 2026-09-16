@@ -247,7 +247,7 @@ impl Context {
     #[must_use]
     pub fn is_from_self(&self) -> bool {
         self.nick()
-            .is_some_and(|n| n.eq_ignore_ascii_case(self.bot_nick.as_str()))
+            .is_some_and(|n| nick_eq(n, self.bot_nick.as_str()))
     }
 
     /// Whether the message text mentions the bot's nick anywhere.
@@ -401,6 +401,14 @@ impl Context {
             .map_err(|e| Box::new(e) as crate::BoxError)?;
         Ok(())
     }
+}
+
+/// Compare two nicks the way the dispatch and [`Context::is_from_self`] do.
+///
+/// The comparison is ASCII-case-insensitive. It does not implement the full
+/// RFC 1459 nick casemapping, where `{}|^` fold to `[]\~`.
+pub(crate) fn nick_eq(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
 }
 
 #[cfg(test)]

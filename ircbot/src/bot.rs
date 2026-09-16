@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     connection::{Settings, State},
-    context::{make_messages, sanitize, Context, User},
+    context::{make_messages, nick_eq, sanitize, Context, User},
     handler::{HandlerEntry, Trigger},
     irc::{CtcpMessage, Message},
     logging::PROTOCOL_LOG_TARGET,
@@ -871,8 +871,18 @@ async fn dispatch<T: Send + Sync + 'static>(
     };
     let target = Target::from_raw(target_param(msg).unwrap_or(""));
 
+    // The server echoes the bot's own JOIN, PART and NICK back, and with the
+    // IRCv3 `echo-message` capability its own PRIVMSG and NOTICE too. Only a
+    // handler that asks for them gets these messages.
+    let from_self = sender
+        .as_ref()
+        .is_some_and(|u| nick_eq(u.nick.as_str(), bot_nick.as_str()));
+
     let mut errors = Vec::new();
     for entry in current.iter() {
+        if from_self && !entry.include_self {
+            continue;
+        }
         if let Some(captures) = check_trigger(&entry.trigger, msg, bot_nick.as_str()) {
             // Enforce per-command role authorization; unauthorized senders are
             // silently ignored, exactly as if the trigger had not matched.
@@ -1119,6 +1129,7 @@ mod tests {
                 target: None,
                 regex: None,
             },
+            include_self: false,
             handler: Box::new(|_, ctx: Context| {
                 Box::pin(async move {
                     ctx.raw("PRIVMSG #chan :fired")?;

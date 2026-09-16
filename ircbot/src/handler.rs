@@ -118,6 +118,17 @@ pub enum Trigger {
 pub struct HandlerEntry<T> {
     /// What causes the handler to fire.
     pub trigger: Trigger,
+    /// Whether the handler also gets the messages of the bot itself.
+    ///
+    /// A server sends the bot its own `JOIN`, `PART` and `NICK`, and with the
+    /// IRCv3 `echo-message` capability also its own `PRIVMSG` and `NOTICE`.
+    /// The dispatch keeps these messages away from a handler, so a handler does
+    /// not answer itself. Set this to `true` for a handler that must see them,
+    /// for example one that waits for the join of the bot.
+    ///
+    /// The `#[command]` and `#[on]` macros set this from their `include_self`
+    /// option.
+    pub include_self: bool,
     /// The function called when the trigger matches.
     pub handler: HandlerFn<T>,
 }
