@@ -367,6 +367,49 @@ async fn ctcp_ping_does_not_reach_ctcp_handler() {
     bot_task.abort();
 }
 
+// ─── own messages ────────────────────────────────────────────────────────────
+
+/// A handler list with one `NICK` event handler that says `"nick"`.
+fn nick_handlers() -> Vec<HandlerEntry<()>> {
+    vec![HandlerEntry {
+        trigger: Trigger::Event {
+            event: "NICK".to_string(),
+            target: None,
+            regex: None,
+        },
+        include_self: false,
+        handler: replying_handler("nick"),
+    }]
+}
+
+#[tokio::test]
+async fn own_nick_change_does_not_reach_the_handler() {
+    // The bot registers as "testbot", so this line reports its own rename.
+    let mut server = MockServer::start().await;
+    let bot_task = spawn_bot(&server.addr, Arc::new(()), nick_handlers()).await;
+    server.send_welcome();
+
+    server.send(":testbot!u@h NICK :newbot\r\n");
+    server
+        .expect_no_line(Duration::from_millis(400), |l| l.starts_with("PRIVMSG"))
+        .await;
+
+    bot_task.abort();
+}
+
+#[tokio::test]
+async fn nick_change_of_another_user_reaches_the_handler() {
+    let mut server = MockServer::start().await;
+    let bot_task = spawn_bot(&server.addr, Arc::new(()), nick_handlers()).await;
+    server.send_welcome();
+
+    server.send(":alice!a@h NICK :alice2\r\n");
+    let line = server.expect_line(|l| l.starts_with("PRIVMSG")).await;
+    assert_eq!(line, "PRIVMSG alice :nick");
+
+    bot_task.abort();
+}
+
 // ─── A4: server PING → PONG ──────────────────────────────────────────────────
 
 #[tokio::test]

@@ -226,7 +226,6 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                             let mut target: Option<String> = None;
                             let mut regex: Option<String> = None;
                             let mut mention = false;
-                            let mut include_self_on = false;
                             let mut action: Option<String> = None;
                             let mut ctcp: Option<String> = None;
                             let mut cron_interval: Option<String> = None;
@@ -240,7 +239,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                             mention = true;
                                         }
                                         Meta::Path(p) if p.is_ident("include_self") => {
-                                            include_self_on = true;
+                                            include_self = true;
                                         }
                                         Meta::NameValue(nv) => {
                                             let k = nv
@@ -271,10 +270,6 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                         _ => {}
                                     }
                                 }
-                            }
-
-                            if include_self_on {
-                                include_self = true;
                             }
 
                             let target_ts = opt_str_ts(target.as_deref());
@@ -330,6 +325,15 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     }
                                 });
                             } else if let Some(cron_str) = cron_interval {
+                                if include_self {
+                                    panic!(
+                                        "`include_self` has no meaning with `cron`\n\
+                                         \n\
+                                         A cron handler fires on a schedule, not on a\n\
+                                         message, so it has no sender. Remove\n\
+                                         `include_self` from this handler."
+                                    );
+                                }
                                 // Validate the cron expression at compile time.
                                 if let Err(e) = cron_str.parse::<cron::Schedule>() {
                                     panic!(

@@ -226,6 +226,9 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     });
 
     let mut joined = false;
+    // A nick change of the bot itself, applied after the line that carried it
+    // is dispatched.
+    let mut pending_nick: Option<Nick> = None;
     // Number of alternate-nick attempts made so far (after the initial NICK).
     let mut nick_attempt = 0u32;
     let mut lines = reader.lines();
@@ -313,14 +316,13 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                         Command::NICK(new_nick) => {
                             // Keep `bot_nick` in sync when the change is our
                             // own, so the keepnick knows once it has
-                            // succeeded (and stops retrying).
+                            // succeeded (and stops retrying). The new nick is
+                            // applied after the dispatch of this line, so that
+                            // the line still counts as one from the bot itself
+                            // and handlers do not see their own rename.
                             if let Some(Prefix::Nickname(old, ..)) = msg.prefix.as_ref() {
                                 if old.as_str() == bot_nick.as_str() {
-                                    bot_nick = Nick::from(new_nick.clone());
-                                    *current_nick
-                                        .write()
-                                        .unwrap_or_else(|e| e.into_inner()) =
-                                        bot_nick.clone();
+                                    pending_nick = Some(Nick::from(new_nick.clone()));
                                 }
                             }
                         }
@@ -339,6 +341,12 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                     .await;
                     for error in errors {
                         tracing::error!(%error, "handler error");
+                    }
+
+                    if let Some(new_nick) = pending_nick.take() {
+                        bot_nick = new_nick;
+                        *current_nick.write().unwrap_or_else(|e| e.into_inner()) =
+                            bot_nick.clone();
                     }
                 }
                 _ = &mut keepalive_fail_rx => {

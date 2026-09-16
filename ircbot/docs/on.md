@@ -18,7 +18,7 @@ The general-purpose trigger attribute.  Exactly one of `command`,
 | `target = "#channel"` | *(optional)* Restrict the trigger to a specific channel |
 | `regex = "pattern"` | *(optional, with `event`)* Further filter by a regex on the message text; capture groups become `String` parameters |
 | `tz = "Timezone"` | *(optional, with `cron`)* IANA timezone for evaluating the schedule (default: `"UTC"`), validated at compile time |
-| `include_self` | *(optional)* Also give the handler the messages of the bot itself; without it the dispatch keeps these messages away (see [Own messages](#own-messages)) |
+| `include_self` | *(optional)* Also give the handler the messages of the bot itself; without it the dispatch keeps these messages away (see [Own messages](#own-messages)). Rejected at compile time with `cron`, because a cron handler has no sender |
 
 When multiple trigger keys are present, the first one in this precedence
 order wins: `message` › `command` › `event` › `mention` › `action` › `ctcp` › `cron`.
