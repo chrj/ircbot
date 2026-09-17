@@ -93,6 +93,10 @@ pub(crate) struct Settings {
     /// hostmask glob patterns. A command with `role = Some(name)` only fires for
     /// senders matching one of that role's patterns. Set via [`State::with_role`].
     pub(crate) roles: Vec<(String, Vec<String>)>,
+    /// Hostmask glob patterns of senders to ignore. The dispatch drops a
+    /// message from a matching sender before it tests any trigger, and answers
+    /// no CTCP. Set via [`State::with_ignore`].
+    pub(crate) ignore: Vec<String>,
 }
 
 impl Default for Settings {
@@ -105,6 +109,7 @@ impl Default for Settings {
             ctcp_version: None,
             keepnick_interval: None,
             roles: Vec::new(),
+            ignore: Vec::new(),
         }
     }
 }
@@ -686,9 +691,9 @@ impl State {
                 keepalive_timeout: Duration::from_millis(ka_timeout_ms),
                 flood_burst,
                 flood_rate,
-                // `ctcp_version`, `keepnick_interval`, and `roles` are re-applied
-                // by the bot builder on the re-exec'd process, so they need not
-                // be carried through the hot-reload environment.
+                // `ctcp_version`, `keepnick_interval`, `roles`, and `ignore`
+                // are re-applied by the bot builder on the re-exec'd process, so
+                // they need not be carried through the hot-reload environment.
                 ..Settings::default()
             },
             reader,
@@ -780,6 +785,37 @@ impl State {
     ) -> Self {
         let patterns: Vec<String> = masks.into_iter().map(Into::into).collect();
         self.settings.roles.push((name.into(), patterns));
+        self
+    }
+
+    /// Ignore the senders whose hostmask matches one of `masks`.
+    ///
+    /// Each mask is a `nick!user@host` glob (`*` matches any run of characters,
+    /// `?` one character), matched without case, as
+    /// [`State::with_role`] matches. The dispatch drops a message from a
+    /// matching sender before it tests any trigger, so no handler runs for it.
+    /// The framework also answers no CTCP `PING` or `VERSION` for such a
+    /// sender.
+    ///
+    /// Use this for other bots and for senders that must never reach a handler.
+    ///
+    /// May be called multiple times; masks accumulate. Call this before
+    /// starting the bot. A `SIGHUP` hot-reload runs the builder again, so a bot
+    /// that reads its masks from a file picks up the changed file.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// MyBot::new("mybot", "irc.example.net:6667", ["chan"]).await?
+    ///     .with_ignore(["*!*@spam.example", "otherbot!*@*"])
+    ///     .main_loop()
+    ///     .await
+    /// ```
+    #[must_use]
+    pub fn with_ignore(mut self, masks: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.settings
+            .ignore
+            .extend(masks.into_iter().map(Into::into));
         self
     }
 
@@ -954,7 +990,8 @@ mod tests {
             .with_flood_control(9, Duration::from_millis(750))
             .with_ctcp_version("mybot 1.2.3")
             .with_keepnick_interval(Duration::from_secs(15))
-            .with_role("admin", ["*!*@trusted.host"]);
+            .with_role("admin", ["*!*@trusted.host"])
+            .with_ignore(["*!*@spam.example"]);
 
         let reconnected = original
             .blueprint()
@@ -977,6 +1014,10 @@ mod tests {
         assert_eq!(
             reconnected.settings.roles,
             vec![("admin".to_string(), vec!["*!*@trusted.host".to_string()])]
+        );
+        assert_eq!(
+            reconnected.settings.ignore,
+            vec!["*!*@spam.example".to_string()]
         );
     }
 

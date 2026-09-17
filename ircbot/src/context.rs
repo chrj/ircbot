@@ -31,6 +31,18 @@ pub struct User {
     pub host: String,
 }
 
+impl User {
+    /// The `nick!user@host` hostmask of the user.
+    ///
+    /// This is the text that a hostmask glob matches, for example in
+    /// [`State::with_role`](crate::State::with_role) and
+    /// [`State::with_ignore`](crate::State::with_ignore).
+    #[must_use]
+    pub fn hostmask(&self) -> String {
+        format!("{}!{}@{}", self.nick, self.user, self.host)
+    }
+}
+
 /// Per-message context passed to every handler.
 pub struct Context {
     pub(crate) tx: UnboundedSender<String>,
@@ -779,6 +791,18 @@ mod tests {
         let (ctx, mut rx) = make_ctx("#chan", true);
         ctx.kick("bad\r\nuser", "be\r\nnice").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "KICK #chan baduser :benice\r\n");
+    }
+
+    // ── User::hostmask ────────────────────────────────────────────────────────
+
+    #[test]
+    fn hostmask_joins_the_three_parts() {
+        let user = User {
+            nick: Nick::from("alice"),
+            user: "ident".to_string(),
+            host: "example.com".to_string(),
+        };
+        assert_eq!(user.hostmask(), "alice!ident@example.com");
     }
 
     // ── plain_text ────────────────────────────────────────────────────────────

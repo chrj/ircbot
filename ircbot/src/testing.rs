@@ -128,6 +128,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::bot::{handle_message, HandlerSet};
+use crate::connection::Settings;
 use crate::context::{Context, User};
 use crate::handler::Bot;
 use crate::internal::make_handler_set;
@@ -403,22 +404,20 @@ pub struct TestBot<T> {
     bot: Arc<T>,
     handlers: HandlerSet<T>,
     nick: Nick,
-    ctcp_version: Option<String>,
-    roles: Vec<(String, Vec<String>)>,
+    settings: Settings,
 }
 
 impl<T: Bot + Send + Sync + 'static> TestBot<T> {
     /// Make a `TestBot` for `bot`, with the handlers of [`Bot::handlers`].
     ///
-    /// The bot nick is `"testbot"`, no roles are set, and the CTCP `VERSION`
-    /// reply is the framework default.
+    /// The bot nick is `"testbot"`, no roles and no ignore masks are set, and
+    /// the CTCP `VERSION` reply is the framework default.
     pub fn new(bot: T) -> Self {
         TestBot {
             bot: Arc::new(bot),
             handlers: make_handler_set(T::handlers()),
             nick: Nick::from(DEFAULT_BOT_NICK),
-            ctcp_version: None,
-            roles: Vec::new(),
+            settings: Settings::default(),
         }
     }
 
@@ -434,7 +433,7 @@ impl<T: Bot + Send + Sync + 'static> TestBot<T> {
     /// [`State::with_ctcp_version`](crate::State::with_ctcp_version) does.
     #[must_use]
     pub fn with_ctcp_version(mut self, version: impl Into<String>) -> Self {
-        self.ctcp_version = Some(version.into());
+        self.settings.ctcp_version = Some(version.into());
         self
     }
 
@@ -447,7 +446,17 @@ impl<T: Bot + Send + Sync + 'static> TestBot<T> {
         masks: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         let patterns: Vec<String> = masks.into_iter().map(Into::into).collect();
-        self.roles.push((name.into(), patterns));
+        self.settings.roles.push((name.into(), patterns));
+        self
+    }
+
+    /// Ignore the senders that match these hostmask globs, as
+    /// [`State::with_ignore`](crate::State::with_ignore) does.
+    #[must_use]
+    pub fn with_ignore(mut self, masks: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.settings
+            .ignore
+            .extend(masks.into_iter().map(Into::into));
         self
     }
 
@@ -460,7 +469,9 @@ impl<T: Bot + Send + Sync + 'static> TestBot<T> {
     /// Cron handlers never fire from a line.
     ///
     /// A line whose sender is the nick of the bot ([`TestBot::with_nick`]) only
-    /// gets to a handler that sets `include_self`, as on a live connection.
+    /// gets to a handler that sets `include_self`, as on a live connection. A
+    /// line from an ignored sender ([`TestBot::with_ignore`]) reaches no
+    /// handler at all.
     ///
     /// # Errors
     ///
@@ -482,8 +493,7 @@ impl<T: Bot + Send + Sync + 'static> TestBot<T> {
             &self.handlers,
             &msg,
             &self.nick,
-            self.ctcp_version.as_deref(),
-            &self.roles,
+            &self.settings,
             tx,
         )
         .await;
