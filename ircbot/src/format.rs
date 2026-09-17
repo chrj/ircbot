@@ -6,7 +6,8 @@
 //! keeps the rest of the text.
 //!
 //! [`Context::plain_text`](crate::Context::plain_text) applies [`strip`] to the
-//! text of the message that fired a handler.
+//! text of the message that fired a handler. The triggers match the text
+//! without the codes too, so a pattern does not need to know about them.
 //!
 //! # Codes
 //!
