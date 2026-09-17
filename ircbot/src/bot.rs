@@ -547,15 +547,18 @@ fn check_trigger_text(
 
     match trigger {
         Trigger::Action { pattern, target } => {
-            ctcp.as_ref()?;
-            let ctcp = CtcpMessage::parse(text)?;
-            if ctcp.command != "ACTION" {
+            // The command is read from the text as it arrived, so a command
+            // that only reads as `ACTION` once the codes are gone, such as
+            // "ACT\x02ION", does not fire an action handler. Only the
+            // argument of the action is chat text.
+            if ctcp.as_ref()?.command != "ACTION" {
                 return None;
             }
             if !target_matches(msg_target, target.as_deref()) {
                 return None;
             }
-            glob_match(pattern, &ctcp.arg)
+            let arg = CtcpMessage::parse(text)?.arg;
+            glob_match(pattern, &arg)
         }
 
         Trigger::Ctcp { command, target } => {

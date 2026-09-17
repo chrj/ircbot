@@ -716,3 +716,26 @@ fn check_trigger_matches_an_event_regex_without_the_codes() {
         Some(vec!["1.2.3".to_string()])
     );
 }
+
+#[test]
+fn check_trigger_does_not_read_a_broken_ctcp_command_as_an_action() {
+    // The wire command is "ACT\x02ION", which is not ACTION. It must not fire
+    // an action handler, although it reads as ACTION without the codes.
+    let trigger = Trigger::Action {
+        pattern: "waves at *".to_string(),
+        target: None,
+    };
+    let msg = privmsg("#chan", "\x01ACT\x02ION waves at bob\x01");
+    assert_eq!(check_trigger(&trigger, &msg, "bot"), None);
+}
+
+#[test]
+fn check_trigger_does_not_read_a_broken_ctcp_command_as_a_message() {
+    // The message carries a CTCP envelope, so it is not chat text either.
+    let trigger = Trigger::Message {
+        pattern: "*".to_string(),
+        target: None,
+    };
+    let msg = privmsg("#chan", "\x01ACT\x02ION waves at bob\x01");
+    assert_eq!(check_trigger(&trigger, &msg, "bot"), None);
+}

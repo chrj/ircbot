@@ -173,6 +173,17 @@ async fn a_raw_pattern_does_not_match_text_without_codes() {
 // ── CTCP payloads ────────────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn a_broken_ctcp_command_does_not_fire_the_action_handler() {
+    // The wire command is "ACT\x02ION", which no client reads as an action.
+    let got = replies(
+        &format_bot(),
+        ":alice!a@h PRIVMSG #chan :\x01ACT\x02ION waves at bob\x01",
+    )
+    .await;
+    assert!(got.is_empty(), "unexpected replies: {got:?}");
+}
+
+#[tokio::test]
 async fn a_ctcp_payload_keeps_its_codes() {
     // A CTCP payload is protocol data, so it reaches the handler as it arrived.
     let got = replies(
