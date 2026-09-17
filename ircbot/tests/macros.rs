@@ -133,6 +133,18 @@ impl MacroBot {
         ctx.say("counted")
     }
 
+    // [18] — raw on an `#[on(...)]` trigger
+    #[on(message = "raw *", raw)]
+    async fn raw_message(&self, ctx: Context) -> Result {
+        ctx.say("raw")
+    }
+
+    // [19] — raw on a command
+    #[command("rawcount", raw)]
+    async fn rawcount(&self, ctx: Context) -> Result {
+        ctx.say("counted")
+    }
+
     // Plain (non-annotated) method — must remain callable and produce NO entry.
     fn helper(&self) -> u32 {
         42
@@ -255,8 +267,8 @@ fn message_wins_trigger_precedence() {
 
 #[test]
 fn only_annotated_methods_produce_handler_entries() {
-    // 18 annotated methods; the plain `helper` produces no entry.
-    assert_eq!(handlers().len(), 18);
+    // 20 annotated methods; the plain `helper` produces no entry.
+    assert_eq!(handlers().len(), 20);
 }
 
 #[test]
@@ -546,4 +558,30 @@ fn include_self_keeps_the_other_command_arguments() {
         }
         other => panic!("expected Command, got {other:?}"),
     }
+}
+
+// ─── raw ─────────────────────────────────────────────────────────────────────
+
+/// The entry whose trigger is the message glob with this pattern.
+fn message_entry(pattern: &str) -> HandlerEntry<MacroBot> {
+    handlers()
+        .into_iter()
+        .find(|e| matches!(&e.trigger, Trigger::Message { pattern: p, .. } if p == pattern))
+        .unwrap_or_else(|| panic!("no handler for message {pattern}"))
+}
+
+#[test]
+fn handlers_match_without_the_formatting_codes_by_default() {
+    assert!(!message_entry("hello *").raw_text);
+    assert!(!command_entry("ping").raw_text);
+}
+
+#[test]
+fn raw_on_an_on_trigger_sets_the_flag() {
+    assert!(message_entry("raw *").raw_text);
+}
+
+#[test]
+fn raw_on_a_command_sets_the_flag() {
+    assert!(command_entry("rawcount").raw_text);
 }

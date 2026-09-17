@@ -15,6 +15,8 @@ same line is parsed into the method's parameters (see
   for that role (see [Access control](#access-control)).
 - `include_self` — *(optional)* also let the command fire for the messages of
   the bot itself (see [Own messages](#own-messages)).
+- `raw` — *(optional)* match the command and its arguments with the IRC
+  formatting codes (see [Formatting codes](#formatting-codes)).
 
 # Access control
 
@@ -100,6 +102,20 @@ With the IRCv3 `echo-message` capability, the server sends the bot its own
 #[command("count", include_self)]
 async fn count(&self, ctx: Context) -> Result {
     ctx.say("counted")
+}
+```
+
+
+# Formatting codes
+
+The command word and its arguments are matched without the IRC formatting
+codes, so `!ping` in bold fires the handler, and an argument in colour reaches
+it as plain text. Add `raw` for a command that must see the codes:
+
+```rust,ignore
+#[command("echo", raw)]
+async fn echo(&self, ctx: Context, text: String) -> Result {
+    ctx.say(text)
 }
 ```
 

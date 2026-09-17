@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Access control** — define hostmask-based roles with `.with_role("admin", ["*!*@trusted.host"])` and gate commands with `#[command("op", role = "admin")]`; unauthorized senders are silently ignored.
 - **No self-replies** — the messages of the bot itself do not reach handlers; a handler that needs them uses `#[on(event = "JOIN", include_self)]`.
 - **Message accessors** — `ctx.nick()`, `ctx.is_from_self()`, `ctx.mentions_me()` to inspect who sent a message and what it says.
-- **Formatting codes** — `ctx.plain_text()` gives the message text without the IRC bold, colour, and italic codes; `ircbot::format::strip()` does the same for any text.
+- **Formatting codes** — triggers match the text without the IRC bold, colour, and italic codes, and the captures carry it without them; `#[on(..., raw)]` keeps them. `ctx.plain_text()` and `ircbot::format::strip()` strip any text.
 - **Keepalive & auto-reconnect** — periodic `PING`/`PONG` monitoring; reconnects and re-joins on drop. If the configured nick is already in use, the bot automatically retries with a suffixed alternative (`bot`, `bot_`, …).
 - **Authentication** — SASL `PLAIN` and `EXTERNAL` (CertFP) during registration, a `PASS` server password, and IRCv3 capability negotiation. A rejected login fails the connection instead of continuing unauthenticated.
 - **TLS** (optional) — `Server::tls("irc.libera.chat:6697")` behind the `tls` feature, with certificate verification against the platform root store, private-CA and self-signed support, and client certificates for CertFP.

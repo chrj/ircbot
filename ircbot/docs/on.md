@@ -19,6 +19,7 @@ The general-purpose trigger attribute.  Exactly one of `command`,
 | `regex = "pattern"` | *(optional, with `event`)* Further filter by a regex on the message text; capture groups become `String` parameters |
 | `tz = "Timezone"` | *(optional, with `cron`)* IANA timezone for evaluating the schedule (default: `"UTC"`), validated at compile time |
 | `include_self` | *(optional)* Also give the handler the messages of the bot itself; without it the dispatch keeps these messages away (see [Own messages](#own-messages)). Rejected at compile time with `cron`, because a cron handler has no sender |
+| `raw` | *(optional)* Match the text with its IRC formatting codes, and capture them (see [Formatting codes](#formatting-codes)). Rejected at compile time with `cron`, because a cron handler has no text |
 
 When multiple trigger keys are present, the first one in this precedence
 order wins: `message` › `command` › `event` › `mention` › `action` › `ctcp` › `cron`.
@@ -214,6 +215,39 @@ async fn joined(&self, ctx: Context, user: User) -> Result {
 
 The nicks are compared as ASCII without case. This comparison is the same one
 that `Context::is_from_self` makes.
+
+
+# Formatting codes
+
+A client can put formatting codes in a message: bold, colour, italic, and more.
+A trigger matches the text without these codes, and the captures carry the text
+without them. Thus a pattern does not need to know about formatting:
+
+```rust,ignore
+// Matches "seen bob" and "\x0304seen \x02bob\x02\x03" alike; the capture is "bob".
+#[on(message = "seen *")]
+async fn seen(&self, ctx: Context, who: String) -> Result {
+    ctx.say(format!("last seen {who}"))
+}
+```
+
+The rule applies to `command`, `message`, `mention`, `action`, and `event` with
+`regex`. `ctx.message_text()` still gives the text with the codes, and
+`ctx.plain_text()` gives it without them.
+
+A `ctcp` capture is the exception: the payload of a CTCP command is protocol
+data, not chat text, so it reaches the handler as it arrived. The text of an
+`action` is chat text, so the rule applies to it.
+
+Add `raw` for a handler that must match or capture the codes themselves:
+
+```rust,ignore
+#[on(message = "*", raw)]
+async fn log_line(&self, ctx: Context, text: String) -> Result {
+    self.state.log(&text);
+    Ok(())
+}
+```
 
 
 # Note

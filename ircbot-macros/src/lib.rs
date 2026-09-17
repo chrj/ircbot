@@ -44,12 +44,14 @@ impl syn::parse::Parse for BotArgs {
 }
 
 /// Parses `#[command("name")]`, `#[command("name", target = "...")]`,
-/// `#[command("name", role = "...")]`, and/or `#[command("name", include_self)]`.
+/// `#[command("name", role = "...")]`, and/or the `include_self` and `raw`
+/// flags.
 struct CommandArgs {
     name: String,
     target: Option<String>,
     role: Option<String>,
     include_self: bool,
+    raw_text: bool,
 }
 
 impl syn::parse::Parse for CommandArgs {
@@ -58,15 +60,21 @@ impl syn::parse::Parse for CommandArgs {
         let mut target = None;
         let mut role = None;
         let mut include_self = false;
+        let mut raw_text = false;
         while input.peek(syn::Token![,]) {
             let _: syn::Token![,] = input.parse()?;
             if input.is_empty() {
                 break;
             }
             let key: Ident = input.parse()?;
-            // `include_self` is a flag; every other key takes a string value.
+            // `include_self` and `raw` are flags; every other key takes a
+            // string value.
             if key == "include_self" {
                 include_self = true;
+                continue;
+            }
+            if key == "raw" {
+                raw_text = true;
                 continue;
             }
             let _: syn::Token![=] = input.parse()?;
@@ -82,6 +90,7 @@ impl syn::parse::Parse for CommandArgs {
             target,
             role,
             include_self,
+            raw_text,
         })
     }
 }
@@ -178,6 +187,8 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             let mut trigger_tokens: Option<TokenStream2> = None;
             // Whether the handler also gets the messages of the bot itself.
             let mut include_self = false;
+            // Whether the trigger matches the text with the formatting codes.
+            let mut raw_text = false;
             // The command keyword, if this handler is triggered by a command
             // (via `#[command]` or `#[on(command = "...")]`). Drives typed
             // argument parsing and the generated usage string.
@@ -199,10 +210,12 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     target: None,
                                     role: None,
                                     include_self: false,
+                                    raw_text: false,
                                 });
                             let name = &args.name;
                             command_name = Some(args.name.clone());
                             include_self = args.include_self;
+                            raw_text = args.raw_text;
                             let target_ts = opt_str_ts(args.target.as_deref());
                             let role_ts = opt_str_ts(args.role.as_deref());
                             trigger_tokens = Some(quote! {
@@ -240,6 +253,9 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                         }
                                         Meta::Path(p) if p.is_ident("include_self") => {
                                             include_self = true;
+                                        }
+                                        Meta::Path(p) if p.is_ident("raw") => {
+                                            raw_text = true;
                                         }
                                         Meta::NameValue(nv) => {
                                             let k = nv
@@ -325,6 +341,15 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     }
                                 });
                             } else if let Some(cron_str) = cron_interval {
+                                if raw_text {
+                                    panic!(
+                                        "`raw` has no meaning with `cron`\n\
+                                         \n\
+                                         A cron handler fires on a schedule, not on a\n\
+                                         message, so it has no text. Remove `raw` from\n\
+                                         this handler."
+                                    );
+                                }
                                 if include_self {
                                     panic!(
                                         "`include_self` has no meaning with `cron`\n\
@@ -385,6 +410,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                     ircbot::HandlerEntry {
                         trigger: #trigger,
                         include_self: #include_self,
+                        raw_text: #raw_text,
                         handler: std::boxed::Box::new(#wrapper),
                     }
                 });

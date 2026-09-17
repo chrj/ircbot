@@ -310,6 +310,7 @@ async fn ctcp_action_does_not_reach_privmsg_event_handler() {
             regex: None,
         },
         include_self: false,
+        raw_text: false,
         handler: replying_handler("event"),
     }];
     let bot_task = spawn_bot(&server.addr, Arc::new(()), handlers).await;
@@ -332,6 +333,7 @@ async fn ctcp_action_reaches_action_handler() {
             target: None,
         },
         include_self: false,
+        raw_text: false,
         handler: replying_handler("action"),
     }];
     let bot_task = spawn_bot(&server.addr, Arc::new(()), handlers).await;
@@ -354,6 +356,7 @@ async fn ctcp_ping_does_not_reach_ctcp_handler() {
             target: None,
         },
         include_self: false,
+        raw_text: false,
         handler: replying_handler("handler"),
     }];
     let bot_task = spawn_bot(&server.addr, Arc::new(()), handlers).await;
@@ -378,6 +381,7 @@ fn nick_handlers() -> Vec<HandlerEntry<()>> {
             regex: None,
         },
         include_self: false,
+        raw_text: false,
         handler: replying_handler("nick"),
     }]
 }
@@ -581,6 +585,7 @@ async fn all_matching_handlers_fire_in_registration_order() {
                 target: None,
             },
             include_self: false,
+            raw_text: false,
             handler: say_handler("first"),
         },
         HandlerEntry {
@@ -589,6 +594,7 @@ async fn all_matching_handlers_fire_in_registration_order() {
                 target: None,
             },
             include_self: false,
+            raw_text: false,
             handler: say_handler("second"),
         },
     ];
@@ -628,6 +634,7 @@ async fn handler_error_does_not_prevent_later_handlers() {
                 target: None,
             },
             include_self: false,
+            raw_text: false,
             handler: erroring,
         },
         HandlerEntry {
@@ -636,6 +643,7 @@ async fn handler_error_does_not_prevent_later_handlers() {
                 target: None,
             },
             include_self: false,
+            raw_text: false,
             handler: healthy,
         },
     ];
@@ -661,6 +669,7 @@ fn sender_capturing_handler(slot: Arc<Mutex<Option<Option<String>>>>) -> Handler
             regex: None,
         },
         include_self: false,
+        raw_text: false,
         handler: Box::new(
             move |_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
                 let slot = Arc::clone(&slot);
@@ -834,6 +843,7 @@ fn admin_command_handlers() -> Vec<HandlerEntry<()>> {
             role: Some("admin".to_string()),
         },
         include_self: false,
+        raw_text: false,
         handler: Box::new(|_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
             Box::pin(async move { ctx.say("ok") })
         }),

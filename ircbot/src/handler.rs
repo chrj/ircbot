@@ -129,6 +129,18 @@ pub struct HandlerEntry<T> {
     /// The `#[command]` and `#[on]` macros set this from their `include_self`
     /// option.
     pub include_self: bool,
+    /// Whether the trigger matches the text with its IRC formatting codes.
+    ///
+    /// By default the codes are removed before the match, and the captures
+    /// carry the text without them, so a pattern does not need to know about
+    /// bold or colour. Set this to `true` for a handler that must match or
+    /// capture the codes themselves.
+    ///
+    /// The `#[command]` and `#[on]` macros set this from their `raw` option.
+    ///
+    /// A [`Trigger::Ctcp`] capture is not affected: the payload of a CTCP
+    /// command is protocol data and always reaches the handler as it arrived.
+    pub raw_text: bool,
     /// The function called when the trigger matches.
     pub handler: HandlerFn<T>,
 }
