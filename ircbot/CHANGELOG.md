@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/chrj/ircbot/compare/v0.4.3...v0.5.0) - 2026-09-17
+
+### Added
+
+- [153] Ignore senders by hostmask before the dispatch ([#163](https://github.com/chrj/ircbot/pull/163))
+- [**breaking**] [156] Add a scope option for channel or private handlers ([#162](https://github.com/chrj/ircbot/pull/162))
+- [**breaking**] match triggers on the text without IRC formatting codes ([#161](https://github.com/chrj/ircbot/pull/161))
+- [155] Add a helper that removes the IRC formatting codes ([#160](https://github.com/chrj/ircbot/pull/160))
+- [**breaking**] [154] Do not give the messages of the bot to handlers ([#159](https://github.com/chrj/ircbot/pull/159))
+- [152] Add TestBot to send a raw IRC line through the dispatch ([#157](https://github.com/chrj/ircbot/pull/157))
+- [**breaking**] add action and ctcp triggers, keep CTCP out of text triggers ([#150](https://github.com/chrj/ircbot/pull/150))
+
 ## [0.4.3](https://github.com/chrj/ircbot/compare/v0.4.2...v0.4.3) - 2026-08-17
 
 ### Added
