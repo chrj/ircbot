@@ -161,6 +161,10 @@ pub struct HandlerEntry<T> {
     /// A message with no target, such as a `QUIT`, reaches only a handler with
     /// [`Scope::Any`]. A [`Trigger::Cron`] handler is not affected: it fires on
     /// a schedule, not on a message.
+    ///
+    /// The dispatch applies this field.
+    /// [`check_trigger`](crate::bot::check_trigger) does not: it answers for
+    /// the trigger alone.
     pub scope: Scope,
     /// The function called when the trigger matches.
     pub handler: HandlerFn<T>,

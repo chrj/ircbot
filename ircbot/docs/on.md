@@ -271,6 +271,9 @@ The scope of a message is the scope of its target, so it applies to `command`,
 `JOIN`. An event without a target, such as `QUIT`, belongs to neither scope and
 reaches only a handler without the option.
 
+A numeric reply from the server names the bot itself as its target, so it counts
+as private. Give a handler for such an event no `scope`.
+
 
 # Note
 
