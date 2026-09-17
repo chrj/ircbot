@@ -32,6 +32,7 @@
 //! assert_eq!(strip("\x0312345 kroner"), "345 kroner");
 //! ```
 
+use std::borrow::Cow;
 use std::iter::Peekable;
 use std::str::Chars;
 
@@ -75,6 +76,41 @@ const HEX_COLOR_DIGITS: usize = 6;
 /// ```
 #[must_use]
 pub fn strip(text: &str) -> String {
+    strip_cow(text).into_owned()
+}
+
+/// Remove the IRC formatting codes from `text`, without a copy when `text`
+/// carries no code.
+///
+/// The dispatch calls this for every message, so the usual text, which has no
+/// codes, must cost nothing.
+pub(crate) fn strip_cow(text: &str) -> Cow<'_, str> {
+    if !has_code(text) {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(strip_codes(text))
+}
+
+/// Whether `text` carries a formatting code. The codes are ASCII control
+/// characters, so a byte scan cannot match part of a character of another
+/// script.
+fn has_code(text: &str) -> bool {
+    text.bytes().any(|b| {
+        matches!(
+            b as char,
+            BOLD | COLOR
+                | HEX_COLOR
+                | RESET
+                | MONOSPACE
+                | REVERSE
+                | ITALIC
+                | STRIKETHROUGH
+                | UNDERLINE
+        )
+    })
+}
+
+fn strip_codes(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {

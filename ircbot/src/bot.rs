@@ -507,34 +507,57 @@ fn synthesize_cron_message(bot_nick: &str) -> Message {
 
 /// Returns `Some(captures)` if `msg` matches `trigger`, `None` otherwise.
 ///
+/// The text is matched without its IRC formatting codes, so a pattern does not
+/// need to know about bold or colour. The captures carry the text without the
+/// codes too. [`Context::message_text`](crate::Context::message_text) still
+/// gives the text with them.
+///
 /// A `PRIVMSG` that carries a CTCP message (for example a `/me` action) is not
 /// chat text. Only [`Trigger::Action`] and [`Trigger::Ctcp`] can match it.
 #[must_use]
 pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option<Vec<String>> {
-    let ctcp = privmsg_ctcp(msg);
+    let text = crate::format::strip_cow(trailing_param(msg).unwrap_or(""));
+    check_trigger_text(trigger, msg, bot_nick, &text)
+}
+
+/// The body of [`check_trigger`], with the text to match given by the caller.
+///
+/// The dispatch strips the text of a message once and gives it to every
+/// trigger, rather than once per trigger. A handler entry with `raw_text` gets
+/// the text with the codes here.
+fn check_trigger_text(
+    trigger: &Trigger,
+    msg: &Message,
+    bot_nick: &str,
+    text: &str,
+) -> Option<Vec<String>> {
+    let is_privmsg = matches!(msg.command, Command::PRIVMSG(..));
+    let msg_target = target_param(msg);
+    let ctcp = if is_privmsg {
+        CtcpMessage::parse(text)
+    } else {
+        None
+    };
+
     match trigger {
         Trigger::Action { pattern, target } => {
-            let (msg_target, ctcp) = ctcp?;
+            let ctcp = ctcp?;
             if ctcp.command != "ACTION" {
                 return None;
             }
-            if let Some(t) = target {
-                if msg_target != t.as_str() {
-                    return None;
-                }
+            if !target_matches(msg_target, target.as_deref()) {
+                return None;
             }
             glob_match(pattern, &ctcp.arg)
         }
 
         Trigger::Ctcp { command, target } => {
-            let (msg_target, ctcp) = ctcp?;
+            let ctcp = ctcp?;
             if !ctcp.command.eq_ignore_ascii_case(command) {
                 return None;
             }
-            if let Some(t) = target {
-                if msg_target != t.as_str() {
-                    return None;
-                }
+            if !target_matches(msg_target, target.as_deref()) {
+                return None;
             }
             Some(vec![ctcp.arg])
         }
@@ -543,14 +566,8 @@ pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option
         _ if ctcp.is_some() => None,
 
         Trigger::Command { name, target, .. } => {
-            let Command::PRIVMSG(msg_target, text) = &msg.command else {
+            if !is_privmsg || !target_matches(msg_target, target.as_deref()) {
                 return None;
-            };
-            // Optional target filter
-            if let Some(t) = target {
-                if msg_target.as_str() != t.as_str() {
-                    return None;
-                }
             }
             let text = text.strip_prefix(CMD_PREFIX)?;
             let (cmd, rest) = text
@@ -567,13 +584,8 @@ pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option
         }
 
         Trigger::Message { pattern, target } => {
-            let Command::PRIVMSG(msg_target, text) = &msg.command else {
+            if !is_privmsg || !target_matches(msg_target, target.as_deref()) {
                 return None;
-            };
-            if let Some(t) = target {
-                if msg_target.as_str() != t.as_str() {
-                    return None;
-                }
             }
             glob_match(pattern, text)
         }
@@ -586,13 +598,10 @@ pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option
             if !command_name(msg).eq_ignore_ascii_case(event) {
                 return None;
             }
-            if let Some(t) = target {
-                if target_param(msg) != Some(t.as_str()) {
-                    return None;
-                }
+            if !target_matches(msg_target, target.as_deref()) {
+                return None;
             }
             if let Some(re_str) = regex {
-                let text = trailing_param(msg).unwrap_or("");
                 let re = cached_regex(re_str)?;
                 let caps = re.captures(text)?;
                 let groups: Vec<String> = caps
@@ -609,13 +618,8 @@ pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option
         Trigger::Cron { .. } => None,
 
         Trigger::Mention { target } => {
-            let Command::PRIVMSG(msg_target, text) = &msg.command else {
+            if !is_privmsg || !target_matches(msg_target, target.as_deref()) {
                 return None;
-            };
-            if let Some(t) = target {
-                if msg_target.as_str() != t.as_str() {
-                    return None;
-                }
             }
             let lower = text.to_ascii_lowercase();
             let nick_lower = bot_nick.to_ascii_lowercase();
@@ -633,6 +637,15 @@ pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option
             })?;
             Some(if rest.is_empty() { vec![] } else { vec![rest] })
         }
+    }
+}
+
+/// Whether the target of the message satisfies the optional target filter of a
+/// trigger. A trigger without a filter takes every target.
+fn target_matches(msg_target: Option<&str>, filter: Option<&str>) -> bool {
+    match filter {
+        Some(t) => msg_target == Some(t),
+        None => true,
     }
 }
 
@@ -670,15 +683,6 @@ fn command_name(msg: &Message) -> std::borrow::Cow<'_, str> {
             Cow::Owned(s[..end].to_ascii_uppercase())
         }
     }
-}
-
-/// The target and the parsed CTCP message of a `PRIVMSG`. `None` when `msg` is
-/// not a `PRIVMSG`, or when its text is not a CTCP message.
-fn privmsg_ctcp(msg: &Message) -> Option<(&str, CtcpMessage)> {
-    let Command::PRIVMSG(target, text) = &msg.command else {
-        return None;
-    };
-    CtcpMessage::parse(text).map(|ctcp| (target.as_str(), ctcp))
 }
 
 /// The trailing parameter — the main text content of the message.
@@ -886,12 +890,22 @@ async fn dispatch<T: Send + Sync + 'static>(
         .as_ref()
         .is_some_and(|u| nick_eq(u.nick.as_str(), bot_nick.as_str()));
 
+    // Strip the formatting codes once for the whole handler list. Text without
+    // a code is borrowed, so the usual message costs no copy.
+    let raw_text = trailing_param(msg).unwrap_or("");
+    let plain_text = crate::format::strip_cow(raw_text);
+
     let mut errors = Vec::new();
     for entry in current.iter() {
         if from_self && !entry.include_self {
             continue;
         }
-        if let Some(captures) = check_trigger(&entry.trigger, msg, bot_nick.as_str()) {
+        let text = if entry.raw_text {
+            raw_text
+        } else {
+            plain_text.as_ref()
+        };
+        if let Some(captures) = check_trigger_text(&entry.trigger, msg, bot_nick.as_str(), text) {
             // Enforce per-command role authorization; unauthorized senders are
             // silently ignored, exactly as if the trigger had not matched.
             if !authorized(roles, &entry.trigger, sender.as_ref()) {
@@ -1138,6 +1152,7 @@ mod tests {
                 regex: None,
             },
             include_self: false,
+            raw_text: false,
             handler: Box::new(|_, ctx: Context| {
                 Box::pin(async move {
                     ctx.raw("PRIVMSG #chan :fired")?;
