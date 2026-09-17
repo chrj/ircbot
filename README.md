@@ -58,6 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Raw escape hatch** — `ctx.raw()` sends any IRC line the helpers don't wrap (`MODE`, `INVITE`, …), still sanitized.
 - **Moderation** — `ctx.set_topic()` and `ctx.kick()` act on the channel the message arrived in.
 - **Access control** — define hostmask-based roles with `.with_role("admin", ["*!*@trusted.host"])` and gate commands with `#[command("op", role = "admin")]`; unauthorized senders are silently ignored.
+- **Ignore list** — `.with_ignore(["*!*@spam.example", "otherbot!*@*"])` drops a message from a matching sender before any trigger, and answers no CTCP for it.
 - **Channel or query** — `scope = "channel"` or `scope = "private"` limits a handler to one kind of target, so an administrative command can stay out of the channel.
 - **No self-replies** — the messages of the bot itself do not reach handlers; a handler that needs them uses `#[on(event = "JOIN", include_self)]`.
 - **Message accessors** — `ctx.nick()`, `ctx.is_from_self()`, `ctx.mentions_me()` to inspect who sent a message and what it says.
