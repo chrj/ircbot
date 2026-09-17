@@ -643,3 +643,76 @@ fn ctcp_trigger_target_filter() {
     assert!(check_trigger(&trigger, &privmsg("#rust", "\x01TIME\x01"), "bot").is_some());
     assert!(check_trigger(&trigger, &privmsg("#other", "\x01TIME\x01"), "bot").is_none());
 }
+
+// ─── check_trigger: formatting codes ─────────────────────────────────────────
+
+#[test]
+fn check_trigger_matches_a_command_in_bold() {
+    let trigger = Trigger::Command {
+        name: "ping".to_string(),
+        target: None,
+        role: None,
+    };
+    let caps = check_trigger(&trigger, &privmsg("#chan", "\x02!ping\x02"), "bot");
+    assert_eq!(caps, Some(vec![]));
+}
+
+#[test]
+fn check_trigger_gives_a_capture_without_the_codes() {
+    let trigger = Trigger::Message {
+        pattern: "seen *".to_string(),
+        target: None,
+    };
+    let caps = check_trigger(&trigger, &privmsg("#chan", "seen \x02bob\x02"), "bot");
+    assert_eq!(caps, Some(vec!["bob".to_string()]));
+}
+
+#[test]
+fn check_trigger_matches_a_mention_in_colour() {
+    let trigger = Trigger::Mention { target: None };
+    let caps = check_trigger(&trigger, &privmsg("#chan", "\x0304bot:\x03 hi"), "bot");
+    assert_eq!(caps, Some(vec!["hi".to_string()]));
+}
+
+#[test]
+fn check_trigger_gives_an_action_capture_without_the_codes() {
+    let trigger = Trigger::Action {
+        pattern: "waves at *".to_string(),
+        target: None,
+    };
+    let msg = privmsg("#chan", "\x01ACTION waves at \x02bob\x02\x01");
+    assert_eq!(
+        check_trigger(&trigger, &msg, "bot"),
+        Some(vec!["bob".to_string()])
+    );
+}
+
+#[test]
+fn check_trigger_keeps_the_codes_in_a_ctcp_payload() {
+    // A CTCP payload is protocol data, so the capture carries it as it arrived.
+    let trigger = Trigger::Ctcp {
+        command: "DCC".to_string(),
+        target: None,
+    };
+    let msg = privmsg("bot", "\x01DCC SEND \x02file\x02\x01");
+    assert_eq!(
+        check_trigger(&trigger, &msg, "bot"),
+        Some(vec!["SEND \x02file\x02".to_string()])
+    );
+}
+
+#[test]
+fn check_trigger_matches_an_event_regex_without_the_codes() {
+    let trigger = Trigger::Event {
+        event: "TOPIC".to_string(),
+        target: None,
+        regex: Some("^release (.+)$".to_string()),
+    };
+    let msg: Message = ":nick!u@h TOPIC #chan :release \x021.2.3\x02"
+        .parse()
+        .unwrap();
+    assert_eq!(
+        check_trigger(&trigger, &msg, "bot"),
+        Some(vec!["1.2.3".to_string()])
+    );
+}
