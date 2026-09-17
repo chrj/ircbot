@@ -158,6 +158,20 @@ async fn spawn_bot_with<T: Send + Sync + 'static>(
     tokio::spawn(run_bot_internal(bot, state, handler_set))
 }
 
+/// Connect a bot that ignores the senders on `*!*@spam.example`.
+async fn spawn_bot_with_ignore<T: Send + Sync + 'static>(
+    addr: &str,
+    bot: Arc<T>,
+    handlers: Vec<HandlerEntry<T>>,
+) -> tokio::task::JoinHandle<Result<(), ircbot::BoxError>> {
+    let state = State::connect("testbot".to_string(), addr, vec![])
+        .await
+        .expect("failed to connect to mock server")
+        .with_ignore(["*!*@spam.example"]);
+    let handler_set = ircbot::internal::make_handler_set(handlers);
+    tokio::spawn(run_bot_internal(bot, state, handler_set))
+}
+
 /// Connect a bot with the keepnick enabled at a short reclaim interval.
 async fn spawn_bot_with_keepnick<T: Send + Sync + 'static>(
     addr: &str,
@@ -369,6 +383,38 @@ async fn ctcp_ping_does_not_reach_ctcp_handler() {
     server
         .expect_no_line(Duration::from_millis(400), |l| l.starts_with("PRIVMSG"))
         .await;
+
+    bot_task.abort();
+}
+
+// ─── ignore list ─────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn an_ignored_sender_reaches_no_handler_on_a_live_connection() {
+    let mut server = MockServer::start().await;
+    let handlers = vec![HandlerEntry {
+        trigger: Trigger::Event {
+            event: "PRIVMSG".to_string(),
+            target: None,
+            regex: None,
+        },
+        include_self: false,
+        raw_text: false,
+        scope: ircbot::Scope::Any,
+        handler: replying_handler("event"),
+    }];
+    let bot_task = spawn_bot_with_ignore(&server.addr, Arc::new(()), handlers).await;
+    server.send_welcome();
+
+    server.send(":spammer!s@spam.example PRIVMSG #chan :hello\r\n");
+    server
+        .expect_no_line(Duration::from_millis(400), |l| l.starts_with("PRIVMSG"))
+        .await;
+
+    // A sender that is not ignored still reaches the handler.
+    server.send(":alice!a@good.host PRIVMSG #chan :hello\r\n");
+    let line = server.expect_line(|l| l.starts_with("PRIVMSG")).await;
+    assert_eq!(line, "PRIVMSG #chan :event");
 
     bot_task.abort();
 }
