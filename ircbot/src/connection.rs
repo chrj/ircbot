@@ -990,7 +990,8 @@ mod tests {
             .with_flood_control(9, Duration::from_millis(750))
             .with_ctcp_version("mybot 1.2.3")
             .with_keepnick_interval(Duration::from_secs(15))
-            .with_role("admin", ["*!*@trusted.host"]);
+            .with_role("admin", ["*!*@trusted.host"])
+            .with_ignore(["*!*@spam.example"]);
 
         let reconnected = original
             .blueprint()
@@ -1013,6 +1014,10 @@ mod tests {
         assert_eq!(
             reconnected.settings.roles,
             vec![("admin".to_string(), vec!["*!*@trusted.host".to_string()])]
+        );
+        assert_eq!(
+            reconnected.settings.ignore,
+            vec!["*!*@spam.example".to_string()]
         );
     }
 

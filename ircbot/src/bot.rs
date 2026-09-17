@@ -820,8 +820,11 @@ pub(crate) async fn handle_message<T: Send + Sync + 'static>(
     settings: &Settings,
     tx: mpsc::UnboundedSender<String>,
 ) -> Vec<BoxError> {
+    // The sender is built once here and handed to the dispatch, which needs it
+    // for the context and for the role check.
+    let sender = sender_of(msg);
     // An ignored sender reaches no handler, and gets no CTCP reply either.
-    if is_ignored(&settings.ignore, sender_of(msg).as_ref()) {
+    if is_ignored(&settings.ignore, sender.as_ref()) {
         return Vec::new();
     }
     match &msg.command {
@@ -835,7 +838,7 @@ pub(crate) async fn handle_message<T: Send + Sync + 'static>(
         }
         _ => {}
     }
-    dispatch(bot, handlers, msg, bot_nick, &settings.roles, tx).await
+    dispatch(bot, handlers, msg, sender, bot_nick, &settings.roles, tx).await
 }
 
 /// The sender of `msg`, when it carries a full `nick!user@host` prefix.
@@ -853,9 +856,13 @@ fn sender_of(msg: &Message) -> Option<User> {
 /// Whether `sender` matches one of the ignore `masks`.
 ///
 /// A message without a sender, for example one from the server itself, is never
-/// ignored: the masks name users.
+/// ignored: the masks name users. A bot with no mask does no work here, which
+/// keeps the cost of the usual message the same as before the feature.
 #[must_use]
 fn is_ignored(masks: &[String], sender: Option<&User>) -> bool {
+    if masks.is_empty() {
+        return false;
+    }
     let Some(user) = sender else {
         return false;
     };
@@ -911,6 +918,7 @@ async fn dispatch<T: Send + Sync + 'static>(
     bot: &Arc<T>,
     handlers: &HandlerSet<T>,
     msg: &Message,
+    sender: Option<User>,
     bot_nick: &Nick,
     roles: &[(String, Vec<String>)],
     tx: mpsc::UnboundedSender<String>,
@@ -922,7 +930,6 @@ async fn dispatch<T: Send + Sync + 'static>(
         Arc::clone(&*guard)
     };
 
-    let sender = sender_of(msg);
     let target = Target::from_raw(target_param(msg).unwrap_or(""));
 
     // The server echoes the bot's own JOIN, PART and NICK back, and with the
