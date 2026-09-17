@@ -6,6 +6,7 @@ mod auth;
 pub mod bot;
 pub mod connection;
 pub mod context;
+pub mod format;
 pub mod handler;
 pub mod hot_reload;
 pub mod irc;

@@ -207,7 +207,30 @@ impl Context {
         send_chunked(&self.tx, &header, &msg, "\x01")
     }
 
+    /// The trailing text of the underlying IRC message, without the IRC
+    /// formatting codes.
+    ///
+    /// Use this for text that the bot logs, stores, or matches against a
+    /// pattern. [`Context::message_text`] gives the text with the codes.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use ircbot::{Context, Result};
+    /// async fn log_line(ctx: Context) -> Result {
+    ///     println!("{}", ctx.plain_text());
+    ///     Ok(())
+    /// }
+    /// ```
+    #[must_use]
+    pub fn plain_text(&self) -> String {
+        crate::format::strip(self.message_text())
+    }
+
     /// The trailing text of the underlying IRC message.
+    ///
+    /// The text keeps the IRC formatting codes. [`Context::plain_text`] gives
+    /// it without them.
     #[must_use]
     pub fn message_text(&self) -> &str {
         match &self.raw.command {
@@ -448,6 +471,15 @@ mod tests {
             captures: vec![],
         };
         (ctx, rx)
+    }
+
+    /// A channel `Context` whose PRIVMSG carries `text`.
+    fn make_ctx_with_text(target: &str, text: &str) -> Context {
+        let (ctx, _rx) = make_ctx(target, true);
+        let raw = format!(":nick!u@h PRIVMSG {target} :{text}")
+            .parse::<irc_proto::Message>()
+            .expect("the line parses");
+        Context { raw, ..ctx }
     }
 
     // ── sanitize ─────────────────────────────────────────────────────────────
@@ -747,6 +779,26 @@ mod tests {
         let (ctx, mut rx) = make_ctx("#chan", true);
         ctx.kick("bad\r\nuser", "be\r\nnice").unwrap();
         assert_eq!(rx.try_recv().unwrap(), "KICK #chan baduser :benice\r\n");
+    }
+
+    // ── plain_text ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn plain_text_removes_the_formatting_codes() {
+        let ctx = make_ctx_with_text("#chan", "\x02bold\x02 and \x0304red\x03");
+        assert_eq!(ctx.plain_text(), "bold and red");
+    }
+
+    #[test]
+    fn plain_text_keeps_text_without_codes() {
+        let ctx = make_ctx_with_text("#chan", "just text");
+        assert_eq!(ctx.plain_text(), "just text");
+    }
+
+    #[test]
+    fn message_text_keeps_the_formatting_codes() {
+        let ctx = make_ctx_with_text("#chan", "\x02bold\x02");
+        assert_eq!(ctx.message_text(), "\x02bold\x02");
     }
 
     // ── nick / is_from_self / mentions_me ──────────────────────────────────────
