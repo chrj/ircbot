@@ -91,41 +91,38 @@ pub fn strip(text: &str) -> String {
 /// Consume the digits of a `\x03` colour code: 1 or 2 digits for the
 /// foreground, then optionally `,` and 1 or 2 digits for the background.
 fn skip_color(chars: &mut Peekable<Chars>) {
-    if skip_digits(chars, COLOR_DIGITS, char::is_ascii_digit) == 0 {
+    if skip_color_digits(chars) == 0 {
         // A `\x03` on its own resets the colour and takes no digits.
         return;
     }
-    // The comma belongs to the code only when a digit comes after it.
-    if next_is_separator(chars, char::is_ascii_digit) {
-        chars.next();
-        skip_digits(chars, COLOR_DIGITS, char::is_ascii_digit);
+    // The comma belongs to the code only when a colour follows it. The probe
+    // keeps the comma in the text when it does not.
+    let mut probe = chars.clone();
+    if probe.next() == Some(',') && skip_color_digits(&mut probe) > 0 {
+        *chars = probe;
     }
 }
 
 /// Consume the digits of a `\x04` hex colour code: 6 hex digits for the
 /// foreground, then optionally `,` and 6 hex digits for the background.
 fn skip_hex_color(chars: &mut Peekable<Chars>) {
-    if !skip_hex_digits(chars) {
-        // Without six hex digits the code carries no colour, and the text that
-        // follows it is text.
+    if !skip_hex_color_digits(chars) {
+        // Without six hex digits the code carries no colour, and what follows
+        // it is text.
         return;
     }
-    if next_is_separator(chars, char::is_ascii_hexdigit) {
-        let mut probe = chars.clone();
-        probe.next();
-        if skip_hex_digits(&mut probe) {
-            chars.next();
-            skip_hex_digits(chars);
-        }
+    let mut probe = chars.clone();
+    if probe.next() == Some(',') && skip_hex_color_digits(&mut probe) {
+        *chars = probe;
     }
 }
 
-/// Consume at most `max` characters that `accept` takes, and return how many.
-fn skip_digits(chars: &mut Peekable<Chars>, max: usize, accept: fn(&char) -> bool) -> usize {
+/// Consume at most [`COLOR_DIGITS`] decimal digits, and return how many.
+fn skip_color_digits(chars: &mut Peekable<Chars>) -> usize {
     let mut taken = 0;
-    while taken < max {
+    while taken < COLOR_DIGITS {
         match chars.peek() {
-            Some(c) if accept(c) => {
+            Some(c) if c.is_ascii_digit() => {
                 chars.next();
                 taken += 1;
             }
@@ -135,9 +132,9 @@ fn skip_digits(chars: &mut Peekable<Chars>, max: usize, accept: fn(&char) -> boo
     taken
 }
 
-/// Consume exactly [`HEX_COLOR_DIGITS`] hex digits, and return `true`. Consume
+/// Consume exactly [`HEX_COLOR_DIGITS`] hex digits and return `true`. Consume
 /// nothing and return `false` when fewer follow.
-fn skip_hex_digits(chars: &mut Peekable<Chars>) -> bool {
+fn skip_hex_color_digits(chars: &mut Peekable<Chars>) -> bool {
     let mut probe = chars.clone();
     for _ in 0..HEX_COLOR_DIGITS {
         match probe.next() {
@@ -147,13 +144,6 @@ fn skip_hex_digits(chars: &mut Peekable<Chars>) -> bool {
     }
     *chars = probe;
     true
-}
-
-/// Whether the next character is the `,` of a colour code, which needs a
-/// character that `accept` takes after it.
-fn next_is_separator(chars: &Peekable<Chars>, accept: fn(&char) -> bool) -> bool {
-    let mut probe = chars.clone();
-    probe.next() == Some(',') && probe.peek().is_some_and(accept)
 }
 
 #[cfg(test)]
