@@ -50,6 +50,7 @@ struct CommandArgs {
     name: String,
     target: Option<String>,
     role: Option<String>,
+    scope: Option<String>,
     include_self: bool,
     raw_text: bool,
 }
@@ -59,6 +60,7 @@ impl syn::parse::Parse for CommandArgs {
         let name: syn::LitStr = input.parse()?;
         let mut target = None;
         let mut role = None;
+        let mut scope = None;
         let mut include_self = false;
         let mut raw_text = false;
         while input.peek(syn::Token![,]) {
@@ -83,12 +85,15 @@ impl syn::parse::Parse for CommandArgs {
                 target = Some(val.value());
             } else if key == "role" {
                 role = Some(val.value());
+            } else if key == "scope" {
+                scope = Some(val.value());
             }
         }
         Ok(CommandArgs {
             name: name.value(),
             target,
             role,
+            scope,
             include_self,
             raw_text,
         })
@@ -189,6 +194,8 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             let mut include_self = false;
             // Whether the trigger matches the text with the formatting codes.
             let mut raw_text = false;
+            // Which kind of target the handler answers.
+            let mut scope: Option<String> = None;
             // The command keyword, if this handler is triggered by a command
             // (via `#[command]` or `#[on(command = "...")]`). Drives typed
             // argument parsing and the generated usage string.
@@ -209,6 +216,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     name: String::new(),
                                     target: None,
                                     role: None,
+                                    scope: None,
                                     include_self: false,
                                     raw_text: false,
                                 });
@@ -216,6 +224,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                             command_name = Some(args.name.clone());
                             include_self = args.include_self;
                             raw_text = args.raw_text;
+                            scope = args.scope.clone();
                             let target_ts = opt_str_ts(args.target.as_deref());
                             let role_ts = opt_str_ts(args.role.as_deref());
                             trigger_tokens = Some(quote! {
@@ -244,6 +253,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                             let mut cron_interval: Option<String> = None;
                             let mut cron_tz: Option<String> = None;
                             let mut role: Option<String> = None;
+                            let mut scope_on: Option<String> = None;
 
                             if let Ok(metas) = metas_result {
                                 for meta in metas {
@@ -279,6 +289,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                                     "cron" => cron_interval = Some(v),
                                                     "tz" => cron_tz = Some(v),
                                                     "role" => role = Some(v),
+                                                    "scope" => scope_on = Some(v),
                                                     _ => {}
                                                 }
                                             }
@@ -286,6 +297,10 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                         _ => {}
                                     }
                                 }
+                            }
+
+                            if scope_on.is_some() {
+                                scope = scope_on;
                             }
 
                             let target_ts = opt_str_ts(target.as_deref());
@@ -341,6 +356,15 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     }
                                 });
                             } else if let Some(cron_str) = cron_interval {
+                                if scope.is_some() {
+                                    panic!(
+                                        "`scope` has no meaning with `cron`\n\
+                                         \n\
+                                         A cron handler fires on a schedule, not on a\n\
+                                         message, so it answers no channel or query.\n\
+                                         Use `target` to name where it sends."
+                                    );
+                                }
                                 if raw_text {
                                     panic!(
                                         "`raw` has no meaning with `cron`\n\
@@ -405,12 +429,14 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             if let Some(trigger) = trigger_tokens {
+                let scope_ts = scope_tokens(scope.as_deref());
                 let wrapper = build_wrapper(method_name, &extra_args, command_name.as_deref());
                 handler_entries.push(quote! {
                     ircbot::HandlerEntry {
                         trigger: #trigger,
                         include_self: #include_self,
                         raw_text: #raw_text,
+                        scope: #scope_ts,
                         handler: std::boxed::Box::new(#wrapper),
                     }
                 });
@@ -685,6 +711,26 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
+
+/// The `ircbot::Scope` value for the `scope` option.
+///
+/// # Panics
+///
+/// Panics at compile time when `scope` is neither `"channel"` nor `"private"`.
+fn scope_tokens(scope: Option<&str>) -> TokenStream2 {
+    match scope {
+        None => quote! { ircbot::Scope::Any },
+        Some("channel") => quote! { ircbot::Scope::Channel },
+        Some("private") => quote! { ircbot::Scope::Private },
+        Some(other) => panic!(
+            "invalid scope {other:?}\n\
+             \n\
+             Use \"channel\" for a handler that answers only in a channel, or\n\
+             \"private\" for one that answers only a private message.\n\
+             Leave `scope` out for a handler that answers both."
+        ),
+    }
+}
 
 fn opt_str_ts(s: Option<&str>) -> TokenStream2 {
     if let Some(v) = s {

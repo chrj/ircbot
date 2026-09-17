@@ -67,6 +67,7 @@ async fn test_cron_handler_fires_periodically() {
             target: None,
         },
         include_self: false,
+        scope: ircbot::Scope::Any,
         raw_text: false,
         handler,
     }];
@@ -132,6 +133,7 @@ async fn test_cron_handler_context_target() {
             target: Some("#chan".to_string()),
         },
         include_self: false,
+        scope: ircbot::Scope::Any,
         raw_text: false,
         handler,
     }];

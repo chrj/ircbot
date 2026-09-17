@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 use crate::{
     connection::{Settings, State},
     context::{make_messages, nick_eq, sanitize, Context, User},
-    handler::{HandlerEntry, Trigger},
+    handler::{HandlerEntry, Scope, Trigger},
     irc::{CtcpMessage, Message},
     logging::PROTOCOL_LOG_TARGET,
     types::{Nick, Target},
@@ -650,6 +650,19 @@ fn check_trigger_text(
     }
 }
 
+/// Whether the target of a message satisfies the scope of a handler.
+///
+/// A message with no target, such as a `QUIT`, belongs to neither scope, so a
+/// handler that names one does not fire for it.
+#[must_use]
+fn scope_matches(scope: Scope, target: &Target) -> bool {
+    match scope {
+        Scope::Any => true,
+        Scope::Channel => target.is_channel(),
+        Scope::Private => !target.is_channel() && !target.as_str().is_empty(),
+    }
+}
+
 /// Whether the target of the message satisfies the optional target filter of a
 /// trigger. A trigger without a filter takes every target.
 fn target_matches(msg_target: Option<&str>, filter: Option<&str>) -> bool {
@@ -910,6 +923,9 @@ async fn dispatch<T: Send + Sync + 'static>(
         if from_self && !entry.include_self {
             continue;
         }
+        if !scope_matches(entry.scope, &target) {
+            continue;
+        }
         let text = if entry.raw_text {
             raw_text
         } else {
@@ -1150,6 +1166,34 @@ mod tests {
         );
     }
 
+    // ── scope_matches ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn scope_any_takes_every_target() {
+        assert!(scope_matches(Scope::Any, &Target::from_raw("#chan")));
+        assert!(scope_matches(Scope::Any, &Target::from_raw("mybot")));
+        assert!(scope_matches(Scope::Any, &Target::from_raw("")));
+    }
+
+    #[test]
+    fn scope_channel_takes_only_a_channel() {
+        assert!(scope_matches(Scope::Channel, &Target::from_raw("#chan")));
+        assert!(!scope_matches(Scope::Channel, &Target::from_raw("mybot")));
+    }
+
+    #[test]
+    fn scope_private_takes_only_a_query() {
+        assert!(scope_matches(Scope::Private, &Target::from_raw("mybot")));
+        assert!(!scope_matches(Scope::Private, &Target::from_raw("#chan")));
+    }
+
+    #[test]
+    fn a_message_without_a_target_has_no_scope() {
+        // A QUIT names no channel or nick.
+        assert!(!scope_matches(Scope::Channel, &Target::from_raw("")));
+        assert!(!scope_matches(Scope::Private, &Target::from_raw("")));
+    }
+
     // ── handle_message ─────────────────────────────────────────────────────────
 
     /// A handler set with one `#[on(event = …)]` handler that says "fired" and
@@ -1162,6 +1206,7 @@ mod tests {
                 regex: None,
             },
             include_self: false,
+            scope: Scope::Any,
             raw_text: false,
             handler: Box::new(|_, ctx: Context| {
                 Box::pin(async move {

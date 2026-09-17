@@ -114,6 +114,21 @@ pub enum Trigger {
     },
 }
 
+/// Which kind of target a handler answers.
+///
+/// The `#[command]` and `#[on]` macros set this from their `scope` option. A
+/// handler without the option answers both kinds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Scope {
+    /// A message in a channel, and a private message to the bot.
+    #[default]
+    Any,
+    /// Only a message in a channel.
+    Channel,
+    /// Only a private message to the bot.
+    Private,
+}
+
 /// Associates a [`Trigger`] with a handler function for a bot of type `T`.
 pub struct HandlerEntry<T> {
     /// What causes the handler to fire.
@@ -141,6 +156,12 @@ pub struct HandlerEntry<T> {
     /// A [`Trigger::Ctcp`] capture is not affected: the payload of a CTCP
     /// command is protocol data and always reaches the handler as it arrived.
     pub raw_text: bool,
+    /// Which kind of target the handler answers.
+    ///
+    /// A message with no target, such as a `QUIT`, reaches only a handler with
+    /// [`Scope::Any`]. A [`Trigger::Cron`] handler is not affected: it fires on
+    /// a schedule, not on a message.
+    pub scope: Scope,
     /// The function called when the trigger matches.
     pub handler: HandlerFn<T>,
 }
