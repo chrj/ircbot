@@ -121,6 +121,18 @@ impl MacroBot {
         ctx.say("time")
     }
 
+    // [16] — include_self on an `#[on(...)]` trigger
+    #[on(event = "PART", include_self)]
+    async fn own_part(&self, ctx: Context) -> Result {
+        ctx.say("parted")
+    }
+
+    // [17] — include_self on a command
+    #[command("selfcount", include_self)]
+    async fn selfcount(&self, ctx: Context) -> Result {
+        ctx.say("counted")
+    }
+
     // Plain (non-annotated) method — must remain callable and produce NO entry.
     fn helper(&self) -> u32 {
         42
@@ -243,8 +255,8 @@ fn message_wins_trigger_precedence() {
 
 #[test]
 fn only_annotated_methods_produce_handler_entries() {
-    // 16 annotated methods; the plain `helper` produces no entry.
-    assert_eq!(handlers().len(), 16);
+    // 18 annotated methods; the plain `helper` produces no entry.
+    assert_eq!(handlers().len(), 18);
 }
 
 #[test]
@@ -488,4 +500,50 @@ async fn from_state_injects_given_state_and_skips_default() {
         tc.next_reply(),
         Some("PRIVMSG #test :alice, hi!\r\n".to_string())
     );
+}
+
+// ─── include_self ────────────────────────────────────────────────────────────
+
+/// The entry whose trigger is the `event` with this name.
+fn event_entry(event: &str) -> HandlerEntry<MacroBot> {
+    handlers()
+        .into_iter()
+        .find(|e| matches!(&e.trigger, Trigger::Event { event: e, .. } if e == event))
+        .unwrap_or_else(|| panic!("no handler for event {event}"))
+}
+
+/// The entry whose trigger is the command with this name.
+fn command_entry(name: &str) -> HandlerEntry<MacroBot> {
+    handlers()
+        .into_iter()
+        .find(|e| matches!(&e.trigger, Trigger::Command { name: n, .. } if n == name))
+        .unwrap_or_else(|| panic!("no handler for command {name}"))
+}
+
+#[test]
+fn handlers_do_not_get_own_messages_by_default() {
+    assert!(!event_entry("JOIN").include_self);
+    assert!(!command_entry("ping").include_self);
+}
+
+#[test]
+fn include_self_on_an_on_trigger_sets_the_flag() {
+    assert!(event_entry("PART").include_self);
+}
+
+#[test]
+fn include_self_on_a_command_sets_the_flag() {
+    assert!(command_entry("selfcount").include_self);
+}
+
+#[test]
+fn include_self_keeps_the_other_command_arguments() {
+    match &command_entry("selfcount").trigger {
+        Trigger::Command { name, target, role } => {
+            assert_eq!(name, "selfcount");
+            assert_eq!(target.as_deref(), None);
+            assert_eq!(role.as_deref(), None);
+        }
+        other => panic!("expected Command, got {other:?}"),
+    }
 }

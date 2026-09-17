@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     connection::{Settings, State},
-    context::{make_messages, sanitize, Context, User},
+    context::{make_messages, nick_eq, sanitize, Context, User},
     handler::{HandlerEntry, Trigger},
     irc::{CtcpMessage, Message},
     logging::PROTOCOL_LOG_TARGET,
@@ -226,6 +226,9 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     });
 
     let mut joined = false;
+    // A nick change of the bot itself, applied after the line that carried it
+    // is dispatched.
+    let mut pending_nick: Option<Nick> = None;
     // Number of alternate-nick attempts made so far (after the initial NICK).
     let mut nick_attempt = 0u32;
     let mut lines = reader.lines();
@@ -313,14 +316,13 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                         Command::NICK(new_nick) => {
                             // Keep `bot_nick` in sync when the change is our
                             // own, so the keepnick knows once it has
-                            // succeeded (and stops retrying).
+                            // succeeded (and stops retrying). The new nick is
+                            // applied after the dispatch of this line, so that
+                            // the line still counts as one from the bot itself
+                            // and handlers do not see their own rename.
                             if let Some(Prefix::Nickname(old, ..)) = msg.prefix.as_ref() {
                                 if old.as_str() == bot_nick.as_str() {
-                                    bot_nick = Nick::from(new_nick.clone());
-                                    *current_nick
-                                        .write()
-                                        .unwrap_or_else(|e| e.into_inner()) =
-                                        bot_nick.clone();
+                                    pending_nick = Some(Nick::from(new_nick.clone()));
                                 }
                             }
                         }
@@ -339,6 +341,12 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                     .await;
                     for error in errors {
                         tracing::error!(%error, "handler error");
+                    }
+
+                    if let Some(new_nick) = pending_nick.take() {
+                        bot_nick = new_nick;
+                        *current_nick.write().unwrap_or_else(|e| e.into_inner()) =
+                            bot_nick.clone();
                     }
                 }
                 _ = &mut keepalive_fail_rx => {
@@ -871,8 +879,18 @@ async fn dispatch<T: Send + Sync + 'static>(
     };
     let target = Target::from_raw(target_param(msg).unwrap_or(""));
 
+    // The server echoes the bot's own JOIN, PART and NICK back, and with the
+    // IRCv3 `echo-message` capability its own PRIVMSG and NOTICE too. Only a
+    // handler that asks for them gets these messages.
+    let from_self = sender
+        .as_ref()
+        .is_some_and(|u| nick_eq(u.nick.as_str(), bot_nick.as_str()));
+
     let mut errors = Vec::new();
     for entry in current.iter() {
+        if from_self && !entry.include_self {
+            continue;
+        }
         if let Some(captures) = check_trigger(&entry.trigger, msg, bot_nick.as_str()) {
             // Enforce per-command role authorization; unauthorized senders are
             // silently ignored, exactly as if the trigger had not matched.
@@ -1119,6 +1137,7 @@ mod tests {
                 target: None,
                 regex: None,
             },
+            include_self: false,
             handler: Box::new(|_, ctx: Context| {
                 Box::pin(async move {
                     ctx.raw("PRIVMSG #chan :fired")?;

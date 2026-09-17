@@ -205,6 +205,7 @@ async fn test_flood_control_rate_limits_messages() {
             target: None,
             regex: None,
         },
+        include_self: false,
         handler: Box::new(|_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
             Box::pin(async move {
                 for i in 0..6_u32 {

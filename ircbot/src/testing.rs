@@ -459,6 +459,9 @@ impl<T: Bot + Send + Sync + 'static> TestBot<T> {
     /// does not get the lines that a task started by a handler sends later.
     /// Cron handlers never fire from a line.
     ///
+    /// A line whose sender is the nick of the bot ([`TestBot::with_nick`]) only
+    /// gets to a handler that sets `include_self`, as on a live connection.
+    ///
     /// # Errors
     ///
     /// Returns [`DeliverError::InvalidLine`] when `line` is not an IRC message.

@@ -102,6 +102,7 @@ fn say_handler(pattern: &str, text: &'static str) -> HandlerEntry<()> {
             pattern: pattern.to_string(),
             target: None,
         },
+        include_self: false,
         handler: Box::new(
             move |_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
                 Box::pin(async move { ctx.say(text) })
@@ -118,6 +119,7 @@ fn cron_say(target: &str, text: &'static str) -> HandlerEntry<()> {
             tz: "UTC".to_string(),
             target: Some(target.to_string()),
         },
+        include_self: false,
         handler: Box::new(
             move |_bot: Arc<()>, ctx: Context| -> BoxFuture<ircbot::Result> {
                 Box::pin(async move { ctx.say(text) })
