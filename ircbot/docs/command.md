@@ -17,6 +17,9 @@ same line is parsed into the method's parameters (see
   the bot itself (see [Own messages](#own-messages)).
 - `raw` — *(optional)* match the command and its arguments with the IRC
   formatting codes (see [Formatting codes](#formatting-codes)).
+- `scope = "channel"` — *(optional)* let the command fire only in a channel.
+  `scope = "private"` lets it fire only in a private message (see
+  [Channel or query](#channel-or-query)).
 
 # Access control
 
@@ -118,6 +121,23 @@ async fn echo(&self, ctx: Context, text: String) -> Result {
     ctx.say(text)
 }
 ```
+
+
+# Channel or query
+
+A command fires in a channel and in a private message to the bot. Use `scope` to
+limit it to one of the two, for example to keep an administrative command out of
+the channel:
+
+```rust,ignore
+#[command("shutdown", role = "admin", scope = "private")]
+async fn shutdown(&self, ctx: Context) -> Result {
+    ctx.reply("shutting down")
+}
+```
+
+`scope` and `target` are separate filters, and a message must satisfy both. An
+unknown `scope` value fails the build.
 
 
 # Note

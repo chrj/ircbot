@@ -13,7 +13,7 @@
 
 use ircbot::handler::HandlerEntry;
 use ircbot::testing::TestContext;
-use ircbot::{bot, Bot, Context, Result, Trigger, User};
+use ircbot::{bot, Bot, Context, Result, Scope, Trigger, User};
 
 // ─── bot under test ──────────────────────────────────────────────────────────
 
@@ -145,6 +145,18 @@ impl MacroBot {
         ctx.say("counted")
     }
 
+    // [20] — scope on an `#[on(...)]` trigger
+    #[on(message = "scoped *", scope = "channel")]
+    async fn scoped_message(&self, ctx: Context) -> Result {
+        ctx.say("scoped")
+    }
+
+    // [21] — scope on a command
+    #[command("scopedcmd", scope = "private")]
+    async fn scoped_command(&self, ctx: Context) -> Result {
+        ctx.say("scoped")
+    }
+
     // Plain (non-annotated) method — must remain callable and produce NO entry.
     fn helper(&self) -> u32 {
         42
@@ -267,8 +279,8 @@ fn message_wins_trigger_precedence() {
 
 #[test]
 fn only_annotated_methods_produce_handler_entries() {
-    // 20 annotated methods; the plain `helper` produces no entry.
-    assert_eq!(handlers().len(), 20);
+    // 22 annotated methods; the plain `helper` produces no entry.
+    assert_eq!(handlers().len(), 22);
 }
 
 #[test]
@@ -584,4 +596,22 @@ fn raw_on_an_on_trigger_sets_the_flag() {
 #[test]
 fn raw_on_a_command_sets_the_flag() {
     assert!(command_entry("rawcount").raw_text);
+}
+
+// ─── scope ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn handlers_answer_every_target_by_default() {
+    assert_eq!(message_entry("hello *").scope, Scope::Any);
+    assert_eq!(command_entry("ping").scope, Scope::Any);
+}
+
+#[test]
+fn scope_channel_on_an_on_trigger_sets_the_field() {
+    assert_eq!(message_entry("scoped *").scope, Scope::Channel);
+}
+
+#[test]
+fn scope_private_on_a_command_sets_the_field() {
+    assert_eq!(command_entry("scopedcmd").scope, Scope::Private);
 }
