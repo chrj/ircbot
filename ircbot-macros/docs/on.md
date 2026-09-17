@@ -19,6 +19,7 @@ The general-purpose trigger attribute.  Exactly one of `command`,
 | `regex = "pattern"` | *(optional, with `event`)* Further filter by a regex on the message text; capture groups become `String` parameters |
 | `tz = "Timezone"` | *(optional, with `cron`)* IANA timezone for evaluating the schedule (default: `"UTC"`), validated at compile time |
 | `include_self` | *(optional)* Also give the handler the messages of the bot itself; without it the dispatch keeps these messages away (see [Own messages](#own-messages)). Rejected at compile time with `cron`, because a cron handler has no sender |
+| `scope = "channel"` | *(optional)* Fire only for a message in a channel; `scope = "private"` fires only for a private message (see [Channel or query](#channel-or-query)). An unknown value is rejected at compile time, and so is `scope` with `cron` |
 | `raw` | *(optional)* Match the text with its IRC formatting codes, and capture them (see [Formatting codes](#formatting-codes)). Rejected at compile time with `cron`, because a cron handler has no text |
 
 When multiple trigger keys are present, the first one in this precedence
@@ -248,6 +249,27 @@ async fn log_line(&self, ctx: Context, text: String) -> Result {
     Ok(())
 }
 ```
+
+
+# Channel or query
+
+A trigger fires for a message in a channel and for a private message to the
+bot. The `scope` option limits a handler to one of the two:
+
+```rust,ignore
+// Answers "mybot: ..." in a channel, but not in a query.
+#[on(mention, scope = "channel")]
+async fn answer(&self, ctx: Context, text: String) -> Result {
+    ctx.reply(format!("you said {text}"))
+}
+```
+
+`scope` and `target` are separate filters, and a message must satisfy both.
+
+The scope of a message is the scope of its target, so it applies to `command`,
+`message`, `mention`, `action`, `ctcp`, and to an `event` with a target such as
+`JOIN`. An event without a target, such as `QUIT`, belongs to neither scope and
+reaches only a handler without the option.
 
 
 # Note
