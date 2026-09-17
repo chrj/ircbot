@@ -235,6 +235,10 @@ The rule applies to `command`, `message`, `mention`, `action`, and `event` with
 `regex`. `ctx.message_text()` still gives the text with the codes, and
 `ctx.plain_text()` gives it without them.
 
+A `ctcp` capture is the exception: the payload of a CTCP command is protocol
+data, not chat text, so it reaches the handler as it arrived. The text of an
+`action` is chat text, so the rule applies to it.
+
 Add `raw` for a handler that must match or capture the codes themselves:
 
 ```rust,ignore

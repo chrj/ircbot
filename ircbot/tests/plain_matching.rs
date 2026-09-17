@@ -51,6 +51,11 @@ impl FormatBot {
         ctx.say(format!("raw {}", rest.escape_debug()))
     }
 
+    #[on(ctcp = "DCC")]
+    async fn dcc(&self, ctx: Context, arg: String) -> Result {
+        ctx.say(format!("dcc {}", arg.escape_debug()))
+    }
+
     // A pattern that only the text with its codes can match.
     #[on(message = "bold \x02*\x02", raw)]
     async fn bold_only(&self, ctx: Context, who: String) -> Result {
@@ -163,6 +168,19 @@ async fn a_raw_pattern_matches_the_codes_themselves() {
 async fn a_raw_pattern_does_not_match_text_without_codes() {
     let got = replies(&format_bot(), ":alice!a@h PRIVMSG #chan :bold bob").await;
     assert!(got.is_empty(), "unexpected replies: {got:?}");
+}
+
+// ── CTCP payloads ────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_ctcp_payload_keeps_its_codes() {
+    // A CTCP payload is protocol data, so it reaches the handler as it arrived.
+    let got = replies(
+        &format_bot(),
+        ":alice!a@h PRIVMSG mybot :\x01DCC SEND \x02file\x02\x01",
+    )
+    .await;
+    assert_eq!(got, vec!["PRIVMSG alice :dcc SEND \\u{2}file\\u{2}\r\n"]);
 }
 
 // ── text without codes is unaffected ─────────────────────────────────────────

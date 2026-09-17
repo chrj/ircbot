@@ -525,6 +525,9 @@ pub fn check_trigger(trigger: &Trigger, msg: &Message, bot_nick: &str) -> Option
 /// The dispatch strips the text of a message once and gives it to every
 /// trigger, rather than once per trigger. A handler entry with `raw_text` gets
 /// the text with the codes here.
+///
+/// The capture of a [`Trigger::Ctcp`] is an exception: it always carries the
+/// payload as it arrived, because a CTCP payload is protocol data.
 fn check_trigger_text(
     trigger: &Trigger,
     msg: &Message,
@@ -533,15 +536,19 @@ fn check_trigger_text(
 ) -> Option<Vec<String>> {
     let is_privmsg = matches!(msg.command, Command::PRIVMSG(..));
     let msg_target = target_param(msg);
+    // A CTCP message is parsed from the text as it arrived. Its payload is
+    // protocol data, not chat text, so the formatting codes stay in it. The
+    // text of an `ACTION` is chat text and is matched like any other text.
     let ctcp = if is_privmsg {
-        CtcpMessage::parse(text)
+        CtcpMessage::parse(trailing_param(msg).unwrap_or(""))
     } else {
         None
     };
 
     match trigger {
         Trigger::Action { pattern, target } => {
-            let ctcp = ctcp?;
+            ctcp.as_ref()?;
+            let ctcp = CtcpMessage::parse(text)?;
             if ctcp.command != "ACTION" {
                 return None;
             }
