@@ -80,22 +80,21 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
         nick,
         channels,
         server: _,
-        settings:
-            Settings {
-                keepalive_interval,
-                keepalive_timeout,
-                flood_burst,
-                flood_rate,
-                ctcp_version,
-                keepnick_interval,
-                roles,
-            },
+        settings,
         reader,
         write_half,
         pending_lines,
         #[cfg(unix)]
             raw_fd: _,
     } = state;
+    let Settings {
+        keepalive_interval,
+        keepalive_timeout,
+        flood_burst,
+        flood_rate,
+        keepnick_interval,
+        ..
+    } = settings;
 
     // Create the mpsc write channel.
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<String>();
@@ -334,8 +333,7 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
                         &handlers,
                         &msg,
                         &bot_nick,
-                        ctcp_version.as_deref(),
-                        &roles,
+                        &settings,
                         write_tx.clone(),
                     )
                     .await;
@@ -819,22 +817,50 @@ pub(crate) async fn handle_message<T: Send + Sync + 'static>(
     handlers: &HandlerSet<T>,
     msg: &Message,
     bot_nick: &Nick,
-    ctcp_version: Option<&str>,
-    roles: &[(String, Vec<String>)],
+    settings: &Settings,
     tx: mpsc::UnboundedSender<String>,
 ) -> Vec<BoxError> {
+    // An ignored sender reaches no handler, and gets no CTCP reply either.
+    if is_ignored(&settings.ignore, sender_of(msg).as_ref()) {
+        return Vec::new();
+    }
     match &msg.command {
         Command::PING(..) | Command::PONG(..) => return Vec::new(),
         Command::PRIVMSG(_, text) => {
             if let Some(ctcp) = CtcpMessage::parse(text) {
-                if answer_ctcp(msg, &ctcp, ctcp_version, &tx) {
+                if answer_ctcp(msg, &ctcp, settings.ctcp_version.as_deref(), &tx) {
                     return Vec::new();
                 }
             }
         }
         _ => {}
     }
-    dispatch(bot, handlers, msg, bot_nick, roles, tx).await
+    dispatch(bot, handlers, msg, bot_nick, &settings.roles, tx).await
+}
+
+/// The sender of `msg`, when it carries a full `nick!user@host` prefix.
+fn sender_of(msg: &Message) -> Option<User> {
+    match msg.prefix.as_ref() {
+        Some(Prefix::Nickname(nick, user, host)) if !user.is_empty() => Some(User {
+            nick: Nick::from(nick.clone()),
+            user: user.clone(),
+            host: host.clone(),
+        }),
+        _ => None,
+    }
+}
+
+/// Whether `sender` matches one of the ignore `masks`.
+///
+/// A message without a sender, for example one from the server itself, is never
+/// ignored: the masks name users.
+#[must_use]
+fn is_ignored(masks: &[String], sender: Option<&User>) -> bool {
+    let Some(user) = sender else {
+        return false;
+    };
+    let mask = user.hostmask();
+    masks.iter().any(|m| glob_match(m, &mask).is_some())
 }
 
 /// Answer a CTCP `PING` or `VERSION` from the sender of `msg`. Returns `true`
@@ -896,14 +922,7 @@ async fn dispatch<T: Send + Sync + 'static>(
         Arc::clone(&*guard)
     };
 
-    let sender = match msg.prefix.as_ref() {
-        Some(Prefix::Nickname(nick, user, host)) if !user.is_empty() => Some(User {
-            nick: Nick::from(nick.clone()),
-            user: user.clone(),
-            host: host.clone(),
-        }),
-        _ => None,
-    };
+    let sender = sender_of(msg);
     let target = Target::from_raw(target_param(msg).unwrap_or(""));
 
     // The server echoes the bot's own JOIN, PART and NICK back, and with the
@@ -980,7 +999,7 @@ pub fn authorized(
     let Some(user) = sender else {
         return false;
     };
-    let mask = format!("{}!{}@{}", user.nick.as_str(), user.user, user.host);
+    let mask = user.hostmask();
 
     roles
         .iter()
@@ -1140,8 +1159,12 @@ mod tests {
         let msg = ":alice!u@h PRIVMSG mybot :\x01VERSION\x01"
             .parse::<Message>()
             .unwrap();
+        let settings = Settings {
+            ctcp_version: custom.map(ToString::to_string),
+            ..Settings::default()
+        };
         let errors =
-            handle_message(&bot, &handlers, &msg, &Nick::from("mybot"), custom, &[], tx).await;
+            handle_message(&bot, &handlers, &msg, &Nick::from("mybot"), &settings, tx).await;
         assert!(errors.is_empty());
         rx.try_recv().expect("a CTCP VERSION reply was sent")
     }
@@ -1194,6 +1217,41 @@ mod tests {
         assert!(!scope_matches(Scope::Private, &Target::from_raw("")));
     }
 
+    // ── is_ignored ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_ignored_matches_a_hostmask_glob() {
+        let masks = vec!["*!*@spam.example".to_string()];
+        assert!(is_ignored(
+            &masks,
+            Some(&user("alice", "a", "spam.example"))
+        ));
+        assert!(!is_ignored(&masks, Some(&user("alice", "a", "good.host"))));
+    }
+
+    #[test]
+    fn is_ignored_matches_a_nick_without_case() {
+        let masks = vec!["OtherBot!*@*".to_string()];
+        assert!(is_ignored(&masks, Some(&user("otherbot", "o", "h"))));
+    }
+
+    #[test]
+    fn is_ignored_takes_any_of_the_masks() {
+        let masks = vec!["a!*@*".to_string(), "b!*@*".to_string()];
+        assert!(is_ignored(&masks, Some(&user("b", "u", "h"))));
+    }
+
+    #[test]
+    fn a_message_without_a_sender_is_not_ignored() {
+        let masks = vec!["*!*@*".to_string()];
+        assert!(!is_ignored(&masks, None));
+    }
+
+    #[test]
+    fn no_mask_ignores_nobody() {
+        assert!(!is_ignored(&[], Some(&user("alice", "a", "h"))));
+    }
+
     // ── handle_message ─────────────────────────────────────────────────────────
 
     /// A handler set with one `#[on(event = …)]` handler that says "fired" and
@@ -1228,8 +1286,7 @@ mod tests {
             &handlers,
             &msg,
             &Nick::from("mybot"),
-            None,
-            &[],
+            &Settings::default(),
             tx,
         )
         .await;
@@ -1250,8 +1307,7 @@ mod tests {
             &handlers,
             &msg,
             &Nick::from("mybot"),
-            None,
-            &[],
+            &Settings::default(),
             tx,
         )
         .await;

@@ -639,6 +639,25 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                 self
             }
 
+            /// Ignore the senders whose `nick!user@host` hostmask matches
+            /// one of the given glob patterns (`*` wildcard). A message from
+            /// such a sender reaches no handler, and the framework answers no
+            /// CTCP for it.
+            ///
+            /// Call this (before `main_loop`); like the other builders it is
+            /// re-applied on a `SIGHUP` hot-reload, since the builder runs
+            /// again on startup. May be called repeatedly to add masks.
+            #[must_use]
+            pub fn with_ignore(
+                mut self,
+                masks: impl IntoIterator<Item = impl Into<String>>,
+            ) -> Self {
+                if let Some(state) = self.__state.take() {
+                    self.__state = Some(state.with_ignore(masks));
+                }
+                self
+            }
+
             /// Run the bot's main event loop.
             ///
             /// On Unix, listens for `SIGHUP`.  When received, the current
