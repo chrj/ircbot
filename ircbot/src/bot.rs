@@ -110,6 +110,7 @@ pub(crate) async fn run_session<T: Send + Sync + 'static>(
         reader,
         write_half,
         pending_lines,
+        registered: inherited_registration,
         #[cfg(unix)]
             raw_fd: _,
     } = state;
@@ -183,9 +184,11 @@ pub(crate) async fn run_session<T: Send + Sync + 'static>(
     // Shared view of the nick we are actually using, kept in sync with
     // `bot_nick` at every point it changes (registration fallback and our own
     // post-registration NICK changes).  `registered` flips to `true` on
-    // RPL_WELCOME.  Both are read by the optional keepnick task below.
+    // RPL_WELCOME, and starts out `true` for a connection inherited from a
+    // hot-reload exec, which received its welcome in the previous process.
+    // Both are read by the optional keepnick task below.
     let current_nick = Arc::new(RwLock::new(bot_nick.clone()));
-    let registered = Arc::new(AtomicBool::new(false));
+    let registered = Arc::new(AtomicBool::new(inherited_registration));
 
     // Keepnick: when enabled, periodically re-attempt to reclaim the
     // originally-requested nick while we are using a different one.  A failed
@@ -1049,6 +1052,53 @@ pub fn authorized(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── run_session ────────────────────────────────────────────────────────────
+    //
+    // The [`Session`] a connection ends in drives the reconnect backoff, so a
+    // connection the bot never registered on must not read as a working one.
+
+    /// A state connected to a server that accepts the connection and then
+    /// closes it, so [`run_session`] returns at once. The welcome never
+    /// arrives.
+    async fn state_on_a_closing_server() -> State {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            if let Ok((sock, _)) = listener.accept().await {
+                drop(sock);
+            }
+        });
+        State::connect("tester", &addr, vec![crate::Channel::from("general")])
+            .await
+            .expect("loopback connect failed")
+    }
+
+    /// An empty handler set for a bot with no state.
+    fn no_handlers() -> HandlerSet<()> {
+        Arc::new(RwLock::new(Arc::new(Vec::new())))
+    }
+
+    #[tokio::test]
+    async fn a_session_that_ends_before_the_welcome_is_unregistered() {
+        let state = state_on_a_closing_server().await;
+
+        let (session, _) = run_session(Arc::new(()), state, no_handlers()).await;
+
+        assert_eq!(session, Session::Unregistered);
+    }
+
+    #[tokio::test]
+    async fn a_session_on_an_inherited_connection_is_registered() {
+        // Given a connection handed over by a hot-reload exec: the welcome
+        // arrived in the process before this one, and never arrives again.
+        let mut state = state_on_a_closing_server().await;
+        state.registered = true;
+
+        let (session, _) = run_session(Arc::new(()), state, no_handlers()).await;
+
+        assert_eq!(session, Session::Registered);
+    }
 
     // ── ctcp_reply ─────────────────────────────────────────────────────────────
 

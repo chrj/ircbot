@@ -505,6 +505,15 @@ pub struct State {
     /// the server sent early — `ERR_NICKNAMEINUSE`, typically — is dispatched
     /// in arrival order rather than lost.
     pub(crate) pending_lines: Vec<String>,
+    /// Whether this connection already completed registration.
+    ///
+    /// `false` for a new connection: the read loop sets its own flag when
+    /// `RPL_WELCOME` arrives. `true` for a connection inherited from a
+    /// hot-reload `exec`, where the welcome arrived in the process before this
+    /// one and never arrives again. The read loop starts its flag from this
+    /// value, so the reconnect backoff reads such a session as a working
+    /// connection rather than a refused one.
+    pub(crate) registered: bool,
     /// The raw file descriptor of the underlying TCP socket, used by the
     /// hot-reload path to pass the live connection to a new binary.
     ///
@@ -607,6 +616,7 @@ impl State {
             reader,
             write_half,
             pending_lines,
+            registered: false,
             #[cfg(unix)]
             raw_fd,
         })
@@ -720,6 +730,7 @@ impl State {
             // An inherited connection is already registered, so no capability
             // exchange runs and nothing can have been read ahead of the loop.
             pending_lines: Vec::new(),
+            registered: true,
             raw_fd: connection.raw_fd,
         }))
     }
