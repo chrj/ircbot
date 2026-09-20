@@ -44,6 +44,16 @@ pub const DEFAULT_FLOOD_RATE: Duration = Duration::from_millis(500);
 /// enabled via [`State::with_keepnick`].
 pub const DEFAULT_KEEPNICK_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Default delay before the first reconnect attempt after a lost connection.
+pub const DEFAULT_RECONNECT_DELAY: Duration = Duration::from_secs(5);
+
+/// Default longest delay between reconnect attempts.
+///
+/// The delay doubles after each failed attempt until it reaches this value, so
+/// a bot survives an outage of hours without a reconnect attempt every five
+/// seconds for its whole length.
+pub const DEFAULT_MAX_RECONNECT_DELAY: Duration = Duration::from_secs(300);
+
 /// How long the IRCv3 capability and SASL exchange may take before the
 /// connection is given up on.
 ///
@@ -97,6 +107,12 @@ pub(crate) struct Settings {
     /// message from a matching sender before it tests any trigger, and answers
     /// no CTCP. Set via [`State::with_ignore`].
     pub(crate) ignore: Vec<String>,
+    /// Delay before the first reconnect attempt after a lost connection. Set
+    /// via [`State::with_reconnect`].
+    pub(crate) reconnect_delay: Duration,
+    /// Longest delay between reconnect attempts. Set via
+    /// [`State::with_reconnect`].
+    pub(crate) max_reconnect_delay: Duration,
 }
 
 impl Default for Settings {
@@ -110,6 +126,8 @@ impl Default for Settings {
             keepnick_interval: None,
             roles: Vec::new(),
             ignore: Vec::new(),
+            reconnect_delay: DEFAULT_RECONNECT_DELAY,
+            max_reconnect_delay: DEFAULT_MAX_RECONNECT_DELAY,
         }
     }
 }
@@ -691,9 +709,10 @@ impl State {
                 keepalive_timeout: Duration::from_millis(ka_timeout_ms),
                 flood_burst,
                 flood_rate,
-                // `ctcp_version`, `keepnick_interval`, `roles`, and `ignore`
-                // are re-applied by the bot builder on the re-exec'd process, so
-                // they need not be carried through the hot-reload environment.
+                // `ctcp_version`, `keepnick_interval`, `roles`, `ignore`, and
+                // the reconnect delays are re-applied by the bot builder on the
+                // re-exec'd process, so they need not be carried through the
+                // hot-reload environment.
                 ..Settings::default()
             },
             reader,
@@ -725,6 +744,25 @@ impl State {
     pub fn with_flood_control(mut self, burst: usize, rate: Duration) -> Self {
         self.settings.flood_burst = burst;
         self.settings.flood_rate = rate;
+        self
+    }
+
+    /// Override the reconnect delays.
+    ///
+    /// After a lost connection the bot waits `delay`, then attempts to
+    /// reconnect. Each failed attempt doubles the delay, up to `max_delay`. A
+    /// successful connection returns the delay to `delay`. The bot retries
+    /// until it is connected again, so a name-server fault or a server restart
+    /// does not stop the process.
+    ///
+    /// The defaults are [`DEFAULT_RECONNECT_DELAY`] (5 seconds) and
+    /// [`DEFAULT_MAX_RECONNECT_DELAY`] (5 minutes). Call this method before
+    /// starting the bot. A `max_delay` that is shorter than `delay` gives a
+    /// constant delay of `delay`, because the delay never decreases.
+    #[must_use]
+    pub fn with_reconnect(mut self, delay: Duration, max_delay: Duration) -> Self {
+        self.settings.reconnect_delay = delay;
+        self.settings.max_reconnect_delay = max_delay;
         self
     }
 
@@ -844,6 +882,16 @@ impl State {
     /// feature is disabled (the default).
     pub fn keepnick_interval(&self) -> Option<Duration> {
         self.settings.keepnick_interval
+    }
+
+    /// Returns the configured delay before the first reconnect attempt.
+    pub fn reconnect_delay(&self) -> Duration {
+        self.settings.reconnect_delay
+    }
+
+    /// Returns the configured longest delay between reconnect attempts.
+    pub fn max_reconnect_delay(&self) -> Duration {
+        self.settings.max_reconnect_delay
     }
 }
 
@@ -991,7 +1039,8 @@ mod tests {
             .with_ctcp_version("mybot 1.2.3")
             .with_keepnick_interval(Duration::from_secs(15))
             .with_role("admin", ["*!*@trusted.host"])
-            .with_ignore(["*!*@spam.example"]);
+            .with_ignore(["*!*@spam.example"])
+            .with_reconnect(Duration::from_secs(3), Duration::from_secs(90));
 
         let reconnected = original
             .blueprint()
@@ -1019,6 +1068,8 @@ mod tests {
             reconnected.settings.ignore,
             vec!["*!*@spam.example".to_string()]
         );
+        assert_eq!(reconnected.reconnect_delay(), Duration::from_secs(3));
+        assert_eq!(reconnected.max_reconnect_delay(), Duration::from_secs(90));
     }
 
     /// The identity of the connection is carried across too, not just its
