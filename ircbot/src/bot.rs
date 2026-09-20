@@ -58,6 +58,20 @@ pub type HandlerSet<T> = Arc<RwLock<Arc<Vec<HandlerEntry<T>>>>>;
 
 // ─── public entry-point ──────────────────────────────────────────────────────
 
+/// Whether a connection reached IRC registration before it ended.
+///
+/// A server can accept the TCP connection and then refuse the session: a
+/// reconnect throttle, a `K-line`, and a wrong server password all look like
+/// this. Such a connection never receives `RPL_WELCOME`, so the reconnect
+/// backoff must keep growing instead of starting again at its first delay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Session {
+    /// `RPL_WELCOME` arrived. The bot was on the network.
+    Registered,
+    /// The connection ended before `RPL_WELCOME`.
+    Unregistered,
+}
+
 /// Handles IRC messages, dispatching to registered handlers.
 ///
 /// Sends a periodic `PING` to the server and breaks out of the read loop (so
@@ -76,6 +90,18 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     state: State,
     handlers: HandlerSet<T>,
 ) -> Result<(), BoxError> {
+    run_session(bot, state, handlers).await.1
+}
+
+/// [`run_bot_internal`], plus the state the connection reached.
+///
+/// [`crate::internal::run_bot`] needs the [`Session`] on both the `Ok` and the
+/// `Err` path, which is why it is beside the result rather than inside it.
+pub(crate) async fn run_session<T: Send + Sync + 'static>(
+    bot: Arc<T>,
+    state: State,
+    handlers: HandlerSet<T>,
+) -> (Session, Result<(), BoxError>) {
     let State {
         nick,
         channels,
@@ -367,7 +393,12 @@ pub async fn run_bot_internal<T: Send + Sync + 'static>(
     drop(write_tx);
     let _ = write_task.await;
 
-    loop_result
+    let session = if registered.load(Ordering::Relaxed) {
+        Session::Registered
+    } else {
+        Session::Unregistered
+    };
+    (session, loop_result)
 }
 
 /// Yield the next line to dispatch: one the registration handshake read ahead

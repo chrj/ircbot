@@ -103,6 +103,7 @@ pub mod internal {
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
+    use crate::bot::Session;
     use crate::connection::Blueprint;
     use crate::{bot::HandlerSet, BoxError, HandlerEntry, Server, State};
 
@@ -149,70 +150,102 @@ pub mod internal {
 
         // The reconnect delays live in the settings, which the read loop
         // consumes with the state. Read them here, while the state is intact.
-        let delay = state.reconnect_delay();
-        let max_delay = state.max_reconnect_delay();
+        let mut backoff = Backoff::new(state.reconnect_delay(), state.max_reconnect_delay());
 
         let mut current_state = state;
 
         loop {
-            if let Err(e) =
-                crate::bot::run_bot_internal(Arc::clone(&bot), current_state, Arc::clone(&handlers))
-                    .await
-            {
+            let (session, result) =
+                crate::bot::run_session(Arc::clone(&bot), current_state, Arc::clone(&handlers))
+                    .await;
+            if let Err(e) = result {
                 tracing::error!(%server, error = %e, "connection error");
             } else {
                 tracing::warn!(%server, "disconnected");
             }
 
-            current_state = reconnect(&blueprint, &server, delay, max_delay).await;
+            // A connection that never reached `RPL_WELCOME` was not a working
+            // connection, whatever the TCP layer says: a reconnect throttle, a
+            // `K-line`, and a wrong server password all accept the TCP
+            // connection and then close it. Such a session counts as a failed
+            // attempt, so the delay grows instead of the bot knocking every
+            // five seconds for as long as the server refuses it.
+            match session {
+                Session::Registered => backoff.reset(),
+                Session::Unregistered => backoff.fail(),
+            }
+
+            current_state = reconnect(&blueprint, &server, &mut backoff).await;
+        }
+    }
+
+    /// The reconnect delay schedule.
+    ///
+    /// The first attempt waits `first`. Each failed attempt doubles the delay,
+    /// up to `max`. A lost name server or a server that restarts therefore
+    /// costs the bot its uptime, not its process.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Backoff {
+        /// The delay before the next attempt.
+        delay: Duration,
+        /// The delay to return to once a connection works.
+        first: Duration,
+        /// The longest delay the doubling reaches.
+        max: Duration,
+        /// The number of the next attempt, for the log.
+        attempt: u64,
+    }
+
+    impl Backoff {
+        fn new(first: Duration, max: Duration) -> Self {
+            Backoff {
+                delay: first,
+                first,
+                max,
+                attempt: 1,
+            }
+        }
+
+        /// Count a failed attempt and double the delay, up to `max`.
+        ///
+        /// The delay never decreases, so a `max` that is shorter than `first`
+        /// gives a constant delay.
+        fn fail(&mut self) {
+            self.delay = self.delay.saturating_mul(2).min(self.max).max(self.delay);
+            self.attempt = self.attempt.saturating_add(1);
+        }
+
+        /// Return to the first delay, after a connection that worked.
+        fn reset(&mut self) {
+            self.delay = self.first;
+            self.attempt = 1;
         }
     }
 
     /// Attempt to reconnect until a connection is established.
-    ///
-    /// The first attempt waits `delay`. Each failed attempt doubles the delay,
-    /// up to `max_delay`. A lost name server or a server that restarts
-    /// therefore costs the bot its uptime, not its process.
-    async fn reconnect(
-        blueprint: &Blueprint,
-        server: &Server,
-        delay: Duration,
-        max_delay: Duration,
-    ) -> State {
-        let mut delay = delay;
-        let mut attempt: u64 = 1;
-
+    async fn reconnect(blueprint: &Blueprint, server: &Server, backoff: &mut Backoff) -> State {
         loop {
-            tracing::info!(%server, ?delay, attempt, "reconnecting");
-            tokio::time::sleep(delay).await;
+            tracing::info!(%server, delay = ?backoff.delay, attempt = backoff.attempt, "reconnecting");
+            tokio::time::sleep(backoff.delay).await;
 
             match blueprint.connect().await {
                 Ok(state) => {
-                    tracing::info!(%server, attempt, "reconnected");
+                    tracing::info!(%server, attempt = backoff.attempt, "reconnected");
                     return state;
                 }
                 Err(e) => {
-                    delay = next_reconnect_delay(delay, max_delay);
+                    let attempt = backoff.attempt;
+                    backoff.fail();
                     tracing::error!(
                         %server,
                         error = %e,
                         attempt,
-                        next_delay = ?delay,
+                        next_delay = ?backoff.delay,
                         "failed to reconnect",
                     );
                 }
             }
-
-            attempt = attempt.saturating_add(1);
         }
-    }
-
-    /// The delay for the attempt that comes after one that waited `current`.
-    ///
-    /// The delay doubles until it reaches `max`. It never decreases, so a `max`
-    /// that is shorter than the first delay gives a constant delay.
-    fn next_reconnect_delay(current: Duration, max: Duration) -> Duration {
-        current.saturating_mul(2).min(max).max(current)
     }
 
     #[cfg(test)]
@@ -264,13 +297,8 @@ pub mod internal {
 
             // When the reconnect runs against the port that now refuses.
             let task = tokio::spawn(async move {
-                reconnect(
-                    &blueprint,
-                    &server,
-                    Duration::from_millis(5),
-                    Duration::from_millis(10),
-                )
-                .await
+                let mut backoff = Backoff::new(Duration::from_millis(5), Duration::from_millis(10));
+                reconnect(&blueprint, &server, &mut backoff).await
             });
             tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -295,17 +323,69 @@ pub mod internal {
             server_task.await.expect("the server task panicked");
         }
 
-        // ── next_reconnect_delay ───────────────────────────────────────────────
+        #[tokio::test]
+        async fn a_server_that_never_welcomes_the_bot_gets_a_growing_delay() {
+            // Given a server that accepts the connection and then closes it,
+            // as a reconnect throttle and a refused password both do. The
+            // bot never sees RPL_WELCOME.
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            let accepts: Arc<std::sync::Mutex<Vec<tokio::time::Instant>>> =
+                Arc::new(std::sync::Mutex::new(Vec::new()));
+            let server_task = {
+                let accepts = Arc::clone(&accepts);
+                tokio::spawn(async move {
+                    while let Ok((sock, _)) = listener.accept().await {
+                        accepts.lock().unwrap().push(tokio::time::Instant::now());
+                        // Long enough for the read loop to start, short enough
+                        // to keep the test quick.
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        drop(sock);
+                    }
+                })
+            };
+
+            let state = State::connect("tester", &addr, vec![Channel::from("general")])
+                .await
+                .expect("loopback connect failed")
+                .with_reconnect(Duration::from_millis(50), Duration::from_millis(400));
+
+            // When the bot runs for a while against that server.
+            let bot = tokio::spawn(run_bot(Arc::new(()), state, Vec::<HandlerEntry<()>>::new()));
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            bot.abort();
+            server_task.abort();
+
+            // Then the delay grew with each refused session. At the first
+            // delay of 50 ms the bot would reach the server about 17 times in
+            // that window; the doubling delay holds it to a handful.
+            let accepts = accepts.lock().unwrap().clone();
+            assert!(
+                accepts.len() <= 8,
+                "the delay did not grow: {} connections in 1200 ms",
+                accepts.len()
+            );
+            let last = accepts
+                .windows(2)
+                .last()
+                .map(|w| w[1] - w[0])
+                .expect("the bot connected at least twice");
+            assert!(
+                last >= Duration::from_millis(300),
+                "the last delay was {last:?}, so the backoff started again"
+            );
+        }
+
+        // ── Backoff ────────────────────────────────────────────────────────────
 
         #[test]
         fn the_delay_doubles_until_it_reaches_the_maximum() {
-            let max = Duration::from_secs(60);
-            let mut delay = Duration::from_secs(5);
-            let mut schedule = vec![delay];
+            let mut backoff = Backoff::new(Duration::from_secs(5), Duration::from_secs(60));
+            let mut schedule = vec![backoff.delay];
 
             for _ in 0..5 {
-                delay = next_reconnect_delay(delay, max);
-                schedule.push(delay);
+                backoff.fail();
+                schedule.push(backoff.delay);
             }
 
             assert_eq!(
@@ -319,20 +399,39 @@ pub mod internal {
                     Duration::from_secs(60),
                 ]
             );
+            assert_eq!(backoff.attempt, 6);
         }
 
         #[test]
-        fn a_maximum_below_the_current_delay_keeps_the_current_delay() {
-            let delay = next_reconnect_delay(Duration::from_secs(5), Duration::from_secs(1));
+        fn a_reset_returns_to_the_first_delay_and_the_first_attempt() {
+            let mut backoff = Backoff::new(Duration::from_secs(5), Duration::from_secs(60));
+            backoff.fail();
+            backoff.fail();
 
-            assert_eq!(delay, Duration::from_secs(5));
+            backoff.reset();
+
+            assert_eq!(
+                backoff,
+                Backoff::new(Duration::from_secs(5), Duration::from_secs(60))
+            );
+        }
+
+        #[test]
+        fn a_maximum_below_the_first_delay_keeps_the_first_delay() {
+            let mut backoff = Backoff::new(Duration::from_secs(5), Duration::from_secs(1));
+
+            backoff.fail();
+
+            assert_eq!(backoff.delay, Duration::from_secs(5));
         }
 
         #[test]
         fn a_huge_delay_does_not_overflow() {
-            let delay = next_reconnect_delay(Duration::MAX, Duration::MAX);
+            let mut backoff = Backoff::new(Duration::MAX, Duration::MAX);
 
-            assert_eq!(delay, Duration::MAX);
+            backoff.fail();
+
+            assert_eq!(backoff.delay, Duration::MAX);
         }
     }
 }

@@ -750,10 +750,12 @@ impl State {
     /// Override the reconnect delays.
     ///
     /// After a lost connection the bot waits `delay`, then attempts to
-    /// reconnect. Each failed attempt doubles the delay, up to `max_delay`. A
-    /// successful connection returns the delay to `delay`. The bot retries
-    /// until it is connected again, so a name-server fault or a server restart
-    /// does not stop the process.
+    /// reconnect. Each failed attempt doubles the delay, up to `max_delay`. The
+    /// delay returns to `delay` after a connection that reached registration
+    /// (`RPL_WELCOME`). A server that accepts the connection and then closes it,
+    /// as a reconnect throttle does, therefore also gets the growing delay. The
+    /// bot retries until it is connected again, so a name-server fault or a
+    /// server restart does not stop the process.
     ///
     /// The defaults are [`DEFAULT_RECONNECT_DELAY`] (5 seconds) and
     /// [`DEFAULT_MAX_RECONNECT_DELAY`] (5 minutes). Call this method before
