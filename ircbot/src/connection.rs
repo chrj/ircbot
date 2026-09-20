@@ -132,6 +132,17 @@ impl Default for Settings {
     }
 }
 
+/// Whether an inherited connection completed registration, from the value the
+/// predecessor process wrote.
+///
+/// `None` is a predecessor from before that value existed. Such a version
+/// handed the socket over whatever its state, and this reads it as registered,
+/// as the successor did then.
+#[cfg(unix)]
+fn inherited_registration(recorded: Option<&str>) -> bool {
+    recorded != Some("0")
+}
+
 /// Everything needed to establish an equivalent connection: where to connect,
 /// as whom, and with which [`Settings`].
 ///
@@ -658,7 +669,7 @@ impl State {
 
         use crate::hot_reload::{
             ENV_CHANNELS, ENV_FD, ENV_FLOOD_BURST, ENV_FLOOD_RATE, ENV_KA_INTERVAL, ENV_KA_TIMEOUT,
-            ENV_NICK, ENV_SERVER,
+            ENV_NICK, ENV_REGISTERED, ENV_SERVER,
         };
 
         let fd_str = match std::env::var(ENV_FD) {
@@ -727,10 +738,10 @@ impl State {
             },
             reader,
             write_half: connection.writer,
-            // An inherited connection is already registered, so no capability
-            // exchange runs and nothing can have been read ahead of the loop.
+            // An inherited connection completed its capability exchange in the
+            // process before, so nothing can have been read ahead of the loop.
             pending_lines: Vec::new(),
-            registered: true,
+            registered: inherited_registration(std::env::var(ENV_REGISTERED).ok().as_deref()),
             raw_fd: connection.raw_fd,
         }))
     }
@@ -1016,6 +1027,28 @@ mod tests {
     async fn connect_normalises_channels() {
         let state = connect_loopback().await;
         assert_eq!(state.channels, vec![Channel::from("#general")]);
+    }
+
+    // ── inherited_registration ─────────────────────────────────────────────────
+
+    #[test]
+    #[cfg(unix)]
+    fn an_inherited_connection_is_registered_when_the_predecessor_said_so() {
+        assert!(inherited_registration(Some("1")));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_inherited_connection_is_unregistered_when_the_predecessor_said_so() {
+        assert!(!inherited_registration(Some("0")));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_inherited_connection_without_a_recorded_state_is_registered() {
+        // A predecessor from before the value existed handed the socket over
+        // whatever its state, and the successor read it as registered.
+        assert!(inherited_registration(None));
     }
 
     // ── reconnect ──────────────────────────────────────────────────────────────

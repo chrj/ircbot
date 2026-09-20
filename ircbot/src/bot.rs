@@ -189,6 +189,10 @@ pub(crate) async fn run_session<T: Send + Sync + 'static>(
     // Both are read by the optional keepnick task below.
     let current_nick = Arc::new(RwLock::new(bot_nick.clone()));
     let registered = Arc::new(AtomicBool::new(inherited_registration));
+    // A `SIGHUP` before the welcome must not tell the successor that the socket
+    // it inherits is already on the network.
+    #[cfg(unix)]
+    crate::hot_reload::record_registration(inherited_registration);
 
     // Keepnick: when enabled, periodically re-attempt to reclaim the
     // originally-requested nick while we are using a different one.  A failed
@@ -298,6 +302,10 @@ pub(crate) async fn run_session<T: Send + Sync + 'static>(
                         }
                         Command::Response(Response::RPL_WELCOME, _) => {
                             registered.store(true, Ordering::Relaxed);
+                            // A `SIGHUP` from here on hands over a connection
+                            // that is on the network.
+                            #[cfg(unix)]
+                            crate::hot_reload::record_registration(true);
                             if !joined {
                                 joined = true;
                                 for ch in &channels {

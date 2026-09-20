@@ -107,6 +107,11 @@ pub fn exec_reload(
             .env(ENV_FLOOD_RATE, rate_ms.to_string());
     }
 
+    // A `SIGHUP` can arrive between the connect and `RPL_WELCOME`, so the
+    // successor cannot assume that the socket it inherits is on the network.
+    let registered = REGISTERED_FOR_RELOAD.load(std::sync::atomic::Ordering::Relaxed);
+    cmd.env(ENV_REGISTERED, if registered { "1" } else { "0" });
+
     let err = cmd.exec(); // never returns on success
 
     Box::new(err)
@@ -127,6 +132,24 @@ pub fn record_flood_settings(burst: usize, rate_ms: u64) {
 /// Flood-control settings stashed by [`record_flood_settings`] for [`exec_reload`].
 #[cfg(unix)]
 static FLOOD_FOR_RELOAD: std::sync::OnceLock<(usize, u64)> = std::sync::OnceLock::new();
+
+/// Record whether the current connection is registered, so a subsequent
+/// [`exec_reload`] can tell the successor what it inherits.
+///
+/// The read loop calls this when a session starts and again when
+/// `RPL_WELCOME` arrives. The value describes the connection of the moment,
+/// so the last call wins — unlike [`record_flood_settings`], which keeps the
+/// first value. It is process-wide, as the reload is: it describes the
+/// connection that this process hands over.
+#[cfg(unix)]
+pub fn record_registration(registered: bool) {
+    REGISTERED_FOR_RELOAD.store(registered, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Registration state stashed by [`record_registration`] for [`exec_reload`].
+#[cfg(unix)]
+static REGISTERED_FOR_RELOAD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 // ─── env var names ────────────────────────────────────────────────────────────
 //
@@ -152,3 +175,8 @@ pub const ENV_FLOOD_BURST: &str = "IRCBOT_FLOOD_BURST";
 /// Holds the flood-control rate, in milliseconds per message. Absent under the
 /// same conditions as [`ENV_FLOOD_BURST`].
 pub const ENV_FLOOD_RATE: &str = "IRCBOT_FLOOD_RATE_MS";
+/// Holds `"1"` when the inherited connection completed registration before the
+/// reload, and `"0"` when it did not. Absent when the predecessor is a version
+/// from before this variable, which handed over the socket whatever its state;
+/// the successor then reads the connection as registered, as it did then.
+pub const ENV_REGISTERED: &str = "IRCBOT_REGISTERED";
