@@ -128,6 +128,16 @@ pub(crate) fn from_inherited_fd(raw_fd: std::os::unix::io::RawFd) -> Result<Conn
     std_stream.set_nonblocking(true).map_err(|e| {
         format!("failed to make the inherited socket (fd {raw_fd}) non-blocking: {e}")
     })?;
+
+    // The predecessor handed this descriptor over with FD_CLOEXEC clear, which
+    // is how it survived the `exec`. Set the flag now that this process owns
+    // the socket. Without it every later reload would leave another copy of
+    // this descriptor in the successor, owned by nothing and closed by
+    // nothing, which also keeps a connection open after it ends. The reload
+    // path hands over a copy it makes for that purpose.
+    set_cloexec(raw_fd).map_err(|e| {
+        format!("failed to set close-on-exec on the inherited socket (fd {raw_fd}): {e}")
+    })?;
     let stream = TcpStream::from_std(std_stream)
         .map_err(|e| format!("failed to adopt the inherited socket (fd {raw_fd}): {e}"))?;
 
@@ -137,6 +147,65 @@ pub(crate) fn from_inherited_fd(raw_fd: std::os::unix::io::RawFd) -> Result<Conn
         writer: WriteHalf::Plain(write_half),
         raw_fd: Some(raw_fd),
     })
+}
+
+/// Mark `raw_fd` close-on-exec, so it does not reach a process this one execs.
+#[cfg(unix)]
+fn set_cloexec(raw_fd: std::os::unix::io::RawFd) -> std::io::Result<()> {
+    // Safety: `fcntl` with these commands reads no memory. It reports a
+    // descriptor that is not open with -1, which becomes the error here.
+    let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFD) };
+    if flags == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let rc = unsafe { libc::fcntl(raw_fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+    if rc == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::io::IntoRawFd;
+
+    use super::*;
+
+    /// A connected loopback socket whose descriptor the test can hand over,
+    /// plus the listener that keeps the other end alive.
+    fn connected_fd() -> (std::net::TcpListener, std::os::unix::io::RawFd) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = std::net::TcpStream::connect(addr).expect("connect failed");
+        (listener, stream.into_raw_fd())
+    }
+
+    /// The predecessor clears close-on-exec to hand the socket over. The
+    /// successor owns it afterwards, and a socket that this process owns must
+    /// not reach the next one by itself.
+    #[tokio::test]
+    async fn an_adopted_socket_does_not_reach_the_next_process() {
+        let (_listener, raw_fd) = connected_fd();
+        // Hand it over as `exec_reload` does: close-on-exec clear.
+        let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFD) };
+        unsafe { libc::fcntl(raw_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
+
+        let connection = from_inherited_fd(raw_fd).expect("adopt the inherited socket");
+
+        let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFD) };
+        assert_ne!(flags, -1, "the socket is open");
+        assert_ne!(
+            flags & libc::FD_CLOEXEC,
+            0,
+            "an adopted socket is close-on-exec",
+        );
+        assert_eq!(connection.raw_fd, Some(raw_fd));
+    }
+
+    #[test]
+    fn a_descriptor_that_is_not_open_cannot_be_marked() {
+        assert!(set_cloexec(-1).is_err());
+    }
 }
 
 // ─── halves ──────────────────────────────────────────────────────────────────
