@@ -44,6 +44,16 @@ pub const DEFAULT_FLOOD_RATE: Duration = Duration::from_millis(500);
 /// enabled via [`State::with_keepnick`].
 pub const DEFAULT_KEEPNICK_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Default delay before the first reconnect attempt after a lost connection.
+pub const DEFAULT_RECONNECT_DELAY: Duration = Duration::from_secs(5);
+
+/// Default longest delay between reconnect attempts.
+///
+/// The delay doubles after each failed attempt until it reaches this value, so
+/// a bot survives an outage of hours without a reconnect attempt every five
+/// seconds for its whole length.
+pub const DEFAULT_MAX_RECONNECT_DELAY: Duration = Duration::from_secs(300);
+
 /// How long the IRCv3 capability and SASL exchange may take before the
 /// connection is given up on.
 ///
@@ -97,6 +107,12 @@ pub(crate) struct Settings {
     /// message from a matching sender before it tests any trigger, and answers
     /// no CTCP. Set via [`State::with_ignore`].
     pub(crate) ignore: Vec<String>,
+    /// Delay before the first reconnect attempt after a lost connection. Set
+    /// via [`State::with_reconnect`].
+    pub(crate) reconnect_delay: Duration,
+    /// Longest delay between reconnect attempts. Set via
+    /// [`State::with_reconnect`].
+    pub(crate) max_reconnect_delay: Duration,
 }
 
 impl Default for Settings {
@@ -110,6 +126,35 @@ impl Default for Settings {
             keepnick_interval: None,
             roles: Vec::new(),
             ignore: Vec::new(),
+            reconnect_delay: DEFAULT_RECONNECT_DELAY,
+            max_reconnect_delay: DEFAULT_MAX_RECONNECT_DELAY,
+        }
+    }
+}
+
+/// Whether an inherited connection completed registration, from the value the
+/// predecessor process wrote.
+///
+/// `None` is a predecessor from before that value existed, or a value that is
+/// not valid Unicode. Such a version handed the socket over whatever its
+/// state, and this reads it as registered, as the successor did then.
+///
+/// Any other value reads as registered too, with a warning. It falls back
+/// rather than failing because this value only decides the first reconnect
+/// delay, while an error here would end a successor process that holds a live
+/// connection. The optional flood-control values fall back the same way.
+#[cfg(unix)]
+fn inherited_registration(recorded: Option<&str>) -> bool {
+    match recorded {
+        Some("1") | None => true,
+        Some("0") => false,
+        Some(other) => {
+            tracing::warn!(
+                value = ?other,
+                "the recorded registration state is neither 0 nor 1, so the inherited \
+                 connection reads as registered",
+            );
+            true
         }
     }
 }
@@ -487,6 +532,15 @@ pub struct State {
     /// the server sent early — `ERR_NICKNAMEINUSE`, typically — is dispatched
     /// in arrival order rather than lost.
     pub(crate) pending_lines: Vec<String>,
+    /// Whether this connection already completed registration.
+    ///
+    /// `false` for a new connection: the read loop sets its own flag when
+    /// `RPL_WELCOME` arrives. `true` for a connection inherited from a
+    /// hot-reload `exec`, where the welcome arrived in the process before this
+    /// one and never arrives again. The read loop starts its flag from this
+    /// value, so the reconnect backoff reads such a session as a working
+    /// connection rather than a refused one.
+    pub(crate) registered: bool,
     /// The raw file descriptor of the underlying TCP socket, used by the
     /// hot-reload path to pass the live connection to a new binary.
     ///
@@ -581,6 +635,12 @@ impl State {
         // Recover the inner write half from the BufWriter.
         let write_half = writer.into_inner();
 
+        // The socket is open but the welcome has not arrived. A `SIGHUP` in
+        // that window must not tell the successor that this socket is on the
+        // network. The read loop records the welcome when it comes.
+        #[cfg(unix)]
+        crate::hot_reload::record_registration(false);
+
         Ok(State {
             nick,
             channels,
@@ -589,6 +649,7 @@ impl State {
             reader,
             write_half,
             pending_lines,
+            registered: false,
             #[cfg(unix)]
             raw_fd,
         })
@@ -621,8 +682,11 @@ impl State {
     ///
     /// # Errors
     ///
-    /// Returns an error if the env vars are malformed or if the fd cannot be
-    /// converted to a `TcpStream`.
+    /// Returns an error if one of the required env vars is malformed, or if
+    /// the fd cannot be converted to a `TcpStream`. The optional ones — the
+    /// flood-control settings and the registration state — fall back to their
+    /// default instead, so a successor that holds a live connection is not
+    /// ended by a value it does not need.
     #[cfg(unix)]
     pub fn try_inherit_from_env() -> Result<Option<State>, Box<dyn std::error::Error + Send + Sync>>
     {
@@ -630,7 +694,7 @@ impl State {
 
         use crate::hot_reload::{
             ENV_CHANNELS, ENV_FD, ENV_FLOOD_BURST, ENV_FLOOD_RATE, ENV_KA_INTERVAL, ENV_KA_TIMEOUT,
-            ENV_NICK, ENV_SERVER,
+            ENV_NICK, ENV_REGISTERED, ENV_SERVER,
         };
 
         let fd_str = match std::env::var(ENV_FD) {
@@ -644,6 +708,12 @@ impl State {
         let channels_raw = std::env::var(ENV_CHANNELS)?;
         let ka_interval_ms: u64 = std::env::var(ENV_KA_INTERVAL)?.parse()?;
         let ka_timeout_ms: u64 = std::env::var(ENV_KA_TIMEOUT)?.parse()?;
+        let registered = inherited_registration(std::env::var(ENV_REGISTERED).ok().as_deref());
+
+        // Record it before this process can install a `SIGHUP` task: a reload
+        // that fires between here and the read loop must still hand the
+        // successor the state of the socket, not the default.
+        crate::hot_reload::record_registration(registered);
         // Flood-control settings are restored too, falling back to the defaults
         // if absent or malformed — e.g. when the binary that called
         // `exec_reload` predates flood-control serialisation.
@@ -667,6 +737,7 @@ impl State {
             ENV_KA_TIMEOUT,
             ENV_FLOOD_BURST,
             ENV_FLOOD_RATE,
+            ENV_REGISTERED,
         ] {
             std::env::remove_var(var);
         }
@@ -691,16 +762,18 @@ impl State {
                 keepalive_timeout: Duration::from_millis(ka_timeout_ms),
                 flood_burst,
                 flood_rate,
-                // `ctcp_version`, `keepnick_interval`, `roles`, and `ignore`
-                // are re-applied by the bot builder on the re-exec'd process, so
-                // they need not be carried through the hot-reload environment.
+                // `ctcp_version`, `keepnick_interval`, `roles`, `ignore`, and
+                // the reconnect delays are re-applied by the bot builder on the
+                // re-exec'd process, so they need not be carried through the
+                // hot-reload environment.
                 ..Settings::default()
             },
             reader,
             write_half: connection.writer,
-            // An inherited connection is already registered, so no capability
-            // exchange runs and nothing can have been read ahead of the loop.
+            // An inherited connection completed its capability exchange in the
+            // process before, so nothing can have been read ahead of the loop.
             pending_lines: Vec::new(),
+            registered,
             raw_fd: connection.raw_fd,
         }))
     }
@@ -725,6 +798,27 @@ impl State {
     pub fn with_flood_control(mut self, burst: usize, rate: Duration) -> Self {
         self.settings.flood_burst = burst;
         self.settings.flood_rate = rate;
+        self
+    }
+
+    /// Override the reconnect delays.
+    ///
+    /// After a lost connection the bot waits `delay`, then attempts to
+    /// reconnect. Each failed attempt doubles the delay, up to `max_delay`. The
+    /// delay returns to `delay` after a connection that reached registration
+    /// (`RPL_WELCOME`). A server that accepts the connection and then closes it,
+    /// as a reconnect throttle does, therefore also gets the growing delay. The
+    /// bot retries until it is connected again, so a name-server fault or a
+    /// server restart does not stop the process.
+    ///
+    /// The defaults are [`DEFAULT_RECONNECT_DELAY`] (5 seconds) and
+    /// [`DEFAULT_MAX_RECONNECT_DELAY`] (5 minutes). Call this method before
+    /// starting the bot. A `max_delay` that is shorter than `delay` gives a
+    /// constant delay of `delay`, because the delay never decreases.
+    #[must_use]
+    pub fn with_reconnect(mut self, delay: Duration, max_delay: Duration) -> Self {
+        self.settings.reconnect_delay = delay;
+        self.settings.max_reconnect_delay = max_delay;
         self
     }
 
@@ -845,6 +939,16 @@ impl State {
     pub fn keepnick_interval(&self) -> Option<Duration> {
         self.settings.keepnick_interval
     }
+
+    /// Returns the configured delay before the first reconnect attempt.
+    pub fn reconnect_delay(&self) -> Duration {
+        self.settings.reconnect_delay
+    }
+
+    /// Returns the configured longest delay between reconnect attempts.
+    pub fn max_reconnect_delay(&self) -> Duration {
+        self.settings.max_reconnect_delay
+    }
 }
 
 #[cfg(test)]
@@ -957,6 +1061,37 @@ mod tests {
         assert_eq!(state.channels, vec![Channel::from("#general")]);
     }
 
+    // ── inherited_registration ─────────────────────────────────────────────────
+
+    #[test]
+    #[cfg(unix)]
+    fn an_inherited_connection_is_registered_when_the_predecessor_said_so() {
+        assert!(inherited_registration(Some("1")));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_inherited_connection_is_unregistered_when_the_predecessor_said_so() {
+        assert!(!inherited_registration(Some("0")));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_inherited_connection_with_an_unknown_state_is_registered() {
+        // The value only decides the first reconnect delay, so a value this
+        // version never writes falls back instead of ending the process.
+        assert!(inherited_registration(Some("2")));
+        assert!(inherited_registration(Some("")));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_inherited_connection_without_a_recorded_state_is_registered() {
+        // A predecessor from before the value existed handed the socket over
+        // whatever its state, and the successor read it as registered.
+        assert!(inherited_registration(None));
+    }
+
     // ── reconnect ──────────────────────────────────────────────────────────────
 
     /// A loopback listener that keeps accepting, so the same address can be
@@ -991,7 +1126,8 @@ mod tests {
             .with_ctcp_version("mybot 1.2.3")
             .with_keepnick_interval(Duration::from_secs(15))
             .with_role("admin", ["*!*@trusted.host"])
-            .with_ignore(["*!*@spam.example"]);
+            .with_ignore(["*!*@spam.example"])
+            .with_reconnect(Duration::from_secs(3), Duration::from_secs(90));
 
         let reconnected = original
             .blueprint()
@@ -1019,6 +1155,8 @@ mod tests {
             reconnected.settings.ignore,
             vec!["*!*@spam.example".to_string()]
         );
+        assert_eq!(reconnected.reconnect_delay(), Duration::from_secs(3));
+        assert_eq!(reconnected.max_reconnect_delay(), Duration::from_secs(90));
     }
 
     /// The identity of the connection is carried across too, not just its
@@ -1091,6 +1229,7 @@ mod tests {
             ENV_KA_TIMEOUT,
             ENV_FLOOD_BURST,
             ENV_FLOOD_RATE,
+            crate::hot_reload::ENV_REGISTERED,
         ] {
             std::env::remove_var(var);
         }
@@ -1150,6 +1289,7 @@ mod tests {
         std::env::set_var(ENV_KA_TIMEOUT, "4000");
         std::env::set_var(crate::hot_reload::ENV_FLOOD_BURST, "9");
         std::env::set_var(crate::hot_reload::ENV_FLOOD_RATE, "750");
+        std::env::set_var(crate::hot_reload::ENV_REGISTERED, "1");
 
         let state = State::try_inherit_from_env()
             .expect("inherit should succeed")
@@ -1169,10 +1309,56 @@ mod tests {
         assert_eq!(state.flood_burst(), 9);
         assert_eq!(state.flood_rate(), Duration::from_millis(750));
 
+        // The predecessor was on the network, and said so.
+        assert!(state.registered);
+
         // try_inherit_from_env clears the env vars once consumed.
         assert!(std::env::var(ENV_FD).is_err());
         assert!(std::env::var(crate::hot_reload::ENV_FLOOD_BURST).is_err());
         assert!(std::env::var(crate::hot_reload::ENV_FLOOD_RATE).is_err());
+        assert!(std::env::var(crate::hot_reload::ENV_REGISTERED).is_err());
+    }
+
+    /// A reload that fires between the connect and the welcome hands over a
+    /// socket that is not on the network. The successor must read it that way,
+    /// so that a connection the server then refuses counts as a failed
+    /// attempt rather than resetting the reconnect backoff.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn try_inherit_reads_an_unregistered_connection_from_env() {
+        use std::os::unix::io::IntoRawFd;
+
+        use crate::hot_reload::{
+            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_REGISTERED,
+            ENV_SERVER,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _sock = listener.accept().await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let raw_fd = std::net::TcpStream::connect(&addr)
+            .expect("connect failed")
+            .into_raw_fd();
+
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_inherit_env();
+        std::env::set_var(ENV_FD, raw_fd.to_string());
+        std::env::set_var(ENV_NICK, "inheritbot");
+        std::env::set_var(ENV_SERVER, &addr);
+        std::env::set_var(ENV_CHANNELS, "#a");
+        std::env::set_var(ENV_KA_INTERVAL, "12000");
+        std::env::set_var(ENV_KA_TIMEOUT, "4000");
+        std::env::set_var(ENV_REGISTERED, "0");
+
+        let state = State::try_inherit_from_env()
+            .expect("inherit should succeed")
+            .expect("env vars present → Some(State)");
+        clear_inherit_env();
+
+        assert!(!state.registered);
     }
 
     /// When the flood-control env vars are absent (e.g. the binary that called

@@ -580,6 +580,28 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             #from_state_method
 
+            /// Override the reconnect delays. After a lost connection the bot
+            /// waits `delay`, then attempts to reconnect. Each failed attempt
+            /// doubles the delay, up to `max_delay`, and the bot retries until
+            /// it is connected again. The delay returns to `delay` after a
+            /// connection that reached registration. The defaults are 5 seconds
+            /// and 5 minutes.
+            ///
+            /// Call this (before `main_loop`); like the other builders it is
+            /// re-applied on a `SIGHUP` hot-reload, since the builder runs
+            /// again on startup.
+            #[must_use]
+            pub fn with_reconnect(
+                mut self,
+                delay: std::time::Duration,
+                max_delay: std::time::Duration,
+            ) -> Self {
+                if let Some(state) = self.__state.take() {
+                    self.__state = Some(state.with_reconnect(delay, max_delay));
+                }
+                self
+            }
+
             /// Set a custom CTCP `VERSION` reply.
             ///
             /// By default the bot answers CTCP `VERSION` with
