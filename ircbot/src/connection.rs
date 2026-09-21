@@ -135,12 +135,28 @@ impl Default for Settings {
 /// Whether an inherited connection completed registration, from the value the
 /// predecessor process wrote.
 ///
-/// `None` is a predecessor from before that value existed. Such a version
-/// handed the socket over whatever its state, and this reads it as registered,
-/// as the successor did then.
+/// `None` is a predecessor from before that value existed, or a value that is
+/// not valid Unicode. Such a version handed the socket over whatever its
+/// state, and this reads it as registered, as the successor did then.
+///
+/// Any other value reads as registered too, with a warning. It falls back
+/// rather than failing because this value only decides the first reconnect
+/// delay, while an error here would end a successor process that holds a live
+/// connection. The optional flood-control values fall back the same way.
 #[cfg(unix)]
 fn inherited_registration(recorded: Option<&str>) -> bool {
-    recorded != Some("0")
+    match recorded {
+        Some("1") | None => true,
+        Some("0") => false,
+        Some(other) => {
+            tracing::warn!(
+                value = ?other,
+                "the recorded registration state is neither 0 nor 1, so the inherited \
+                 connection reads as registered",
+            );
+            true
+        }
+    }
 }
 
 /// Everything needed to establish an equivalent connection: where to connect,
@@ -666,8 +682,11 @@ impl State {
     ///
     /// # Errors
     ///
-    /// Returns an error if the env vars are malformed or if the fd cannot be
-    /// converted to a `TcpStream`.
+    /// Returns an error if one of the required env vars is malformed, or if
+    /// the fd cannot be converted to a `TcpStream`. The optional ones — the
+    /// flood-control settings and the registration state — fall back to their
+    /// default instead, so a successor that holds a live connection is not
+    /// ended by a value it does not need.
     #[cfg(unix)]
     pub fn try_inherit_from_env() -> Result<Option<State>, Box<dyn std::error::Error + Send + Sync>>
     {
@@ -1054,6 +1073,15 @@ mod tests {
     #[cfg(unix)]
     fn an_inherited_connection_is_unregistered_when_the_predecessor_said_so() {
         assert!(!inherited_registration(Some("0")));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_inherited_connection_with_an_unknown_state_is_registered() {
+        // The value only decides the first reconnect delay, so a value this
+        // version never writes falls back instead of ending the process.
+        assert!(inherited_registration(Some("2")));
+        assert!(inherited_registration(Some("")));
     }
 
     #[test]
