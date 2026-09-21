@@ -66,7 +66,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Keepalive & auto-reconnect** — periodic `PING`/`PONG` monitoring; reconnects and re-joins on drop. The bot retries until it is connected again, and each failed attempt doubles the delay, from 5 seconds up to 5 minutes (`.with_reconnect(delay, max_delay)`). A server that accepts the connection and then closes it, as a reconnect throttle does, counts as a failed attempt too. If the configured nick is already in use, the bot automatically retries with a suffixed alternative (`bot`, `bot_`, …).
 - **Authentication** — SASL `PLAIN` and `EXTERNAL` (CertFP) during registration, a `PASS` server password, and IRCv3 capability negotiation. A rejected login fails the connection instead of continuing unauthenticated.
 - **TLS** (optional) — `Server::tls("irc.libera.chat:6697")` behind the `tls` feature, with certificate verification against the platform root store, private-CA and self-signed support, and client certificates for CertFP.
-- **Hot reload** (Unix) — `SIGHUP` execs the new binary with the live TCP socket inherited; no reconnect, no missed messages.
 - **Flood protection** — token-bucket rate limiter (default: burst 4, 1 msg / 500 ms).
 - **Auto message splitting** — long messages are word-wrapped and split within the 512-byte IRC limit.
 - **Output sanitization** — `\r`, `\n`, `\0` stripped from every outgoing message.
@@ -83,7 +82,7 @@ ircbot = "0.4"
 tokio  = { version = "1", features = ["full"] }
 ```
 
-See the [`basic_bot` example](ircbot/examples/basic_bot.rs) and the [docs](https://docs.rs/ircbot) for the complete API, hot-reload guide, testing helpers, and lower-level `State` / `internal` APIs.
+See the [`basic_bot` example](ircbot/examples/basic_bot.rs) and the [docs](https://docs.rs/ircbot) for the complete API, testing helpers, and lower-level `State` / `internal` APIs.
 
 ## Authentication
 
@@ -168,13 +167,6 @@ hostname when connecting by IP.
 `danger_accept_invalid_certs` disables verification entirely — it is meant for a
 development server on `localhost`, leaves the connection unauthenticated, and
 logs a warning on every connect.
-
-**Hot reload and TLS are mutually exclusive.** `SIGHUP` still swaps the binary,
-but a TLS session cannot be handed to the new process: the socket survives
-`exec`, while the session keys, record sequence numbers, and partially-read
-records that make it decryptable do not. The successor reconnects and rejoins,
-logging a warning, so a TLS bot trades zero-disconnect reloads for a few seconds
-of downtime.
 
 ## Logging
 

@@ -1088,7 +1088,6 @@ dependencies = [
  "irc-proto",
  "ircbot-macros",
  "leaky-bucket",
- "libc",
  "rcgen",
  "regex",
  "rustls-native-certs",

@@ -1,5 +1,8 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
+// The crate had one `unsafe` region, for the socket that a hot-reload handed
+// to the next binary. Both are gone, and this keeps them gone.
+#![forbid(unsafe_code)]
 
 mod args;
 mod auth;
@@ -8,7 +11,6 @@ pub mod connection;
 pub mod context;
 pub mod format;
 pub mod handler;
-pub mod hot_reload;
 pub mod irc;
 pub mod logging;
 pub mod server;
@@ -58,9 +60,9 @@ pub enum Error {
 /// A handle for replacing the bot's handler list at runtime without
 /// disconnecting from IRC.
 ///
-/// Obtain one via [`internal::make_handler_set`] + [`ReloadHandle::new`] when
-/// using the lower-level API, or use the generated `main_loop()` which wires
-/// up `SIGHUP` automatically.
+/// Obtain one via [`internal::make_handler_set`] + [`ReloadHandle::new`]. It
+/// swaps the handlers of a running bot in process; the connection and the
+/// binary stay as they are.
 ///
 /// `ReloadHandle` is `Clone` — clones share the same underlying [`HandlerSet`].
 pub struct ReloadHandle<T> {
@@ -139,16 +141,6 @@ pub mod internal {
         // configuration in full.
         let blueprint = state.blueprint();
         let server = state.server.clone();
-
-        // Record the flood-control settings so a SIGHUP hot-reload can carry
-        // them to the successor process (the `#[bot]` macro doesn't forward
-        // them to `exec_reload` itself). Keepalive timings are forwarded by the
-        // macro directly; these are not.
-        #[cfg(unix)]
-        crate::hot_reload::record_flood_settings(
-            state.flood_burst(),
-            state.flood_rate().as_millis() as u64,
-        );
 
         // The reconnect delays live in the settings, which the read loop
         // consumes with the state. Read them here, while the state is intact.

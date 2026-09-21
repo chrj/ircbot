@@ -134,9 +134,6 @@ impl syn::parse::Parse for CommandArgs {
 /// start from a non-default value, assign the public field after constructing:
 /// `let mut bot = MyBot::new(…).await?; bot.state = …;`.
 ///
-/// Note: a `SIGHUP` hot-reload re-execs the binary, so in-memory `state` is
-/// reconstructed via `Default` and is **not** carried across the reload.
-///
 /// This is sugar over the lower-level API: a bot is any
 /// `Arc<T: Send + Sync + 'static>` passed to `ircbot::internal::run_bot` with a
 /// hand-built `Vec<ircbot::HandlerEntry<T>>`, which you can use directly when you
@@ -546,30 +543,11 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// MyBot::new("mybot", Server::tls("irc.libera.chat:6697"), ["rust"]).await?;
             /// ```
             ///
-            /// On Unix, if this process was started by `exec_reload` the live
-            /// TCP connection is inherited from the parent binary and no new
-            /// connection is made.  The `nick` and `channels` arguments are then
-            /// taken from the inherited session rather than from here, but
-            /// `server` is still kept: a later reconnect re-runs the handshake
-            /// and needs its transport and credentials.  A TLS connection is
-            /// never inherited, so a reloaded TLS bot always reconnects using
-            /// the `server` given here.
             pub async fn new(
                 nick: impl Into<String>,
                 server: impl Into<ircbot::Server>,
                 channels: impl IntoIterator<Item = impl Into<String>>,
             ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-                // On Unix, check for an inherited fd from a hot-reload exec.
-                #[cfg(unix)]
-                if let Some(mut state) = ircbot::State::try_inherit_from_env()? {
-                    eprintln!("[ircbot] hot-reload: resumed on inherited connection");
-                    // The inherited socket is already registered, but a later
-                    // reconnect is not: it re-runs the handshake and needs the
-                    // credentials, which only the caller has.
-                    state.server = server.into();
-                    return Ok(#struct_name { __state: Some(state) #state_field_init });
-                }
-
                 let state = ircbot::State::connect(
                     nick.into(),
                     server,
@@ -587,9 +565,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// connection that reached registration. The defaults are 5 seconds
             /// and 5 minutes.
             ///
-            /// Call this (before `main_loop`); like the other builders it is
-            /// re-applied on a `SIGHUP` hot-reload, since the builder runs
-            /// again on startup.
+            /// Call this before `main_loop`.
             #[must_use]
             pub fn with_reconnect(
                 mut self,
@@ -606,8 +582,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             ///
             /// By default the bot answers CTCP `VERSION` with
             /// `ircbot <crate-version>`. Call this (before `main_loop`) to reply
-            /// with your own identifier instead. The value is re-applied on a
-            /// `SIGHUP` hot-reload, since the builder runs again on startup.
+            /// with your own identifier instead.
             #[must_use]
             pub fn with_ctcp_version(mut self, version: impl Into<String>) -> Self {
                 if let Some(state) = self.__state.take() {
@@ -618,9 +593,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             /// Enable keepnick: periodically re-attempt to reclaim the
             /// originally-requested nick whenever the bot is using a different
-            /// one. Disabled by default. Call this (before `main_loop`); the
-            /// value is re-applied on a `SIGHUP` hot-reload, since the builder
-            /// runs again on startup.
+            /// one. Disabled by default. Call this before `main_loop`.
             #[must_use]
             pub fn with_keepnick_interval(mut self, interval: std::time::Duration) -> Self {
                 if let Some(state) = self.__state.take() {
@@ -646,9 +619,8 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// `#[command(..., role = #name)]` only fire for matching senders;
             /// everyone else is silently ignored.
             ///
-            /// Call this (before `main_loop`); like the other builders it is
-            /// re-applied on a `SIGHUP` hot-reload, since the builder runs again
-            /// on startup. May be called repeatedly to add patterns or roles.
+            /// Call this before `main_loop`. May be called repeatedly to add
+            /// patterns or roles.
             #[must_use]
             pub fn with_role(
                 mut self,
@@ -666,9 +638,8 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// such a sender reaches no handler, and the framework answers no
             /// CTCP for it.
             ///
-            /// Call this (before `main_loop`); like the other builders it is
-            /// re-applied on a `SIGHUP` hot-reload, since the builder runs
-            /// again on startup. May be called repeatedly to add masks.
+            /// Call this before `main_loop`. May be called repeatedly to add
+            /// masks.
             #[must_use]
             pub fn with_ignore(
                 mut self,
@@ -682,54 +653,11 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             /// Run the bot's main event loop.
             ///
-            /// On Unix, listens for `SIGHUP`.  When received, the current
-            /// process execs the bot binary at the same path, passing the live
-            /// TCP socket fd to the new process so the IRC connection is never
-            /// interrupted.  If the exec fails the bot continues running.
+            /// The loop reconnects on its own when the connection is lost, so
+            /// it returns only when a connection cannot be made at all.
             pub async fn main_loop(mut self) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let state = self.__state.take().expect("bot already started");
-
-                #[cfg(unix)]
-                let (raw_fd, reload_nick, reload_server, reload_channels,
-                     reload_ka_interval_ms, reload_ka_timeout_ms) = (
-                    state.raw_fd,
-                    state.nick.as_str().to_string(),
-                    state.server.addr().to_string(),
-                    state.channels.iter().map(|c| c.as_str().to_string()).collect::<std::vec::Vec<String>>(),
-                    state.keepalive_interval().as_millis() as u64,
-                    state.keepalive_timeout().as_millis() as u64,
-                );
-
                 let bot_arc = std::sync::Arc::new(self);
-
-                // Install a SIGHUP listener that execs the new binary with the
-                // live fd inherited — zero-disconnect binary hot-reload.
-                #[cfg(unix)]
-                {
-                    tokio::spawn(async move {
-                        use tokio::signal::unix::{signal, SignalKind};
-                        match signal(SignalKind::hangup()) {
-                            Ok(mut stream) => {
-                                while stream.recv().await.is_some() {
-                                    eprintln!("[ircbot] SIGHUP — hot-reload: exec new binary");
-                                    let err = ircbot::hot_reload::exec_reload(
-                                        raw_fd,
-                                        &reload_nick,
-                                        &reload_server,
-                                        &reload_channels,
-                                        reload_ka_interval_ms,
-                                        reload_ka_timeout_ms,
-                                    );
-                                    // exec_reload only returns on failure.
-                                    eprintln!("[ircbot] hot-reload exec failed: {err}");
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("[ircbot] failed to install SIGHUP handler: {e}");
-                            }
-                        }
-                    });
-                }
 
                 ircbot::internal::run_bot(
                     bot_arc,
