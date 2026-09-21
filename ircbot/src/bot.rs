@@ -1410,39 +1410,7 @@ mod tests {
 
     // ── protocol logging ───────────────────────────────────────────────────────
 
-    /// A `tracing` writer that appends everything it is handed to a shared
-    /// buffer, so a test can inspect what the subscriber emitted.
-    #[derive(Clone, Default)]
-    struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl CaptureWriter {
-        fn contents(&self) -> String {
-            String::from_utf8(self.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
-                .expect("capture buffer is valid UTF-8")
-        }
-    }
-
-    impl std::io::Write for CaptureWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
-        type Writer = CaptureWriter;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
+    use crate::test_capture::CaptureWriter;
 
     /// Drives the real read/write loop against a local socket that sends a
     /// single `PING` and then disconnects, and asserts that both the inbound

@@ -136,11 +136,18 @@ static FLOOD_FOR_RELOAD: std::sync::OnceLock<(usize, u64)> = std::sync::OnceLock
 /// Record whether the current connection is registered, so a subsequent
 /// [`exec_reload`] can tell the successor what it inherits.
 ///
-/// The read loop calls this when a session starts and again when
-/// `RPL_WELCOME` arrives. The value describes the connection of the moment,
-/// so the last call wins — unlike [`record_flood_settings`], which keeps the
-/// first value. It is process-wide, as the reload is: it describes the
-/// connection that this process hands over.
+/// Three places call this, and together they keep the value true of the
+/// connection of the moment: `State::connect` records `false` for a socket
+/// that has not registered yet, `State::try_inherit_from_env` records what the
+/// predecessor process wrote, and the read loop records `true` at
+/// `RPL_WELCOME`. The first two run before the `SIGHUP` listener of the
+/// `#[bot]` macro exists, which is what a reload arriving at once depends on.
+/// Keep it that way: a call that waits for the read loop to start leaves a
+/// window where this value is the default rather than the state of the socket.
+///
+/// The last call wins, unlike [`record_flood_settings`], which keeps the first
+/// value. It is process-wide, as the reload is: it describes the connection
+/// that this process hands over.
 #[cfg(unix)]
 pub fn record_registration(registered: bool) {
     REGISTERED_FOR_RELOAD.store(registered, std::sync::atomic::Ordering::Relaxed);

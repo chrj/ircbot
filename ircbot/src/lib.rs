@@ -12,6 +12,8 @@ pub mod hot_reload;
 pub mod irc;
 pub mod logging;
 pub mod server;
+#[cfg(test)]
+mod test_capture;
 pub mod testing;
 mod transport;
 pub mod types;
@@ -172,7 +174,16 @@ pub mod internal {
             // five seconds for as long as the server refuses it.
             match session {
                 Session::Registered => backoff.reset(),
-                Session::Unregistered => backoff.fail(),
+                Session::Unregistered => {
+                    let attempt = backoff.attempt;
+                    backoff.fail();
+                    tracing::error!(
+                        %server,
+                        attempt,
+                        next_delay = ?backoff.delay,
+                        "the server closed the connection before registration",
+                    );
+                }
             }
 
             current_state = reconnect(&blueprint, &server, &mut backoff).await;
@@ -328,6 +339,14 @@ pub mod internal {
             // Given a server that accepts the connection and then closes it,
             // as a reconnect throttle and a refused password both do. The
             // bot never sees RPL_WELCOME.
+            let capture = crate::test_capture::CaptureWriter::default();
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(capture.clone())
+                .with_env_filter("ircbot::internal=error")
+                .finish();
+            let _guard = tracing::subscriber::set_default(subscriber);
+
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap().to_string();
             let accepts: Arc<std::sync::Mutex<Vec<tokio::time::Instant>>> =
@@ -373,6 +392,18 @@ pub mod internal {
             assert!(
                 last >= Duration::from_millis(300),
                 "the last delay was {last:?}, so the backoff started again"
+            );
+
+            // And each refused session said so, with the attempt number and
+            // the delay before the next one.
+            let logged = capture.contents();
+            assert!(
+                logged.contains("the server closed the connection before registration"),
+                "the refused session was not logged; got:\n{logged}"
+            );
+            assert!(
+                logged.contains("attempt=1") && logged.contains("next_delay=100ms"),
+                "the log gives neither the attempt nor the next delay; got:\n{logged}"
             );
         }
 
