@@ -400,6 +400,12 @@ pub(crate) async fn run_session<T: Send + Sync + 'static>(
     drop(write_tx);
     let _ = write_task.await;
 
+    // The socket is closed now. Until a new connection records itself, a
+    // reload has nothing to hand over: the descriptor is gone, and its number
+    // can already belong to something else.
+    #[cfg(unix)]
+    crate::hot_reload::record_fd(None);
+
     let session = if registered.load(Ordering::Relaxed) {
         Session::Registered
     } else {

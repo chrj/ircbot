@@ -70,20 +70,13 @@ pub fn exec_reload(
     if raw_fd.is_none() {
         tracing::warn!(
             %server,
-            "hot reload: this connection cannot be inherited across exec (TLS sessions do not \
-             survive it), so the new binary will reconnect and rejoin — expect a brief disconnect"
+            "hot reload: there is no socket to hand over, because the bot is between two \
+             connections or the connection cannot survive the exec (a TLS session cannot), so \
+             the new binary will connect and rejoin — expect a brief disconnect"
         );
     }
 
-    // The caller of this function is the `SIGHUP` task of the `#[bot]` macro,
-    // which captured its descriptor before the bot started. Every reconnect
-    // opens a new socket with a new descriptor, so a caller that wants the
-    // socket handed over gets the one the connection recorded last. A caller
-    // that passed `None` wants no socket handed over, and keeps that.
-    let raw_fd = match raw_fd {
-        Some(captured) => recorded_fd().unwrap_or(Some(captured)),
-        None => None,
-    };
+    let raw_fd = fd_for_reload(raw_fd, recorded_fd());
 
     // Clear FD_CLOEXEC so the fd survives exec.
     if let Some(fd) = raw_fd {
@@ -176,23 +169,42 @@ pub fn record_registration(registered: bool) {
 /// subsequent [`exec_reload`] hands over the live socket.
 ///
 /// `State::connect` and `State::try_inherit_from_env` call this when they make
-/// or adopt a connection, which includes every reconnect. Pass `None` for a
-/// connection that cannot be inherited, as a TLS session cannot: the successor
-/// then opens its own connection, and a caller of [`exec_reload`] that asked
-/// to hand a socket over gets no socket rather than a stale one.
+/// or adopt a connection, which includes every reconnect. The read loop calls
+/// it with `None` when a connection ends, and so does a connection that cannot
+/// be inherited, as a TLS session cannot. The successor then opens its own
+/// connection, and a caller of [`exec_reload`] that asked to hand a socket
+/// over gets no socket rather than a closed one.
 ///
 /// It is process-wide, as the reload is: it describes the connection that this
 /// process hands over.
 #[cfg(unix)]
 pub fn record_fd(raw_fd: Option<std::os::unix::io::RawFd>) {
-    FD_FOR_RELOAD.store(raw_fd.unwrap_or(NOT_INHERITABLE), Ordering::Relaxed);
+    FD_FOR_RELOAD.store(raw_fd.unwrap_or(NO_SOCKET), Ordering::Relaxed);
+}
+
+/// The descriptor to hand to the successor.
+///
+/// The caller of [`exec_reload`] is the `SIGHUP` task of the `#[bot]` macro,
+/// which captured `caller` before the bot started. Every reconnect opens a new
+/// socket with a new descriptor, and between two connections there is none at
+/// all, so a caller that asks to hand a socket over gets what the connection
+/// recorded. A caller that passed `None` asked for no socket, and keeps that.
+#[cfg(unix)]
+fn fd_for_reload(
+    caller: Option<std::os::unix::io::RawFd>,
+    recorded: Option<Option<std::os::unix::io::RawFd>>,
+) -> Option<std::os::unix::io::RawFd> {
+    match caller {
+        Some(captured) => recorded.unwrap_or(Some(captured)),
+        None => None,
+    }
 }
 
 /// What [`record_fd`] last recorded.
 ///
 /// `None` when nothing was recorded, which leaves the caller of
 /// [`exec_reload`] with the descriptor it passed. `Some(None)` is a connection
-/// that cannot be inherited.
+/// that ended, or one that cannot be inherited.
 #[cfg(unix)]
 fn recorded_fd() -> Option<Option<std::os::unix::io::RawFd>> {
     decode_fd(FD_FOR_RELOAD.load(Ordering::Relaxed))
@@ -204,7 +216,7 @@ fn recorded_fd() -> Option<Option<std::os::unix::io::RawFd>> {
 fn decode_fd(recorded: std::os::unix::io::RawFd) -> Option<Option<std::os::unix::io::RawFd>> {
     match recorded {
         UNRECORDED => None,
-        NOT_INHERITABLE => Some(None),
+        NO_SOCKET => Some(None),
         fd => Some(Some(fd)),
     }
 }
@@ -219,9 +231,10 @@ static FD_FOR_RELOAD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI3
 #[cfg(unix)]
 const UNRECORDED: std::os::unix::io::RawFd = i32::MIN;
 
-/// [`FD_FOR_RELOAD`] for a connection that cannot survive an `exec`.
+/// [`FD_FOR_RELOAD`] when there is no socket to hand over: the connection
+/// ended, or it cannot survive an `exec`.
 #[cfg(unix)]
-const NOT_INHERITABLE: std::os::unix::io::RawFd = -1;
+const NO_SOCKET: std::os::unix::io::RawFd = -1;
 
 /// Registration state stashed by [`record_registration`] for [`exec_reload`].
 #[cfg(unix)]
@@ -271,11 +284,36 @@ mod tests {
 
     #[test]
     fn a_connection_that_cannot_be_inherited_records_no_descriptor() {
-        assert_eq!(decode_fd(NOT_INHERITABLE), Some(None));
+        assert_eq!(decode_fd(NO_SOCKET), Some(None));
     }
 
     #[test]
     fn a_recorded_descriptor_reads_back_as_itself() {
         assert_eq!(decode_fd(7), Some(Some(7)));
+    }
+
+    // ── fd_for_reload ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_live_descriptor_replaces_the_one_the_caller_captured() {
+        assert_eq!(fd_for_reload(Some(3), Some(Some(9))), Some(9));
+    }
+
+    #[test]
+    fn a_connection_that_ended_hands_over_no_descriptor() {
+        // Between two connections the captured descriptor is closed, and its
+        // number can already belong to something else.
+        assert_eq!(fd_for_reload(Some(3), Some(None)), None);
+    }
+
+    #[test]
+    fn the_caller_keeps_its_descriptor_when_no_connection_recorded_one() {
+        assert_eq!(fd_for_reload(Some(3), None), Some(3));
+    }
+
+    #[test]
+    fn a_caller_that_asks_for_no_socket_hands_over_none() {
+        assert_eq!(fd_for_reload(None, Some(Some(9))), None);
+        assert_eq!(fd_for_reload(None, None), None);
     }
 }
