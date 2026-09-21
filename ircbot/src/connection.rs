@@ -619,6 +619,12 @@ impl State {
         // Recover the inner write half from the BufWriter.
         let write_half = writer.into_inner();
 
+        // The socket is open but the welcome has not arrived. A `SIGHUP` in
+        // that window must not tell the successor that this socket is on the
+        // network. The read loop records the welcome when it comes.
+        #[cfg(unix)]
+        crate::hot_reload::record_registration(false);
+
         Ok(State {
             nick,
             channels,
@@ -683,6 +689,12 @@ impl State {
         let channels_raw = std::env::var(ENV_CHANNELS)?;
         let ka_interval_ms: u64 = std::env::var(ENV_KA_INTERVAL)?.parse()?;
         let ka_timeout_ms: u64 = std::env::var(ENV_KA_TIMEOUT)?.parse()?;
+        let registered = inherited_registration(std::env::var(ENV_REGISTERED).ok().as_deref());
+
+        // Record it before this process can install a `SIGHUP` task: a reload
+        // that fires between here and the read loop must still hand the
+        // successor the state of the socket, not the default.
+        crate::hot_reload::record_registration(registered);
         // Flood-control settings are restored too, falling back to the defaults
         // if absent or malformed — e.g. when the binary that called
         // `exec_reload` predates flood-control serialisation.
@@ -706,6 +718,7 @@ impl State {
             ENV_KA_TIMEOUT,
             ENV_FLOOD_BURST,
             ENV_FLOOD_RATE,
+            ENV_REGISTERED,
         ] {
             std::env::remove_var(var);
         }
@@ -741,7 +754,7 @@ impl State {
             // An inherited connection completed its capability exchange in the
             // process before, so nothing can have been read ahead of the loop.
             pending_lines: Vec::new(),
-            registered: inherited_registration(std::env::var(ENV_REGISTERED).ok().as_deref()),
+            registered,
             raw_fd: connection.raw_fd,
         }))
     }
@@ -1188,6 +1201,7 @@ mod tests {
             ENV_KA_TIMEOUT,
             ENV_FLOOD_BURST,
             ENV_FLOOD_RATE,
+            crate::hot_reload::ENV_REGISTERED,
         ] {
             std::env::remove_var(var);
         }
@@ -1247,6 +1261,7 @@ mod tests {
         std::env::set_var(ENV_KA_TIMEOUT, "4000");
         std::env::set_var(crate::hot_reload::ENV_FLOOD_BURST, "9");
         std::env::set_var(crate::hot_reload::ENV_FLOOD_RATE, "750");
+        std::env::set_var(crate::hot_reload::ENV_REGISTERED, "1");
 
         let state = State::try_inherit_from_env()
             .expect("inherit should succeed")
@@ -1266,10 +1281,56 @@ mod tests {
         assert_eq!(state.flood_burst(), 9);
         assert_eq!(state.flood_rate(), Duration::from_millis(750));
 
+        // The predecessor was on the network, and said so.
+        assert!(state.registered);
+
         // try_inherit_from_env clears the env vars once consumed.
         assert!(std::env::var(ENV_FD).is_err());
         assert!(std::env::var(crate::hot_reload::ENV_FLOOD_BURST).is_err());
         assert!(std::env::var(crate::hot_reload::ENV_FLOOD_RATE).is_err());
+        assert!(std::env::var(crate::hot_reload::ENV_REGISTERED).is_err());
+    }
+
+    /// A reload that fires between the connect and the welcome hands over a
+    /// socket that is not on the network. The successor must read it that way,
+    /// so that a connection the server then refuses counts as a failed
+    /// attempt rather than resetting the reconnect backoff.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn try_inherit_reads_an_unregistered_connection_from_env() {
+        use std::os::unix::io::IntoRawFd;
+
+        use crate::hot_reload::{
+            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_REGISTERED,
+            ENV_SERVER,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _sock = listener.accept().await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let raw_fd = std::net::TcpStream::connect(&addr)
+            .expect("connect failed")
+            .into_raw_fd();
+
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_inherit_env();
+        std::env::set_var(ENV_FD, raw_fd.to_string());
+        std::env::set_var(ENV_NICK, "inheritbot");
+        std::env::set_var(ENV_SERVER, &addr);
+        std::env::set_var(ENV_CHANNELS, "#a");
+        std::env::set_var(ENV_KA_INTERVAL, "12000");
+        std::env::set_var(ENV_KA_TIMEOUT, "4000");
+        std::env::set_var(ENV_REGISTERED, "0");
+
+        let state = State::try_inherit_from_env()
+            .expect("inherit should succeed")
+            .expect("env vars present → Some(State)");
+        clear_inherit_env();
+
+        assert!(!state.registered);
     }
 
     /// When the flood-control env vars are absent (e.g. the binary that called
