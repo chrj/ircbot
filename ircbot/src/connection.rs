@@ -638,8 +638,15 @@ impl State {
         // The socket is open but the welcome has not arrived. A `SIGHUP` in
         // that window must not tell the successor that this socket is on the
         // network. The read loop records the welcome when it comes.
+        //
+        // The descriptor goes with it: a reconnect opens a new socket, and the
+        // `SIGHUP` task of the `#[bot]` macro still holds the one it captured
+        // at start-up.
         #[cfg(unix)]
-        crate::hot_reload::record_registration(false);
+        {
+            crate::hot_reload::record_registration(false);
+            crate::hot_reload::record_fd(raw_fd);
+        }
 
         Ok(State {
             nick,
@@ -749,6 +756,7 @@ impl State {
         };
 
         let connection = transport::from_inherited_fd(raw_fd)?;
+        crate::hot_reload::record_fd(connection.raw_fd);
         let reader = tokio::io::BufReader::new(connection.reader);
 
         Ok(Some(State {
@@ -1157,6 +1165,33 @@ mod tests {
         );
         assert_eq!(reconnected.reconnect_delay(), Duration::from_secs(3));
         assert_eq!(reconnected.max_reconnect_delay(), Duration::from_secs(90));
+    }
+
+    /// The premise of the descriptor that a reload hands over: a reconnect is a
+    /// new socket, so the descriptor the `#[bot]` macro captured at start-up is
+    /// not the one the bot is on after the first reconnect.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_reconnect_gives_the_bot_a_different_descriptor() {
+        let addr = serve_loopback().await;
+
+        let original = State::connect("tester", &addr, vec![Channel::from("general")])
+            .await
+            .expect("loopback connect failed");
+        let reconnected = original
+            .blueprint()
+            .connect()
+            .await
+            .expect("reconnect failed");
+
+        assert!(
+            original.raw_fd.is_some(),
+            "a plaintext socket has a descriptor"
+        );
+        assert_ne!(
+            original.raw_fd, reconnected.raw_fd,
+            "the first connection is still open, so its descriptor cannot be reused"
+        );
     }
 
     /// The identity of the connection is carried across too, not just its

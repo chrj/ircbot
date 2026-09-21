@@ -689,6 +689,10 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             pub async fn main_loop(mut self) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let state = self.__state.take().expect("bot already started");
 
+                // These describe the connection at start-up. `raw_fd` says
+                // whether a socket can be handed over at all, not which one:
+                // `exec_reload` takes the descriptor of the live connection,
+                // which a reconnect replaces.
                 #[cfg(unix)]
                 let (raw_fd, reload_nick, reload_server, reload_channels,
                      reload_ka_interval_ms, reload_ka_timeout_ms) = (

@@ -34,11 +34,20 @@
 //! still replaced, just without the socket, so the new process connects afresh
 //! and rejoins. Callers must warn the user that the connection will drop.
 
+#[cfg(unix)]
+use std::sync::atomic::Ordering;
+
 /// Replace the current process image with a new build of the same binary,
 /// handing over the live IRC socket when it can be inherited.
 ///
 /// Pass `raw_fd` as `None` to replace the binary without the socket. The
 /// successor then opens a fresh connection and rejoins `channels`.
+///
+/// A `Some` value says to hand the socket over, not which one: the descriptor
+/// that goes to the successor is the one the live connection recorded with
+/// [`record_fd`], because a reconnect replaces the socket while the caller
+/// keeps the descriptor it first captured. The passed value is used only when
+/// no connection recorded itself.
 ///
 /// On success this function does not return: the process image is gone.
 ///
@@ -65,6 +74,16 @@ pub fn exec_reload(
              survive it), so the new binary will reconnect and rejoin — expect a brief disconnect"
         );
     }
+
+    // The caller of this function is the `SIGHUP` task of the `#[bot]` macro,
+    // which captured its descriptor before the bot started. Every reconnect
+    // opens a new socket with a new descriptor, so a caller that wants the
+    // socket handed over gets the one the connection recorded last. A caller
+    // that passed `None` wants no socket handed over, and keeps that.
+    let raw_fd = match raw_fd {
+        Some(captured) => recorded_fd().unwrap_or(Some(captured)),
+        None => None,
+    };
 
     // Clear FD_CLOEXEC so the fd survives exec.
     if let Some(fd) = raw_fd {
@@ -109,7 +128,7 @@ pub fn exec_reload(
 
     // A `SIGHUP` can arrive between the connect and `RPL_WELCOME`, so the
     // successor cannot assume that the socket it inherits is on the network.
-    let registered = REGISTERED_FOR_RELOAD.load(std::sync::atomic::Ordering::Relaxed);
+    let registered = REGISTERED_FOR_RELOAD.load(Ordering::Relaxed);
     cmd.env(ENV_REGISTERED, if registered { "1" } else { "0" });
 
     let err = cmd.exec(); // never returns on success
@@ -150,8 +169,59 @@ static FLOOD_FOR_RELOAD: std::sync::OnceLock<(usize, u64)> = std::sync::OnceLock
 /// that this process hands over.
 #[cfg(unix)]
 pub fn record_registration(registered: bool) {
-    REGISTERED_FOR_RELOAD.store(registered, std::sync::atomic::Ordering::Relaxed);
+    REGISTERED_FOR_RELOAD.store(registered, Ordering::Relaxed);
 }
+
+/// Record the descriptor of the connection that this process now holds, so a
+/// subsequent [`exec_reload`] hands over the live socket.
+///
+/// `State::connect` and `State::try_inherit_from_env` call this when they make
+/// or adopt a connection, which includes every reconnect. Pass `None` for a
+/// connection that cannot be inherited, as a TLS session cannot: the successor
+/// then opens its own connection, and a caller of [`exec_reload`] that asked
+/// to hand a socket over gets no socket rather than a stale one.
+///
+/// It is process-wide, as the reload is: it describes the connection that this
+/// process hands over.
+#[cfg(unix)]
+pub fn record_fd(raw_fd: Option<std::os::unix::io::RawFd>) {
+    FD_FOR_RELOAD.store(raw_fd.unwrap_or(NOT_INHERITABLE), Ordering::Relaxed);
+}
+
+/// What [`record_fd`] last recorded.
+///
+/// `None` when nothing was recorded, which leaves the caller of
+/// [`exec_reload`] with the descriptor it passed. `Some(None)` is a connection
+/// that cannot be inherited.
+#[cfg(unix)]
+fn recorded_fd() -> Option<Option<std::os::unix::io::RawFd>> {
+    decode_fd(FD_FOR_RELOAD.load(Ordering::Relaxed))
+}
+
+/// The meaning of a value in [`FD_FOR_RELOAD`], kept apart from the static so
+/// it can be tested.
+#[cfg(unix)]
+fn decode_fd(recorded: std::os::unix::io::RawFd) -> Option<Option<std::os::unix::io::RawFd>> {
+    match recorded {
+        UNRECORDED => None,
+        NOT_INHERITABLE => Some(None),
+        fd => Some(Some(fd)),
+    }
+}
+
+/// Descriptor of the live connection, stashed by [`record_fd`] for
+/// [`exec_reload`]. A descriptor is never negative, so the two states that are
+/// not a descriptor use negative values.
+#[cfg(unix)]
+static FD_FOR_RELOAD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(UNRECORDED);
+
+/// [`FD_FOR_RELOAD`] before any connection recorded itself.
+#[cfg(unix)]
+const UNRECORDED: std::os::unix::io::RawFd = i32::MIN;
+
+/// [`FD_FOR_RELOAD`] for a connection that cannot survive an `exec`.
+#[cfg(unix)]
+const NOT_INHERITABLE: std::os::unix::io::RawFd = -1;
 
 /// Registration state stashed by [`record_registration`] for [`exec_reload`].
 #[cfg(unix)]
@@ -187,3 +257,25 @@ pub const ENV_FLOOD_RATE: &str = "IRCBOT_FLOOD_RATE_MS";
 /// from before this variable, which handed over the socket whatever its state;
 /// the successor then reads the connection as registered, as it did then.
 pub const ENV_REGISTERED: &str = "IRCBOT_REGISTERED";
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    // ── decode_fd ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn nothing_recorded_leaves_the_caller_with_its_own_descriptor() {
+        assert_eq!(decode_fd(UNRECORDED), None);
+    }
+
+    #[test]
+    fn a_connection_that_cannot_be_inherited_records_no_descriptor() {
+        assert_eq!(decode_fd(NOT_INHERITABLE), Some(None));
+    }
+
+    #[test]
+    fn a_recorded_descriptor_reads_back_as_itself() {
+        assert_eq!(decode_fd(7), Some(Some(7)));
+    }
+}
