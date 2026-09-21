@@ -67,18 +67,23 @@ pub fn exec_reload(
 ) -> crate::BoxError {
     use std::os::unix::process::CommandExt;
 
+    // Take a copy of the live descriptor and hand that over. The read loop can
+    // close its own copy at any moment, on another runtime thread, and the
+    // copy keeps the socket open until the `exec`.
+    let raw_fd = fd_for_reload(raw_fd, recorded_fd()).and_then(dup_for_exec);
+
     if raw_fd.is_none() {
         tracing::warn!(
             %server,
             "hot reload: there is no socket to hand over, because the bot is between two \
-             connections or the connection cannot survive the exec (a TLS session cannot), so \
-             the new binary will connect and rejoin — expect a brief disconnect"
+             connections, or the connection ended as this reload started, or it cannot survive \
+             the exec (a TLS session cannot), so the new binary will connect and rejoin — \
+             expect a brief disconnect"
         );
     }
 
-    let raw_fd = fd_for_reload(raw_fd, recorded_fd());
-
-    // Clear FD_CLOEXEC so the fd survives exec.
+    // Clear FD_CLOEXEC so the fd survives exec. `dup` already returns a
+    // descriptor with the flag clear; this also proves the descriptor is open.
     if let Some(fd) = raw_fd {
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
         if flags == -1 {
@@ -126,7 +131,41 @@ pub fn exec_reload(
 
     let err = cmd.exec(); // never returns on success
 
+    // The exec failed, so this process keeps running and keeps its own socket.
+    // Close the copy rather than leaving it open for the life of the process.
+    if let Some(fd) = raw_fd {
+        // Safety: `fd` is the descriptor `dup` returned above, and nothing
+        // else owns it — `exec` is what would have consumed it.
+        unsafe { libc::close(fd) };
+    }
+
     Box::new(err)
+}
+
+/// Copy `raw_fd`, so that the socket stays open while this reload prepares
+/// the `exec` even if the read loop closes its own copy.
+///
+/// Returns `None` when the descriptor is already gone. The successor then
+/// opens its own connection, which is what a bot without an inherited socket
+/// does anyway.
+///
+/// The copy also keeps `FD_CLOEXEC` off the descriptor of the bot: `dup`
+/// returns the copy with the flag clear, and an `exec` that never happens
+/// leaves the socket of the bot as it was.
+#[cfg(unix)]
+fn dup_for_exec(raw_fd: std::os::unix::io::RawFd) -> Option<std::os::unix::io::RawFd> {
+    // Safety: `dup` reads no memory. It returns -1 for a descriptor that is
+    // not open, which is the case this function reports as `None`.
+    let copy = unsafe { libc::dup(raw_fd) };
+    if copy == -1 {
+        tracing::warn!(
+            fd = raw_fd,
+            error = %std::io::Error::last_os_error(),
+            "hot reload: the socket closed before it could be handed over",
+        );
+        return None;
+    }
+    Some(copy)
 }
 
 /// Record the active flood-control settings (`burst`, `rate` in milliseconds)
@@ -290,6 +329,47 @@ mod tests {
     #[test]
     fn a_recorded_descriptor_reads_back_as_itself() {
         assert_eq!(decode_fd(7), Some(Some(7)));
+    }
+
+    // ── dup_for_exec ───────────────────────────────────────────────────────────
+
+    /// A connected loopback socket, and the descriptor it owns.
+    fn connected_socket() -> std::net::TcpStream {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let _held = listener.accept();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        });
+        std::net::TcpStream::connect(addr).expect("connect failed")
+    }
+
+    #[test]
+    fn a_copy_of_a_live_socket_outlives_the_original() {
+        use std::os::unix::io::AsRawFd;
+
+        let socket = connected_socket();
+        let original = socket.as_raw_fd();
+
+        let copy = dup_for_exec(original).expect("a live socket can be copied");
+        drop(socket);
+
+        assert_ne!(copy, original, "the copy is its own descriptor");
+        assert_ne!(
+            unsafe { libc::fcntl(copy, libc::F_GETFD) },
+            -1,
+            "the copy is still open after the original closed",
+        );
+        // Safety: the copy is owned here and nothing else holds it.
+        unsafe { libc::close(copy) };
+    }
+
+    #[test]
+    fn a_descriptor_that_is_not_open_cannot_be_copied() {
+        // A socket that closed and a descriptor that was never open are the
+        // same thing to `dup`, and this one cannot be given to another test
+        // while this one runs.
+        assert_eq!(dup_for_exec(-1), None);
     }
 
     // ── fd_for_reload ──────────────────────────────────────────────────────────
