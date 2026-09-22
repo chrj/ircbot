@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/chrj/ircbot/compare/v0.5.0...v0.6.0) - 2026-09-22
+
+### Added
+
+- [**breaking**] [171] Remove hot-reload: high complexity, low value, no TLS support ([#172](https://github.com/chrj/ircbot/pull/172))
+
+  The hot-reload feature is removed. It was a high-complexity feature that brought little value, and it never worked for a TLS connection, because a TLS session cannot survive an `exec`. The `hot_reload` module, `State::try_inherit_from_env` and `State::raw_fd` go with it, and a bot takes a restart to run a new binary now.
+
+- [165] Retry the reconnect with a growing delay ([#166](https://github.com/chrj/ircbot/pull/166))
+
 ## [0.5.0](https://github.com/chrj/ircbot/compare/v0.4.3...v0.5.0) - 2026-09-17
 
 ### Added
