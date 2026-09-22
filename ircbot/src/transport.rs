@@ -21,14 +21,6 @@ use crate::{server::Server, BoxError};
 pub(crate) struct Connection {
     pub(crate) reader: ReadHalf,
     pub(crate) writer: WriteHalf,
-    /// The raw file descriptor, when this connection can survive an `exec`.
-    ///
-    /// `None` for TLS: the socket would be inherited fine, but the session keys,
-    /// record sequence numbers, and any partially-read record live in this
-    /// process's memory and die with it, so the successor would inherit a stream
-    /// it cannot decrypt. See [`crate::hot_reload`].
-    #[cfg(unix)]
-    pub(crate) raw_fd: Option<std::os::unix::io::RawFd>,
 }
 
 /// Open a connection to `server`, performing the TLS handshake if configured.
@@ -48,20 +40,12 @@ pub(crate) async fn connect(server: &Server) -> Result<Connection, BoxError> {
         )
     })?;
 
-    #[cfg(unix)]
-    let raw_fd = {
-        use std::os::unix::io::AsRawFd;
-        stream.as_raw_fd()
-    };
-
     match &server.tls {
         None => {
             let (read_half, write_half) = stream.into_split();
             Ok(Connection {
                 reader: ReadHalf::Plain(read_half),
                 writer: WriteHalf::Plain(write_half),
-                #[cfg(unix)]
-                raw_fd: Some(raw_fd),
             })
         }
 
@@ -95,8 +79,6 @@ pub(crate) async fn connect(server: &Server) -> Result<Connection, BoxError> {
             Ok(Connection {
                 reader: ReadHalf::Tls(read_half),
                 writer: WriteHalf::Tls(write_half),
-                #[cfg(unix)]
-                raw_fd: None,
             })
         }
 
@@ -106,37 +88,6 @@ pub(crate) async fn connect(server: &Server) -> Result<Connection, BoxError> {
         #[cfg(not(feature = "tls"))]
         Some(tls) => match *tls {},
     }
-}
-
-/// Rebuild a [`Connection`] from a file descriptor inherited across `exec`.
-///
-/// Only ever a plaintext socket; see [`Connection::raw_fd`].
-///
-/// # Errors
-///
-/// Returns an error if the descriptor cannot be turned into a Tokio
-/// [`TcpStream`] — for instance if it was already closed, or does not refer to
-/// a socket.
-#[cfg(unix)]
-pub(crate) fn from_inherited_fd(raw_fd: std::os::unix::io::RawFd) -> Result<Connection, BoxError> {
-    use std::os::unix::io::FromRawFd;
-
-    // Safety: the fd was inherited from the process that called `exec_reload`
-    // and has not been closed since — `exec` preserves descriptors without
-    // FD_CLOEXEC, and nothing in this process has touched it yet.
-    let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
-    std_stream.set_nonblocking(true).map_err(|e| {
-        format!("failed to make the inherited socket (fd {raw_fd}) non-blocking: {e}")
-    })?;
-    let stream = TcpStream::from_std(std_stream)
-        .map_err(|e| format!("failed to adopt the inherited socket (fd {raw_fd}): {e}"))?;
-
-    let (read_half, write_half) = stream.into_split();
-    Ok(Connection {
-        reader: ReadHalf::Plain(read_half),
-        writer: WriteHalf::Plain(write_half),
-        raw_fd: Some(raw_fd),
-    })
 }
 
 // ─── halves ──────────────────────────────────────────────────────────────────
@@ -297,46 +248,6 @@ mod tls_tests {
                 .expect("server task ended without reporting"),
             "NICK tester"
         );
-    }
-
-    /// A TLS connection cannot be inherited across `exec`, so it must not offer
-    /// a descriptor for the hot-reload path to hand over.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_tls_connection_exposes_no_fd_for_hot_reload() {
-        let cert = self_signed();
-        let pem = cert.pem.clone();
-        let (addr, _first_line) = spawn_tls_server(cert).await;
-
-        let state = State::connect(
-            "tester",
-            Server::tls(&addr)
-                .with_sni("localhost")
-                .with_extra_root_pem(pem.into_bytes()),
-            vec![],
-        )
-        .await
-        .expect("TLS connect should succeed");
-
-        assert_eq!(state.raw_fd, None);
-    }
-
-    /// A plaintext connection is still hot-reloadable.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_plaintext_connection_exposes_its_fd_for_hot_reload() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-        tokio::spawn(async move {
-            let _sock = listener.accept().await;
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        });
-
-        let state = State::connect("tester", addr.as_str(), vec![])
-            .await
-            .expect("plaintext connect should succeed");
-
-        assert!(state.raw_fd.is_some());
     }
 
     /// Given a server presenting a self-signed certificate, when it is not

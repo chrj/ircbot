@@ -132,33 +132,6 @@ impl Default for Settings {
     }
 }
 
-/// Whether an inherited connection completed registration, from the value the
-/// predecessor process wrote.
-///
-/// `None` is a predecessor from before that value existed, or a value that is
-/// not valid Unicode. Such a version handed the socket over whatever its
-/// state, and this reads it as registered, as the successor did then.
-///
-/// Any other value reads as registered too, with a warning. It falls back
-/// rather than failing because this value only decides the first reconnect
-/// delay, while an error here would end a successor process that holds a live
-/// connection. The optional flood-control values fall back the same way.
-#[cfg(unix)]
-fn inherited_registration(recorded: Option<&str>) -> bool {
-    match recorded {
-        Some("1") | None => true,
-        Some("0") => false,
-        Some(other) => {
-            tracing::warn!(
-                value = ?other,
-                "the recorded registration state is neither 0 nor 1, so the inherited \
-                 connection reads as registered",
-            );
-            true
-        }
-    }
-}
-
 /// Everything needed to establish an equivalent connection: where to connect,
 /// as whom, and with which [`Settings`].
 ///
@@ -532,24 +505,6 @@ pub struct State {
     /// the server sent early — `ERR_NICKNAMEINUSE`, typically — is dispatched
     /// in arrival order rather than lost.
     pub(crate) pending_lines: Vec<String>,
-    /// Whether this connection already completed registration.
-    ///
-    /// `false` for a new connection: the read loop sets its own flag when
-    /// `RPL_WELCOME` arrives. `true` for a connection inherited from a
-    /// hot-reload `exec`, where the welcome arrived in the process before this
-    /// one and never arrives again. The read loop starts its flag from this
-    /// value, so the reconnect backoff reads such a session as a working
-    /// connection rather than a refused one.
-    pub(crate) registered: bool,
-    /// The raw file descriptor of the underlying TCP socket, used by the
-    /// hot-reload path to pass the live connection to a new binary.
-    ///
-    /// `None` when the connection cannot be inherited across an `exec`, which
-    /// is the case for TLS: the socket survives but the session state needed to
-    /// decrypt it does not. [`crate::hot_reload::exec_reload`] then replaces the
-    /// binary without handing over the socket, and the successor reconnects.
-    #[cfg(unix)]
-    pub raw_fd: Option<std::os::unix::io::RawFd>,
 }
 
 impl State {
@@ -606,8 +561,6 @@ impl State {
             .collect();
 
         let connection = transport::connect(&server).await?;
-        #[cfg(unix)]
-        let raw_fd = connection.raw_fd;
 
         let mut reader = tokio::io::BufReader::new(connection.reader);
         let mut writer = BufWriter::new(connection.writer);
@@ -635,12 +588,6 @@ impl State {
         // Recover the inner write half from the BufWriter.
         let write_half = writer.into_inner();
 
-        // The socket is open but the welcome has not arrived. A `SIGHUP` in
-        // that window must not tell the successor that this socket is on the
-        // network. The read loop records the welcome when it comes.
-        #[cfg(unix)]
-        crate::hot_reload::record_registration(false);
-
         Ok(State {
             nick,
             channels,
@@ -649,9 +596,6 @@ impl State {
             reader,
             write_half,
             pending_lines,
-            registered: false,
-            #[cfg(unix)]
-            raw_fd,
         })
     }
 
@@ -666,116 +610,6 @@ impl State {
             channels: self.channels.clone(),
             settings: self.settings.clone(),
         }
-    }
-
-    /// Attempt to reconstruct a [`State`] from an inherited TCP file descriptor.
-    ///
-    /// When the bot is reloaded via [`crate::hot_reload::exec_reload`] the new
-    /// binary inherits the live TCP socket.  This method reads the metadata
-    /// from the environment variables written by `exec_reload` and wraps the
-    /// raw fd in a Tokio `TcpStream` — no new TCP connection is made, so the
-    /// IRC session is never interrupted.
-    ///
-    /// Returns `None` if the expected environment variables are absent (i.e.
-    /// this is a fresh start, not a reload). A TLS connection is never handed
-    /// over, so a reloaded TLS bot always takes this path and reconnects.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if one of the required env vars is malformed, or if
-    /// the fd cannot be converted to a `TcpStream`. The optional ones — the
-    /// flood-control settings and the registration state — fall back to their
-    /// default instead, so a successor that holds a live connection is not
-    /// ended by a value it does not need.
-    #[cfg(unix)]
-    pub fn try_inherit_from_env() -> Result<Option<State>, Box<dyn std::error::Error + Send + Sync>>
-    {
-        use std::os::unix::io::RawFd;
-
-        use crate::hot_reload::{
-            ENV_CHANNELS, ENV_FD, ENV_FLOOD_BURST, ENV_FLOOD_RATE, ENV_KA_INTERVAL, ENV_KA_TIMEOUT,
-            ENV_NICK, ENV_REGISTERED, ENV_SERVER,
-        };
-
-        let fd_str = match std::env::var(ENV_FD) {
-            Ok(v) => v,
-            Err(_) => return Ok(None), // normal startup
-        };
-
-        let raw_fd: RawFd = fd_str.parse()?;
-        let nick = std::env::var(ENV_NICK)?;
-        let server = std::env::var(ENV_SERVER)?;
-        let channels_raw = std::env::var(ENV_CHANNELS)?;
-        let ka_interval_ms: u64 = std::env::var(ENV_KA_INTERVAL)?.parse()?;
-        let ka_timeout_ms: u64 = std::env::var(ENV_KA_TIMEOUT)?.parse()?;
-        let registered = inherited_registration(std::env::var(ENV_REGISTERED).ok().as_deref());
-
-        // Record it before this process can install a `SIGHUP` task: a reload
-        // that fires between here and the read loop must still hand the
-        // successor the state of the socket, not the default.
-        crate::hot_reload::record_registration(registered);
-        // Flood-control settings are restored too, falling back to the defaults
-        // if absent or malformed — e.g. when the binary that called
-        // `exec_reload` predates flood-control serialisation.
-        let flood_burst = std::env::var(ENV_FLOOD_BURST)
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_FLOOD_BURST);
-        let flood_rate = std::env::var(ENV_FLOOD_RATE)
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map_or(DEFAULT_FLOOD_RATE, Duration::from_millis);
-
-        // Clear the env vars so they are not accidentally inherited by any
-        // child processes the bot might spawn.
-        for var in &[
-            ENV_FD,
-            ENV_NICK,
-            ENV_SERVER,
-            ENV_CHANNELS,
-            ENV_KA_INTERVAL,
-            ENV_KA_TIMEOUT,
-            ENV_FLOOD_BURST,
-            ENV_FLOOD_RATE,
-            ENV_REGISTERED,
-        ] {
-            std::env::remove_var(var);
-        }
-
-        let channels: Vec<Channel> = if channels_raw.is_empty() {
-            vec![]
-        } else {
-            channels_raw.split(',').map(Channel::from).collect()
-        };
-
-        let connection = transport::from_inherited_fd(raw_fd)?;
-        let reader = tokio::io::BufReader::new(connection.reader);
-
-        Ok(Some(State {
-            nick: Nick::from(nick),
-            channels,
-            // An inherited connection is always plaintext; TLS sessions cannot
-            // survive the `exec` and so are never handed over.
-            server: Server::plain(server),
-            settings: Settings {
-                keepalive_interval: Duration::from_millis(ka_interval_ms),
-                keepalive_timeout: Duration::from_millis(ka_timeout_ms),
-                flood_burst,
-                flood_rate,
-                // `ctcp_version`, `keepnick_interval`, `roles`, `ignore`, and
-                // the reconnect delays are re-applied by the bot builder on the
-                // re-exec'd process, so they need not be carried through the
-                // hot-reload environment.
-                ..Settings::default()
-            },
-            reader,
-            write_half: connection.writer,
-            // An inherited connection completed its capability exchange in the
-            // process before, so nothing can have been read ahead of the loop.
-            pending_lines: Vec::new(),
-            registered,
-            raw_fd: connection.raw_fd,
-        }))
     }
 
     /// Override the keepalive ping interval and pong timeout.
@@ -894,8 +728,8 @@ impl State {
     /// Use this for other bots and for senders that must never reach a handler.
     ///
     /// May be called multiple times; masks accumulate. Call this before
-    /// starting the bot. A `SIGHUP` hot-reload runs the builder again, so a bot
-    /// that reads its masks from a file picks up the changed file.
+    /// starting the bot. A bot that reads its masks from a file reads that file
+    /// once, at start-up.
     ///
     /// # Example
     ///
@@ -1061,37 +895,6 @@ mod tests {
         assert_eq!(state.channels, vec![Channel::from("#general")]);
     }
 
-    // ── inherited_registration ─────────────────────────────────────────────────
-
-    #[test]
-    #[cfg(unix)]
-    fn an_inherited_connection_is_registered_when_the_predecessor_said_so() {
-        assert!(inherited_registration(Some("1")));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn an_inherited_connection_is_unregistered_when_the_predecessor_said_so() {
-        assert!(!inherited_registration(Some("0")));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn an_inherited_connection_with_an_unknown_state_is_registered() {
-        // The value only decides the first reconnect delay, so a value this
-        // version never writes falls back instead of ending the process.
-        assert!(inherited_registration(Some("2")));
-        assert!(inherited_registration(Some("")));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn an_inherited_connection_without_a_recorded_state_is_registered() {
-        // A predecessor from before the value existed handed the socket over
-        // whatever its state, and the successor read it as registered.
-        assert!(inherited_registration(None));
-    }
-
     // ── reconnect ──────────────────────────────────────────────────────────────
 
     /// A loopback listener that keeps accepting, so the same address can be
@@ -1203,231 +1006,5 @@ mod tests {
     // Note: `with_keepalive` and `with_flood_control` are exercised
     // behaviourally elsewhere — keepalive timing in `tests/keepalive.rs` and
     // rate limiting in `tests/flood_control.rs` — so no getter-echo test is
-    // needed here.  The keepalive getters are additionally asserted by the
-    // `try_inherit_reconstructs_state_from_env` test below.
-
-    // ── try_inherit_from_env (unix) ────────────────────────────────────────────
-    //
-    // These tests mutate process-global environment variables, so they are
-    // serialised behind a shared mutex to avoid racing each other.
-
-    #[cfg(unix)]
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[cfg(unix)]
-    fn clear_inherit_env() {
-        use crate::hot_reload::{
-            ENV_CHANNELS, ENV_FD, ENV_FLOOD_BURST, ENV_FLOOD_RATE, ENV_KA_INTERVAL, ENV_KA_TIMEOUT,
-            ENV_NICK, ENV_SERVER,
-        };
-        for var in [
-            ENV_FD,
-            ENV_NICK,
-            ENV_SERVER,
-            ENV_CHANNELS,
-            ENV_KA_INTERVAL,
-            ENV_KA_TIMEOUT,
-            ENV_FLOOD_BURST,
-            ENV_FLOOD_RATE,
-            crate::hot_reload::ENV_REGISTERED,
-        ] {
-            std::env::remove_var(var);
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn try_inherit_returns_none_on_normal_startup() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_inherit_env();
-        let result = State::try_inherit_from_env().expect("should not error");
-        assert!(result.is_none());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn try_inherit_errors_on_malformed_fd() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_inherit_env();
-        std::env::set_var(crate::hot_reload::ENV_FD, "notanint");
-        let result = State::try_inherit_from_env();
-        clear_inherit_env();
-        assert!(result.is_err(), "malformed fd should yield an error");
-    }
-
-    /// Full happy path: a live loopback fd plus all metadata env vars is
-    /// reconstructed into a `State` with the channels parsed and keepalive
-    /// settings restored — the same path taken after `exec_reload`.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn try_inherit_reconstructs_state_from_env() {
-        use std::os::unix::io::IntoRawFd;
-
-        use crate::hot_reload::{
-            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_SERVER,
-        };
-
-        // A real connected loopback socket whose fd we can inherit.  All async
-        // setup happens *before* the env lock so the guard never spans an
-        // `.await` (`try_inherit_from_env` itself is synchronous).
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-        tokio::spawn(async move {
-            let _sock = listener.accept().await;
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        });
-        let std_stream = std::net::TcpStream::connect(&addr).expect("connect failed");
-        let raw_fd = std_stream.into_raw_fd();
-
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_inherit_env();
-        std::env::set_var(ENV_FD, raw_fd.to_string());
-        std::env::set_var(ENV_NICK, "inheritbot");
-        std::env::set_var(ENV_SERVER, &addr);
-        std::env::set_var(ENV_CHANNELS, "#a,#b");
-        std::env::set_var(ENV_KA_INTERVAL, "12000");
-        std::env::set_var(ENV_KA_TIMEOUT, "4000");
-        std::env::set_var(crate::hot_reload::ENV_FLOOD_BURST, "9");
-        std::env::set_var(crate::hot_reload::ENV_FLOOD_RATE, "750");
-        std::env::set_var(crate::hot_reload::ENV_REGISTERED, "1");
-
-        let state = State::try_inherit_from_env()
-            .expect("inherit should succeed")
-            .expect("env vars present → Some(State)");
-
-        assert_eq!(state.nick, "inheritbot");
-        assert_eq!(state.server.addr(), addr);
-        // An inherited connection is always plaintext.
-        assert!(!state.server.is_tls());
-        assert_eq!(
-            state.channels,
-            vec![Channel::from("#a"), Channel::from("#b")]
-        );
-        assert_eq!(state.keepalive_interval(), Duration::from_millis(12000));
-        assert_eq!(state.keepalive_timeout(), Duration::from_millis(4000));
-        // Flood-control settings survive the reload rather than resetting to default.
-        assert_eq!(state.flood_burst(), 9);
-        assert_eq!(state.flood_rate(), Duration::from_millis(750));
-
-        // The predecessor was on the network, and said so.
-        assert!(state.registered);
-
-        // try_inherit_from_env clears the env vars once consumed.
-        assert!(std::env::var(ENV_FD).is_err());
-        assert!(std::env::var(crate::hot_reload::ENV_FLOOD_BURST).is_err());
-        assert!(std::env::var(crate::hot_reload::ENV_FLOOD_RATE).is_err());
-        assert!(std::env::var(crate::hot_reload::ENV_REGISTERED).is_err());
-    }
-
-    /// A reload that fires between the connect and the welcome hands over a
-    /// socket that is not on the network. The successor must read it that way,
-    /// so that a connection the server then refuses counts as a failed
-    /// attempt rather than resetting the reconnect backoff.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn try_inherit_reads_an_unregistered_connection_from_env() {
-        use std::os::unix::io::IntoRawFd;
-
-        use crate::hot_reload::{
-            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_REGISTERED,
-            ENV_SERVER,
-        };
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-        tokio::spawn(async move {
-            let _sock = listener.accept().await;
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        });
-        let raw_fd = std::net::TcpStream::connect(&addr)
-            .expect("connect failed")
-            .into_raw_fd();
-
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_inherit_env();
-        std::env::set_var(ENV_FD, raw_fd.to_string());
-        std::env::set_var(ENV_NICK, "inheritbot");
-        std::env::set_var(ENV_SERVER, &addr);
-        std::env::set_var(ENV_CHANNELS, "#a");
-        std::env::set_var(ENV_KA_INTERVAL, "12000");
-        std::env::set_var(ENV_KA_TIMEOUT, "4000");
-        std::env::set_var(ENV_REGISTERED, "0");
-
-        let state = State::try_inherit_from_env()
-            .expect("inherit should succeed")
-            .expect("env vars present → Some(State)");
-        clear_inherit_env();
-
-        assert!(!state.registered);
-    }
-
-    /// When the flood-control env vars are absent (e.g. the binary that called
-    /// `exec_reload` predates flood serialisation), the defaults are restored.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn try_inherit_defaults_flood_when_env_absent() {
-        use std::os::unix::io::IntoRawFd;
-
-        use crate::hot_reload::{
-            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_SERVER,
-        };
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-        tokio::spawn(async move {
-            let _sock = listener.accept().await;
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        });
-        let raw_fd = std::net::TcpStream::connect(&addr)
-            .expect("connect failed")
-            .into_raw_fd();
-
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_inherit_env();
-        std::env::set_var(ENV_FD, raw_fd.to_string());
-        std::env::set_var(ENV_NICK, "inheritbot");
-        std::env::set_var(ENV_SERVER, &addr);
-        std::env::set_var(ENV_CHANNELS, "");
-        std::env::set_var(ENV_KA_INTERVAL, "30000");
-        std::env::set_var(ENV_KA_TIMEOUT, "10000");
-        // Deliberately do NOT set the flood env vars.
-
-        let state = State::try_inherit_from_env().unwrap().unwrap();
-        assert_eq!(state.flood_burst(), DEFAULT_FLOOD_BURST);
-        assert_eq!(state.flood_rate(), DEFAULT_FLOOD_RATE);
-    }
-
-    /// An empty `IRCBOT_CHANNELS` must yield an empty channel list (not `[""]`).
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn try_inherit_parses_empty_channels() {
-        use std::os::unix::io::IntoRawFd;
-
-        use crate::hot_reload::{
-            ENV_CHANNELS, ENV_FD, ENV_KA_INTERVAL, ENV_KA_TIMEOUT, ENV_NICK, ENV_SERVER,
-        };
-
-        // Async setup before the env lock (see sibling test for rationale).
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-        tokio::spawn(async move {
-            let _sock = listener.accept().await;
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        });
-        let raw_fd = std::net::TcpStream::connect(&addr)
-            .expect("connect failed")
-            .into_raw_fd();
-
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_inherit_env();
-        std::env::set_var(ENV_FD, raw_fd.to_string());
-        std::env::set_var(ENV_NICK, "inheritbot");
-        std::env::set_var(ENV_SERVER, &addr);
-        std::env::set_var(ENV_CHANNELS, "");
-        std::env::set_var(ENV_KA_INTERVAL, "30000");
-        std::env::set_var(ENV_KA_TIMEOUT, "10000");
-
-        let state = State::try_inherit_from_env().unwrap().unwrap();
-        assert!(state.channels.is_empty());
-    }
+    // needed here.
 }

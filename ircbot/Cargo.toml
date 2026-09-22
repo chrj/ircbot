@@ -17,7 +17,11 @@ tls = ["dep:tokio-rustls", "dep:rustls-native-certs"]
 all-features = true
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+# The features the crate uses, rather than "full": the `signal` feature went
+# with the hot-reload listener, and nothing here reads files or spawns
+# processes. This keeps `errno`, `parking_lot`, and `signal-hook-registry` out
+# of the tree of a bot that does not need them.
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 regex = "1"
 futures = "0.3"
 ircbot-macros = { version = "0.5.0", path = "../ircbot-macros" }
@@ -58,5 +62,3 @@ name = "stateful_bot"
 name = "tls_bot"
 required-features = ["tls"]
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"

@@ -181,10 +181,10 @@ This crate talks to a hostile network; treat all wire input as untrusted.
 - **Respect protocol limits.** IRC lines are capped at 512 bytes; `make_messages`
   splits long output on UTF-8 boundaries (preferring word breaks). Don't emit raw
   unbounded strings.
-- **Be careful with `unsafe`.** There is exactly one `unsafe` region (reconstructing
-  a `TcpStream` from an inherited fd during hot-reload). It carries a `// Safety:`
-  comment explaining the invariant. Any new `unsafe` must be similarly localised and
-  justified — and avoided if at all possible.
+- **Be careful with `unsafe`.** The crate has none left: the one region, which
+  reconstructed a `TcpStream` from an inherited fd for the hot-reload feature,
+  went with that feature. Any new `unsafe` must be localised, carry a
+  `// Safety:` comment for its invariant, and be avoided if at all possible.
 - Slicing strings by byte offset is only done where an invariant guarantees a char
   boundary, and that invariant is spelled out in a comment (see the ASCII-nick note
   in `check_trigger`).

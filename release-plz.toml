@@ -19,3 +19,37 @@ name = "ircbot-macros"
 git_tag_enable = false
 git_release_enable = false
 version_group = "ircbot"
+
+# The changelog line that release-plz writes is the commit subject, which stays
+# short. A breaking change needs its reason there too, so this template adds the
+# `BREAKING CHANGE:` footer of the commit under the line it belongs to. It is
+# the default template of release-plz, plus that block.
+#
+# Two things to know when you write that footer:
+#
+#  - Write it on one line. A footer that is wrapped over several lines is cut
+#    at the second or third line by the parser of conventional commits.
+#  - Write it in the pull request description, as the last paragraph. The merge
+#    of a pull request squashes it into one commit whose body is that
+#    description, and that commit is what release-plz reads.
+#
+# `trim = false` keeps the two spaces that put the footer inside its list item.
+[changelog]
+trim = false
+body = """
+## [{{ version }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+
+{% for commit in commits %}
+{%- if commit.scope -%}
+- *({{commit.scope}})* {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}{%- if commit.links %} ({% for link in commit.links %}[{{link.text}}]({{link.href}}) {% endfor -%}){% endif %}
+{% else -%}
+- {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}
+{% endif -%}
+{%- if commit.breaking and commit.breaking_description and commit.breaking_description != commit.message %}
+  {{ commit.breaking_description | trim }}
+
+{% endif -%}
+{% endfor -%}
+{% endfor %}"""
