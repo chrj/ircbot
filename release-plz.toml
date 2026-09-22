@@ -25,13 +25,14 @@ version_group = "ircbot"
 # `BREAKING CHANGE:` footer of the commit under the line it belongs to. It is
 # the default template of release-plz, plus that block.
 #
-# Two things to know when you write that footer:
+# The footer is read from the raw message, not from the parsed value: the parser
+# of conventional commits cuts a footer that is wrapped over several lines, and
+# a merge wraps it. The lines are joined into one paragraph here.
 #
-#  - Write it on one line. A footer that is wrapped over several lines is cut
-#    at the second or third line by the parser of conventional commits.
-#  - Write it in the pull request description, as the last paragraph. The merge
-#    of a pull request squashes it into one commit whose body is that
-#    description, and that commit is what release-plz reads.
+# Write the footer in the pull request description, as the last paragraph. The
+# merge of a pull request squashes it into one commit whose body is that
+# description, and that commit is what release-plz reads. Write the words
+# `BREAKING CHANGE: ` exactly, since that is what this template looks for.
 #
 # `trim = false` keeps the two spaces that put the footer inside its list item.
 [changelog]
@@ -47,8 +48,9 @@ body = """
 {% else -%}
 - {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}
 {% endif -%}
-{%- if commit.breaking and commit.breaking_description and commit.breaking_description != commit.message %}
-  {{ commit.breaking_description | trim }}
+{%- if commit.breaking and commit.raw_message and commit.raw_message is containing("BREAKING CHANGE: ") %}
+  {{ commit.raw_message | split(pat="BREAKING CHANGE: ") | last | trim | replace(from="
+", to=" ") }}
 
 {% endif -%}
 {% endfor -%}
