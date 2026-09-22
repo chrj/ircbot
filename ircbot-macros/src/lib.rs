@@ -653,8 +653,11 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             /// Run the bot's main event loop.
             ///
-            /// The loop reconnects on its own when the connection is lost, so
-            /// it returns only when a connection cannot be made at all.
+            /// The bot reconnects on its own when the connection is lost, and
+            /// retries until it is connected again, so this does not return
+            /// while the process runs. A server that cannot be reached at all
+            /// is reported by `new()`, before this call. The `Result` stays in
+            /// the signature so `main` can take it with `?`.
             pub async fn main_loop(mut self) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let state = self.__state.take().expect("bot already started");
                 let bot_arc = std::sync::Arc::new(self);
