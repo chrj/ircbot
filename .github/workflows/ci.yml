@@ -71,7 +71,7 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v7
-      - uses: taiki-e/install-action@v2.87.13
+      - uses: taiki-e/install-action@v2.87.19
         with:
           tool: cargo-audit
       - run: cargo audit
