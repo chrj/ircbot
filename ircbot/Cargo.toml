@@ -12,6 +12,8 @@ categories = ["network-programming", "asynchronous"]
 [features]
 integration = []
 tls = ["dep:tokio-rustls", "dep:rustls-native-certs"]
+# Persistence for bot data in one SQLite file (the `store` module).
+store = ["dep:rusqlite"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -41,6 +43,11 @@ tokio-rustls = { version = "0.26", default-features = false, features = [
     "logging",
 ], optional = true }
 rustls-native-certs = { version = "0.8", optional = true }
+# Store (optional, enabled by the `store` feature). `bundled` builds SQLite
+# from source, so a bot needs no system SQLite library. The `store` module
+# gives `rusqlite` types to the caller, so a major `rusqlite` update is a
+# breaking change of this crate.
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 
 [dev-dependencies]
 # `test-util` lets the SASL tests run the registration timeout on a paused

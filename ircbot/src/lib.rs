@@ -14,6 +14,8 @@ pub mod handler;
 pub mod irc;
 pub mod logging;
 pub mod server;
+#[cfg(feature = "store")]
+pub mod store;
 #[cfg(test)]
 mod test_capture;
 pub mod testing;
@@ -38,6 +40,8 @@ pub use logging::PROTOCOL_LOG_TARGET;
 pub use server::Server;
 #[cfg(feature = "tls")]
 pub use server::TlsServer;
+#[cfg(feature = "store")]
+pub use store::{Namespace, Store, StoreError};
 pub use types::{Channel, Nick, Target};
 
 /// The standard error type used throughout the crate.
