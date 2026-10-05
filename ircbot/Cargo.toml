@@ -55,18 +55,22 @@ rcgen = "0.14"
 # the example needs no system SQLite library.
 rusqlite = { version = "0.40", features = ["bundled"] }
 
+# `test = true` makes `cargo test` run the unit tests of an example. Without
+# it, Cargo builds the example but skips its tests.
+
 [[example]]
 name = "basic_bot"
+test = true
 
 [[example]]
 name = "stateful_bot"
+test = true
 
 [[example]]
 name = "sqlite_bot"
-# Run the unit tests of this example with `cargo test`.
 test = true
 
 [[example]]
 name = "tls_bot"
 required-features = ["tls"]
-
+test = true
