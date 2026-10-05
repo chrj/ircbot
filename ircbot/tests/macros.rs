@@ -522,10 +522,11 @@ async fn from_state_injects_given_state_and_skips_default() {
 
 // ─── new_with_state constructor ──────────────────────────────────────────────
 
-/// Given a server that accepts the connection, when the bot is built with
-/// `new_with_state`, then it has the given state and `Default` did not run.
-#[tokio::test]
-async fn new_with_state_connects_with_given_state_and_skips_default() {
+/// Start a server on loopback that accepts one connection and holds it open.
+///
+/// Returns the address and the server task. Abort the task at the end of the
+/// test.
+async fn accepting_server() -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind failed");
@@ -539,6 +540,14 @@ async fn new_with_state_connects_with_given_state_and_skips_default() {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         drop(sock);
     });
+    (addr, server)
+}
+
+/// Given a server that accepts the connection, when the bot is built with
+/// `new_with_state`, then it has the given state and `Default` did not run.
+#[tokio::test]
+async fn new_with_state_connects_with_given_state_and_skips_default() {
+    let (addr, server) = accepting_server().await;
 
     let bot = StateBot::new_with_state(
         "statebot",
@@ -553,6 +562,59 @@ async fn new_with_state_connects_with_given_state_and_skips_default() {
 
     assert_eq!(bot.state.greeting, "hi!");
     server.abort();
+}
+
+// ─── no_default ──────────────────────────────────────────────────────────────
+
+/// State with no `Default` implementation. The bot below compiles only because
+/// `no_default` makes the macro leave out `Default` and `new`.
+struct NoDefaultState {
+    greeting: String,
+}
+
+#[bot(state = NoDefaultState, no_default)]
+impl NoDefaultBot {
+    #[on(mention)]
+    async fn hello(&self, ctx: Context, _text: String) -> Result {
+        ctx.reply(self.state.greeting.clone())
+    }
+}
+
+/// Given a state type without `Default`, when the bot is built with
+/// `new_with_state`, then it connects with the given state.
+#[tokio::test]
+async fn no_default_bot_connects_with_new_with_state() {
+    let (addr, server) = accepting_server().await;
+
+    let bot = NoDefaultBot::new_with_state(
+        "nodefaultbot",
+        addr.as_str(),
+        ["#test"],
+        NoDefaultState {
+            greeting: "hi!".to_string(),
+        },
+    )
+    .await
+    .expect("connect failed");
+
+    assert_eq!(bot.state.greeting, "hi!");
+    server.abort();
+}
+
+/// Given a state type without `Default`, when the bot is built with
+/// `from_state`, then its handlers use the given state.
+#[tokio::test]
+async fn no_default_bot_from_state_answers_with_given_state() {
+    let bot = NoDefaultBot::from_state(NoDefaultState {
+        greeting: "hi!".to_string(),
+    });
+
+    let mut tc = TestContext::channel("#test", "alice", "nodefaultbot: yo");
+    bot.hello(tc.take_ctx(), "yo".to_string()).await.unwrap();
+    assert_eq!(
+        tc.next_reply(),
+        Some("PRIVMSG #test :alice, hi!\r\n".to_string())
+    );
 }
 
 // ─── include_self ────────────────────────────────────────────────────────────
