@@ -194,6 +194,9 @@ This crate talks to a hostile network; treat all wire input as untrusted.
 - **Unit tests live in a `#[cfg(test)] mod tests` at the bottom of the file**
   they cover (`context.rs`, `testing.rs`, `irc.rs`). Integration-style tests for the
   public API live under `ircbot/tests/`.
+- **A new example needs `test = true` in its `[[example]]` entry** in
+  `ircbot/Cargo.toml`. Without it, `cargo test` builds the example but does not run
+  its unit tests.
 - **One assertion concept per test, with a descriptive snake_case name** that reads
   as a sentence: `say_in_channel_sends_privmsg_to_channel`,
   `take_ctx_panics_on_second_call`. Group related tests with `// ── section ──`
