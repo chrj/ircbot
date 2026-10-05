@@ -141,10 +141,10 @@ impl syn::parse::Parse for CommandArgs {
 /// }
 /// ```
 ///
-/// The state type must implement [`Default`] (it is initialised with
-/// `Default::default()` by both `MyBot::default()` and `MyBot::new`) and must be
-/// `Send + Sync + 'static` (the bot is shared across tasks as an `Arc`; that
-/// bound is checked at `main_loop`). Because handlers receive `&self`, mutating
+/// The state type must be `Send + Sync + 'static` (the bot is shared across
+/// tasks as an `Arc`; that bound is checked at `main_loop`). Unless you add the
+/// `no_default` flag (see below), it must also implement [`Default`]: both
+/// `MyBot::default()` and `MyBot::new` initialise it with `Default::default()`. Because handlers receive `&self`, mutating
 /// state requires interior mutability — an `AtomicUsize`, a `Mutex<…>`, etc. To
 /// start from a non-default value, use `MyBot::new_with_state(…, state)`. It
 /// takes the state as a fourth argument and does not call `Default::default()`.
@@ -559,10 +559,9 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// Connect to an IRC server and return a bot ready to run, with a
             /// pre-built `state`.
             ///
-            /// Use this instead of `new` when the state needs
-            /// work or input that `Default` cannot give, for example a
-            /// database path or a config value. This constructor does not call
-            /// `Default::default()`.
+            /// Use this when the state needs work or input that `Default`
+            /// cannot give, for example a database path or a config value.
+            /// This constructor does not call `Default::default()`.
             ///
             /// ```rust,ignore
             /// let state = MyState::open("bot.db")?;
