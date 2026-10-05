@@ -490,8 +490,9 @@ impl Namespace {
 
     /// The keys that start with `prefix`, in byte order.
     ///
-    /// An empty `prefix` gives all keys of the namespace. The characters `%`
-    /// and `_` in `prefix` have no special meaning.
+    /// The comparison uses the bytes of `prefix`. Thus `%` and `_` have no
+    /// special meaning, and a key that contains a NUL also matches. An empty
+    /// `prefix` gives all keys of the namespace.
     ///
     /// # Errors
     ///
@@ -500,11 +501,16 @@ impl Namespace {
         let namespace = self.name.clone();
         let prefix = prefix.to_string();
         self.sql(move |conn| {
-            // `substr` compares the prefix as text, so no character of the
-            // prefix is a pattern, as it is with `LIKE`.
+            // Compare the bytes of the prefix. With `LIKE`, `%` and `_` are
+            // patterns. With text, `length` and `substr` stop at a NUL, which
+            // a key can contain. With a BLOB, they count all bytes. `substr`
+            // of an empty BLOB is NULL, so `ifnull` makes the empty key match
+            // the empty prefix.
             let mut stmt = conn.prepare(
                 "SELECT key FROM _ircbot_kv
-                 WHERE namespace = ?1 AND substr(key, 1, length(?2)) = ?2
+                 WHERE namespace = ?1
+                   AND ifnull(substr(CAST(key AS BLOB), 1, length(CAST(?2 AS BLOB))), x'')
+                       = CAST(?2 AS BLOB)
                  ORDER BY key",
             )?;
             let keys = stmt
@@ -1173,6 +1179,21 @@ mod tests {
 
         assert_eq!(ns.keys("a_").await.unwrap(), vec!["a_b".to_string()]);
         assert_eq!(ns.keys("a%").await.unwrap(), vec!["a%c".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn keys_compares_all_bytes_of_a_key_with_a_nul() {
+        let ns = Store::memory().unwrap().namespace("seen").unwrap();
+        for key in ["a\0b", "a", ""] {
+            ns.set(key, &true).await.unwrap();
+        }
+
+        assert_eq!(ns.keys("a\0").await.unwrap(), vec!["a\0b".to_string()]);
+        assert_eq!(ns.keys("a\0b").await.unwrap(), vec!["a\0b".to_string()]);
+        assert_eq!(
+            ns.keys("").await.unwrap(),
+            vec![String::new(), "a".to_string(), "a\0b".to_string()]
+        );
     }
 
     #[tokio::test]
