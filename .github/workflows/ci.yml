@@ -24,7 +24,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v2
+      # Test without and with `tls`. Each build compiles code that the other
+      # leaves out. `tls` also builds the `tls_bot` example.
       - run: cargo test --workspace
+      - run: cargo test --workspace --features tls
 
   fmt:
     name: Format
