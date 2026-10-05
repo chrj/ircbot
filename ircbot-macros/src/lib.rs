@@ -559,7 +559,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// Connect to an IRC server and return a bot ready to run, with a
             /// pre-built `state`.
             ///
-            /// Use this instead of [`new`](Self::new) when the state needs
+            /// Use this instead of `new` when the state needs
             /// work or input that `Default` cannot give, for example a
             /// database path or a config value. This constructor does not call
             /// `Default::default()`.
