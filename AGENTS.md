@@ -268,19 +268,22 @@ This crate talks to a hostile network; treat all wire input as untrusted.
   the corresponding code is behind `#[cfg(unix)]` with a documented non-Unix
   fallback.
 - TLS is optional, behind the non-default `tls` feature (`tokio-rustls` +
-  `rustls-native-certs`), so a plaintext-only bot pays nothing for it. Every
-  change must therefore compile, lint, test, and document **both** with and
-  without the feature:
+  `rustls-native-certs`), so a plaintext-only bot pays nothing for it.
+- Persistence is optional, behind the non-default `store` feature (`rusqlite`
+  with `bundled`). The `store` module re-exports `rusqlite` and gives its
+  `Connection` to callers, so a major `rusqlite` update is a breaking change.
+- Every change must compile, lint, test, and document **both** without features
+  and with all of them. CI runs both:
 
   ```sh
-  cargo clippy --workspace --all-targets --features tls -- -D warnings
-  cargo test --workspace --features tls
-  RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --features tls
+  cargo clippy --workspace --all-targets --features tls,store -- -D warnings
+  cargo test --workspace --features tls,store
+  RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --features tls,store
   ```
 
-  Two traps: an intra-doc link to a `#[cfg(feature = "tls")]` item breaks the
+  Two traps: an intra-doc link to a `#[cfg(feature = "…")]` item breaks the
   no-feature doc build (write it as a plain code span), and a `pub(crate)` helper
-  used only by the TLS path is dead code without the feature.
+  used only by a feature path is dead code without the feature.
 - `tokio-rustls` deliberately uses `default-features = false` with the `ring`
   provider rather than the default `aws_lc_rs`. `ring` builds without cmake and
   a C toolchain, which matters for a library whose users control their own build
