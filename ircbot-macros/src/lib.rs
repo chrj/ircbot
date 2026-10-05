@@ -144,9 +144,10 @@ impl syn::parse::Parse for CommandArgs {
 /// The state type must be `Send + Sync + 'static` (the bot is shared across
 /// tasks as an `Arc`; that bound is checked at `main_loop`). Unless you add the
 /// `no_default` flag (see below), it must also implement [`Default`]: both
-/// `MyBot::default()` and `MyBot::new` initialise it with `Default::default()`. Because handlers receive `&self`, mutating
-/// state requires interior mutability — an `AtomicUsize`, a `Mutex<…>`, etc. To
-/// start from a non-default value, use `MyBot::new_with_state(…, state)`. It
+/// `MyBot::default()` and `MyBot::new` initialise it with `Default::default()`.
+/// Because handlers receive `&self`, mutating state requires interior
+/// mutability — an `AtomicUsize`, a `Mutex<…>`, etc. To start from a
+/// non-default value, use `MyBot::new_with_state(…, state)`. It
 /// takes the state as a fourth argument and does not call `Default::default()`.
 ///
 /// # State without `Default`
@@ -747,8 +748,9 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// The bot reconnects on its own when the connection is lost, and
             /// retries until it is connected again, so this does not return
             /// while the process runs. A server that cannot be reached at all
-            /// is reported by `new()`, before this call. The `Result` stays in
-            /// the signature so `main` can take it with `?`.
+            /// is reported by the constructor that connects, before this
+            /// call. The `Result` stays in the signature so `main` can take it
+            /// with `?`.
             pub async fn main_loop(mut self) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let state = self.__state.take().expect("bot already started");
                 let bot_arc = std::sync::Arc::new(self);
