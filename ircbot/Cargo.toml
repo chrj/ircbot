@@ -51,12 +51,20 @@ irc = { version = "1", default-features = false }
 trybuild = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rcgen = "0.14"
+# For the `sqlite_bot` example only. `bundled` builds SQLite from source, so
+# the example needs no system SQLite library.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [[example]]
 name = "basic_bot"
 
 [[example]]
 name = "stateful_bot"
+
+[[example]]
+name = "sqlite_bot"
+# Run the unit tests of this example with `cargo test`.
+test = true
 
 [[example]]
 name = "tls_bot"
