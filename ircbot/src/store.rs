@@ -68,6 +68,10 @@
 //! are lowercase ASCII letters, digits, and `_`. Thus a name is safe to use in
 //! SQL as a prefix of a table name.
 //!
+//! SQLite keeps table names that start with `sqlite_` for its own use. Thus a
+//! namespace cannot have the name `sqlite`, or a name that starts with
+//! `sqlite_`.
+//!
 //! All namespaces share one database. Give each table the name of its
 //! namespace as a prefix (`quotes_quote`), so two namespaces do not use the
 //! same table. The store cannot make sure of this, because `sql` gives the
@@ -119,7 +123,8 @@ pub enum StoreError {
     /// A namespace name does not obey the rules in the [module docs](self#names).
     #[error(
         "invalid namespace name {name:?}: start with a lowercase ASCII letter, \
-         and use only lowercase ASCII letters, digits and `_`"
+         use only lowercase ASCII letters, digits and `_`, and do not use \
+         `sqlite` or a name that starts with `sqlite_`"
     )]
     InvalidName {
         /// The name that was refused.
@@ -209,6 +214,9 @@ impl Store {
             source,
         };
         let conn = Connection::open(path).map_err(open_error)?;
+        // Set the timeout first: the journal mode change below also needs a
+        // lock, so it must wait for another connection too.
+        conn.busy_timeout(BUSY_TIMEOUT).map_err(open_error)?;
         // The pragma returns the mode that SQLite uses after the change, so
         // it needs the `_and_check` form. This mode is not WAL when SQLite
         // cannot use WAL for this database.
@@ -242,9 +250,11 @@ impl Store {
         Self::prepare(conn).map_err(open_error)
     }
 
-    /// Set the busy timeout and make the tables of the store.
+    /// Make the tables of the store.
+    ///
+    /// An in-memory database is private to its connection, so only
+    /// [`Store::open`] needs [`BUSY_TIMEOUT`].
     fn prepare(conn: Connection) -> rusqlite::Result<Self> {
-        conn.busy_timeout(BUSY_TIMEOUT)?;
         conn.execute_batch(MIGRATIONS_TABLE)?;
         Ok(Store {
             conn: Arc::new(Mutex::new(conn)),
@@ -443,8 +453,12 @@ fn is_valid_name(name: &str) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
+    // SQLite refuses a table name that starts with `sqlite_`, so the
+    // `{namespace}_{table}` names of these namespaces cannot exist.
+    let reserved = name == "sqlite" || name.starts_with("sqlite_");
     first.is_ascii_lowercase()
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && !reserved
 }
 
 #[cfg(test)]
@@ -519,6 +533,9 @@ mod tests {
             ("quo tes", false),
             ("quotes;", false),
             ("cité", false),
+            ("sqlite", false),
+            ("sqlite_stat", false),
+            ("sqlitefoo", true),
         ];
         for (name, valid) in cases {
             assert_eq!(is_valid_name(name), valid, "name {name:?}");
@@ -534,7 +551,8 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "invalid namespace name \"Bad-Name\": start with a lowercase ASCII \
-             letter, and use only lowercase ASCII letters, digits and `_`"
+             letter, use only lowercase ASCII letters, digits and `_`, and do \
+             not use `sqlite` or a name that starts with `sqlite_`"
         );
     }
 
@@ -896,6 +914,26 @@ mod tests {
             .unwrap();
 
         assert_eq!(mode, "wal");
+    }
+
+    /// Given a file that another connection locks for a short time, when the
+    /// store opens it, then the store waits for the lock.
+    #[test]
+    fn open_waits_for_a_lock_of_another_connection() {
+        let file = TempFile::new("busy");
+        let other = Connection::open(&file.0).expect("open other connection");
+        other
+            .execute_batch("BEGIN EXCLUSIVE; CREATE TABLE other_t (id INTEGER);")
+            .expect("lock the file");
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            other.execute_batch("COMMIT").expect("release the lock");
+        });
+
+        let opened = Store::open(&file.0);
+
+        holder.join().expect("lock holder thread");
+        assert!(opened.is_ok(), "got {:?}", opened.err());
     }
 
     #[test]
