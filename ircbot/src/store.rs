@@ -126,6 +126,9 @@ use tokio::sync::Mutex;
 /// example from a second process, can hold a lock.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long [`Store::open`] waits before it tries again to switch to WAL.
+const WAL_RETRY_DELAY: Duration = Duration::from_millis(10);
+
 /// The table that records the migration version of each namespace.
 const MIGRATIONS_TABLE: &str = "
     CREATE TABLE IF NOT EXISTS _ircbot_migrations (
@@ -294,12 +297,7 @@ impl Store {
         // Set the timeout first: the journal mode change below also needs a
         // lock, so it must wait for another connection too.
         conn.busy_timeout(BUSY_TIMEOUT).map_err(open_error)?;
-        // The pragma returns the mode that SQLite uses after the change, so
-        // it needs the `_and_check` form. This mode is not WAL when SQLite
-        // cannot use WAL for this database.
-        let journal_mode = conn
-            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))
-            .map_err(open_error)?;
+        let journal_mode = switch_to_wal(&conn).map_err(open_error)?;
         if !journal_mode.eq_ignore_ascii_case("wal") {
             tracing::warn!(
                 path = %path.display(),
@@ -568,6 +566,37 @@ impl Namespace {
     }
 }
 
+/// Ask SQLite for the WAL journal mode, and return the mode that SQLite uses
+/// after the change.
+///
+/// The change needs an exclusive lock. When more connections open a new file
+/// at the same time, SQLite can refuse the lock with `SQLITE_BUSY` at once,
+/// without the busy timeout, because the connections would wait for each
+/// other. Thus this function tries again until `BUSY_TIMEOUT` is over.
+fn switch_to_wal(conn: &Connection) -> rusqlite::Result<String> {
+    let deadline = std::time::Instant::now() + BUSY_TIMEOUT;
+    loop {
+        // The pragma returns the mode as a row, so it needs the `_and_check`
+        // form. This mode is not WAL when SQLite cannot use WAL for the file.
+        let result = conn
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0));
+        match result {
+            Err(e) if is_busy(&e) && std::time::Instant::now() < deadline => {
+                std::thread::sleep(WAL_RETRY_DELAY);
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Whether `error` is `SQLITE_BUSY`.
+fn is_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(e, _) if e.code == rusqlite::ErrorCode::DatabaseBusy
+    )
+}
+
 /// Apply the steps of `steps` after the recorded version of `namespace`, in
 /// one transaction.
 fn apply_migrations(
@@ -580,8 +609,12 @@ fn apply_migrations(
         source,
     };
     // Dropping the transaction without `commit` rolls it back, so each early
-    // return below leaves the database as it was.
-    let tx = conn.transaction().map_err(sql_error)?;
+    // return below leaves the database as it was. `Immediate` takes the write
+    // lock before the version is read. Thus a second store that migrates the
+    // same file waits for the first one, and then reads the new version.
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql_error)?;
     let recorded: i64 = tx
         .query_row(
             "SELECT version FROM _ircbot_migrations WHERE namespace = ?1",
@@ -1322,6 +1355,34 @@ mod tests {
 
         holder.join().expect("lock holder thread");
         assert!(opened.is_ok(), "got {:?}", opened.err());
+    }
+
+    /// Given a new file, when many stores open it at the same time, then each
+    /// open succeeds: one applies the migration steps of the store, and the
+    /// others wait for it.
+    #[test]
+    fn concurrent_opens_of_a_new_file_all_succeed() {
+        const OPENERS: usize = 8;
+        let file = TempFile::new("concurrent");
+        let barrier = Arc::new(std::sync::Barrier::new(OPENERS));
+
+        let openers: Vec<_> = (0..OPENERS)
+            .map(|_| {
+                let path = file.0.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    Store::open(&path).map(|_| ())
+                })
+            })
+            .collect();
+        let failures: Vec<String> = openers
+            .into_iter()
+            .map(|opener| opener.join().expect("opener thread"))
+            .filter_map(|result| result.err().map(|e| e.to_string()))
+            .collect();
+
+        assert_eq!(failures, Vec::<String>::new());
     }
 
     #[test]
