@@ -270,7 +270,9 @@ This crate talks to a hostile network; treat all wire input as untrusted.
 - TLS is optional, behind the non-default `tls` feature (`tokio-rustls` +
   `rustls-native-certs`), so a plaintext-only bot pays nothing for it.
 - Persistence is optional, behind the non-default `store` feature (`rusqlite`
-  with `bundled`). The `store` module re-exports `rusqlite` and gives its
+  with `bundled` and `hooks`, `serde`, `serde_json`). The store keeps its own
+  tables under the internal namespace `_ircbot`, with versioned steps in
+  `INTERNAL_MIGRATIONS`: add new steps at the end, never change an old one. The `store` module re-exports `rusqlite` and gives its
   `Connection` to callers, so a major `rusqlite` update is a breaking change.
 - Every change must compile, lint, test, and document **both** without features
   and with all of them. CI runs both:

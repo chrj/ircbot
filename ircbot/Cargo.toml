@@ -13,7 +13,7 @@ categories = ["network-programming", "asynchronous"]
 integration = []
 tls = ["dep:tokio-rustls", "dep:rustls-native-certs"]
 # Persistence for bot data in one SQLite file (the `store` module).
-store = ["dep:rusqlite"]
+store = ["dep:rusqlite", "dep:serde", "dep:serde_json"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -49,6 +49,10 @@ rustls-native-certs = { version = "0.8", optional = true }
 # breaking change of this crate. `hooks` gives the SQLite authorizer, which
 # `migrate` uses to refuse transaction control in a step.
 rusqlite = { version = "0.40", features = ["bundled", "hooks"], optional = true }
+# The typed key/value data of the store is JSON text. The store uses only the
+# `Serialize` and `Deserialize` traits, so it needs no `serde` features.
+serde = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
 # `test-util` lets the SASL tests run the registration timeout on a paused
@@ -62,6 +66,8 @@ rcgen = "0.14"
 # For the `sqlite_bot` example only. `bundled` builds SQLite from source, so
 # the example needs no system SQLite library.
 rusqlite = { version = "0.40", features = ["bundled"] }
+# For the store tests, which derive `Serialize` and `Deserialize`.
+serde = { version = "1", features = ["derive"] }
 
 # `test = true` makes `cargo test` run the unit tests of an example. Without
 # it, Cargo builds the example but skips its tests.

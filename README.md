@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Formatting codes** — triggers match the text without the IRC bold, colour, and italic codes, and the captures carry it without them; `#[on(..., raw)]` keeps them. `ctx.plain_text()` and `ircbot::format::strip()` strip any text.
 - **Keepalive & auto-reconnect** — periodic `PING`/`PONG` monitoring; reconnects and re-joins on drop. The bot retries until it is connected again, and each failed attempt doubles the delay, from 5 seconds up to 5 minutes (`.with_reconnect(delay, max_delay)`). A server that accepts the connection and then closes it, as a reconnect throttle does, counts as a failed attempt too. If the configured nick is already in use, the bot automatically retries with a suffixed alternative (`bot`, `bot_`, …).
 - **Authentication** — SASL `PLAIN` and `EXTERNAL` (CertFP) during registration, a `PASS` server password, and IRCv3 capability negotiation. A rejected login fails the connection instead of continuing unauthenticated.
-- **Persistence** (optional) — the `store` feature keeps bot data in one SQLite file, with SQL access and versioned schema migrations for each part of the bot.
+- **Persistence** (optional) — the `store` feature keeps bot data in one SQLite file: typed key/value data, SQL access, and versioned schema migrations for each part of the bot.
 - **TLS** (optional) — `Server::tls("irc.libera.chat:6697")` behind the `tls` feature, with certificate verification against the platform root store, private-CA and self-signed support, and client certificates for CertFP.
 - **Flood protection** — token-bucket rate limiter (default: burst 4, 1 msg / 500 ms).
 - **Auto message splitting** — long messages are word-wrapped and split within the 512-byte IRC limit.
@@ -172,21 +172,31 @@ logs a warning on every connect.
 ## Persistence
 
 The optional `store` feature keeps bot data in one SQLite file. It pulls in
-[rusqlite](https://github.com/rusqlite/rusqlite) and builds SQLite from source,
-so a bot needs no system SQLite library:
+[rusqlite](https://github.com/rusqlite/rusqlite), `serde` and `serde_json`, and
+builds SQLite from source, so a bot needs no system SQLite library:
 
 ```toml
 [dependencies]
 ircbot = { version = "0.6", features = ["store"] }
 ```
 
-A `Store` is the open database. Each part of the bot gets its own `Namespace`,
-which runs SQL on Tokio's blocking pool and applies its own schema migrations:
+A `Store` is the open database. Each part of the bot gets its own `Namespace`.
+A namespace keeps typed key/value data as JSON, through
+[serde](https://serde.rs), with no schema:
 
 ```rust,ignore
 use ircbot::store::Store;
 
 let store = Store::open("bot.db")?;
+let karma = store.namespace("karma")?;
+karma.set("alice", &3_i64).await?;
+let score: Option<i64> = karma.get("alice").await?;
+```
+
+For relational data, a namespace also runs SQL and applies its own schema
+migrations. Each call runs on Tokio's blocking pool:
+
+```rust,ignore
 let quotes = store.namespace("quotes")?;
 quotes.migrate(&["CREATE TABLE quotes_quote (id INTEGER PRIMARY KEY, text TEXT NOT NULL)"]).await?;
 

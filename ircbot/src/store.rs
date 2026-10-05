@@ -3,19 +3,44 @@
 //! This module needs the `store` feature.
 //!
 //! A [`Store`] is one open SQLite database. A bot gives each part of itself
-//! (for example, each group of handlers) its own [`Namespace`]. A namespace has
-//! two functions:
+//! (for example, each group of handlers) its own [`Namespace`]. A namespace
+//! keeps data in two ways:
 //!
-//! * [`Namespace::sql`] runs a closure with the real
+//! * **Key/value data.** [`Namespace::set`] keeps a value of each type that
+//!   implements `serde::Serialize`, as JSON. [`Namespace::get`] decodes it into
+//!   a type that implements `serde::Deserialize`. [`Namespace::delete`] and
+//!   [`Namespace::keys`] complete the set. This needs no schema.
+//! * **SQL tables.** [`Namespace::sql`] runs a closure with the real
 //!   [`rusqlite::Connection`]. There is no query layer between the closure and
-//!   SQLite.
-//! * [`Namespace::migrate`] applies a list of schema changes. The store
-//!   records the version of each namespace, so each step runs one time only.
+//!   SQLite. [`Namespace::migrate`] applies a list of schema changes. The
+//!   store records the version of each namespace, so each step runs one time
+//!   only.
 //!
-//! SQLite calls block the thread. Both functions run the call on Tokio's
+//! SQLite calls block the thread. All these functions run the call on Tokio's
 //! blocking pool, so a slow query does not stop the runtime.
 //!
-//! # Example
+//! # Key/value example
+//!
+//! ```rust
+//! use ircbot::store::Store;
+//!
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<(), ircbot::store::StoreError> {
+//! let store = Store::memory()?;
+//! let karma = store.namespace("karma")?;
+//!
+//! karma.set("alice", &3_i64).await?;
+//! let score: Option<i64> = karma.get("alice").await?;
+//! assert_eq!(score, Some(3));
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! A value of a `#[derive(Serialize, Deserialize)]` struct works the same way.
+//! If the struct gets a new field later, give the field `#[serde(default)]`,
+//! so a value stored before the change still decodes.
+//!
+//! # SQL example
 //!
 //! ```rust
 //! use ircbot::store::Store;
@@ -90,6 +115,8 @@ use std::time::Duration;
 pub use rusqlite;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{Connection, OptionalExtension};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use tokio::sync::Mutex;
 
 /// How long a write waits for a lock that another connection holds, before
@@ -99,6 +126,9 @@ use tokio::sync::Mutex;
 /// example from a second process, can hold a lock.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long [`Store::open`] waits before it tries again to switch to WAL.
+const WAL_RETRY_DELAY: Duration = Duration::from_millis(10);
+
 /// The table that records the migration version of each namespace.
 const MIGRATIONS_TABLE: &str = "
     CREATE TABLE IF NOT EXISTS _ircbot_migrations (
@@ -106,6 +136,21 @@ const MIGRATIONS_TABLE: &str = "
         version   INTEGER NOT NULL
     );
 ";
+
+/// The namespace of the tables of the store itself. A user namespace cannot
+/// have this name, because it starts with `_`.
+const INTERNAL_NAMESPACE: &str = "_ircbot";
+
+/// The migration steps of the tables of the store itself. Add new steps at the
+/// end, as for a user namespace.
+const INTERNAL_MIGRATIONS: &[&str] = &["
+    CREATE TABLE _ircbot_kv (
+        namespace TEXT NOT NULL,
+        key       TEXT NOT NULL,
+        value     TEXT NOT NULL,
+        PRIMARY KEY (namespace, key)
+    ) WITHOUT ROWID;
+"];
 
 /// An error from the store.
 #[derive(Debug, thiserror::Error)]
@@ -182,6 +227,34 @@ pub enum StoreError {
         /// The error from Tokio.
         source: tokio::task::JoinError,
     },
+
+    /// [`Namespace::set`] could not encode a value as JSON. For example, JSON
+    /// refuses a map whose keys are not strings.
+    #[error("cannot encode the value of key {key:?} in namespace {namespace:?}: {source}")]
+    Encode {
+        /// The namespace of the call.
+        namespace: String,
+        /// The key of the value.
+        key: String,
+        /// The error from `serde_json`.
+        source: serde_json::Error,
+    },
+
+    /// [`Namespace::get`] could not decode a stored value into the type that
+    /// the caller asked for. Usually the type changed after the value was
+    /// stored. `#[serde(default)]` on a new field lets an old value decode.
+    #[error(
+        "cannot decode the value of key {key:?} in namespace {namespace:?} into the \
+         requested type: {source}"
+    )]
+    Decode {
+        /// The namespace of the call.
+        namespace: String,
+        /// The key of the value.
+        key: String,
+        /// The error from `serde_json`.
+        source: serde_json::Error,
+    },
 }
 
 /// One open SQLite database.
@@ -211,6 +284,9 @@ impl Store {
     /// # Errors
     ///
     /// Returns [`StoreError::Open`] if SQLite cannot open or prepare the file.
+    /// Returns [`StoreError::UnknownMigrations`] for namespace `_ircbot` if a
+    /// newer version of this crate made the file. Returns
+    /// [`StoreError::Migration`] if the store cannot update its own tables.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let path = path.as_ref();
         let open_error = |source| StoreError::Open {
@@ -221,12 +297,7 @@ impl Store {
         // Set the timeout first: the journal mode change below also needs a
         // lock, so it must wait for another connection too.
         conn.busy_timeout(BUSY_TIMEOUT).map_err(open_error)?;
-        // The pragma returns the mode that SQLite uses after the change, so
-        // it needs the `_and_check` form. This mode is not WAL when SQLite
-        // cannot use WAL for this database.
-        let journal_mode = conn
-            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))
-            .map_err(open_error)?;
+        let journal_mode = switch_to_wal(&conn).map_err(open_error)?;
         if !journal_mode.eq_ignore_ascii_case("wal") {
             tracing::warn!(
                 path = %path.display(),
@@ -234,7 +305,7 @@ impl Store {
                 "SQLite cannot use WAL for this store, so a reader can make a writer wait"
             );
         }
-        Self::prepare(conn).map_err(open_error)
+        Self::prepare(conn, path)
     }
 
     /// Open a new, empty database in memory.
@@ -244,22 +315,28 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::Open`] if SQLite cannot make the database.
+    /// Returns [`StoreError::Open`] if SQLite cannot make the database, and
+    /// [`StoreError::Migration`] if the store cannot make its own tables.
     pub fn memory() -> Result<Self, StoreError> {
         let open_error = |source| StoreError::Open {
             path: PathBuf::from(":memory:"),
             source,
         };
         let conn = Connection::open_in_memory().map_err(open_error)?;
-        Self::prepare(conn).map_err(open_error)
+        Self::prepare(conn, Path::new(":memory:"))
     }
 
-    /// Make the tables of the store.
+    /// Make the tables of the store, and apply its own migration steps.
     ///
     /// An in-memory database is private to its connection, so only
     /// [`Store::open`] needs `BUSY_TIMEOUT`.
-    fn prepare(conn: Connection) -> rusqlite::Result<Self> {
-        conn.execute_batch(MIGRATIONS_TABLE)?;
+    fn prepare(mut conn: Connection, path: &Path) -> Result<Self, StoreError> {
+        conn.execute_batch(MIGRATIONS_TABLE)
+            .map_err(|source| StoreError::Open {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        apply_migrations(&mut conn, INTERNAL_NAMESPACE, INTERNAL_MIGRATIONS)?;
         Ok(Store {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -328,6 +405,120 @@ impl Namespace {
             .await
     }
 
+    /// Get the value of `key`, decoded from JSON into `T`.
+    ///
+    /// Returns `None` if the namespace has no value for `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Decode`] if the stored value does not decode
+    /// into `T`, and [`StoreError::Sql`] if SQLite cannot read it.
+    pub async fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, StoreError> {
+        let namespace = self.name.clone();
+        let lookup = key.to_string();
+        let json: Option<String> = self
+            .sql(move |conn| {
+                conn.query_row(
+                    "SELECT value FROM _ircbot_kv WHERE namespace = ?1 AND key = ?2",
+                    (&namespace, &lookup),
+                    |row| row.get(0),
+                )
+                .optional()
+            })
+            .await?;
+        // Decode here, not on the blocking thread, so `T` does not need to be
+        // `Send + 'static`.
+        json.map(|json| {
+            serde_json::from_str(&json).map_err(|source| StoreError::Decode {
+                namespace: self.name.clone(),
+                key: key.to_string(),
+                source,
+            })
+        })
+        .transpose()
+    }
+
+    /// Set the value of `key` to `value`, encoded as JSON.
+    ///
+    /// A value that `key` already has is replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Encode`] if `value` does not encode as JSON, and
+    /// [`StoreError::Sql`] if SQLite cannot write it.
+    pub async fn set<T: Serialize + ?Sized>(&self, key: &str, value: &T) -> Result<(), StoreError> {
+        let json = serde_json::to_string(value).map_err(|source| StoreError::Encode {
+            namespace: self.name.clone(),
+            key: key.to_string(),
+            source,
+        })?;
+        let namespace = self.name.clone();
+        let key = key.to_string();
+        self.sql(move |conn| {
+            conn.execute(
+                "INSERT INTO _ircbot_kv (namespace, key, value) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value",
+                (&namespace, &key, &json),
+            )
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Delete the value of `key`.
+    ///
+    /// Returns `true` if `key` had a value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sql`] if SQLite cannot delete the value.
+    pub async fn delete(&self, key: &str) -> Result<bool, StoreError> {
+        let namespace = self.name.clone();
+        let key = key.to_string();
+        let deleted = self
+            .sql(move |conn| {
+                conn.execute(
+                    "DELETE FROM _ircbot_kv WHERE namespace = ?1 AND key = ?2",
+                    (&namespace, &key),
+                )
+            })
+            .await?;
+        Ok(deleted > 0)
+    }
+
+    /// The keys that start with `prefix`, in byte order.
+    ///
+    /// The comparison uses the bytes of `prefix`. Thus `%` and `_` have no
+    /// special meaning, and a key that contains a NUL also matches. An empty
+    /// `prefix` gives all keys of the namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sql`] if SQLite cannot read the keys.
+    pub async fn keys(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+        let namespace = self.name.clone();
+        let prefix = prefix.to_string();
+        self.sql(move |conn| {
+            // Compare the bytes of the prefix. With `LIKE`, `%` and `_` are
+            // patterns. With text, `length` and `substr` stop at a NUL, which
+            // a key can contain. With a BLOB, they count all bytes. `substr`
+            // of an empty BLOB is NULL, so `ifnull` makes the empty key match
+            // the empty prefix.
+            let mut stmt = conn.prepare(
+                "SELECT key FROM _ircbot_kv
+                 WHERE namespace = ?1
+                   AND ifnull(substr(CAST(key AS BLOB), 1, length(CAST(?2 AS BLOB))), x'')
+                       = CAST(?2 AS BLOB)
+                 ORDER BY key",
+            )?;
+            let keys = stmt
+                .query_map((&namespace, &prefix), |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            Ok(keys)
+        })
+        .await
+    }
+
     /// Apply the steps of `steps` that the database does not have yet.
     ///
     /// The store records how many steps each namespace has. A call applies
@@ -375,20 +566,55 @@ impl Namespace {
     }
 }
 
+/// Ask SQLite for the WAL journal mode, and return the mode that SQLite uses
+/// after the change.
+///
+/// The change needs an exclusive lock. When more connections open a new file
+/// at the same time, SQLite can refuse the lock with `SQLITE_BUSY` at once,
+/// without the busy timeout, because the connections would wait for each
+/// other. Thus this function tries again until `BUSY_TIMEOUT` is over.
+fn switch_to_wal(conn: &Connection) -> rusqlite::Result<String> {
+    let deadline = std::time::Instant::now() + BUSY_TIMEOUT;
+    loop {
+        // The pragma returns the mode as a row, so it needs the `_and_check`
+        // form. This mode is not WAL when SQLite cannot use WAL for the file.
+        let result = conn
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0));
+        match result {
+            Err(e) if is_busy(&e) && std::time::Instant::now() < deadline => {
+                std::thread::sleep(WAL_RETRY_DELAY);
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Whether `error` is `SQLITE_BUSY`.
+fn is_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(e, _) if e.code == rusqlite::ErrorCode::DatabaseBusy
+    )
+}
+
 /// Apply the steps of `steps` after the recorded version of `namespace`, in
 /// one transaction.
 fn apply_migrations(
     conn: &mut Connection,
     namespace: &str,
-    steps: &[String],
+    steps: &[impl AsRef<str>],
 ) -> Result<(), StoreError> {
     let sql_error = |source| StoreError::Sql {
         namespace: namespace.to_string(),
         source,
     };
     // Dropping the transaction without `commit` rolls it back, so each early
-    // return below leaves the database as it was.
-    let tx = conn.transaction().map_err(sql_error)?;
+    // return below leaves the database as it was. `Immediate` takes the write
+    // lock before the version is read. Thus a second store that migrates the
+    // same file waits for the first one, and then reads the new version.
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql_error)?;
     let recorded: i64 = tx
         .query_row(
             "SELECT version FROM _ircbot_migrations WHERE namespace = ?1",
@@ -425,7 +651,7 @@ fn apply_migrations(
         .enumerate()
         .skip(applied)
         .try_for_each(|(index, step)| {
-            tx.execute_batch(step)
+            tx.execute_batch(step.as_ref())
                 .map_err(|source| StoreError::Migration {
                     namespace: namespace.to_string(),
                     step: index + 1,
@@ -889,6 +1115,191 @@ mod tests {
         assert_eq!(recorded_version(&store, "seen"), Some(1));
     }
 
+    // ── key/value ────────────────────────────────────────────────────────────
+
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct Quote {
+        text: String,
+        votes: u32,
+    }
+
+    #[tokio::test]
+    async fn get_returns_the_value_that_set_stored() {
+        let ns = Store::memory().unwrap().namespace("quotes").unwrap();
+        let quote = Quote {
+            text: "hello".to_string(),
+            votes: 3,
+        };
+
+        ns.set("q1", &quote).await.unwrap();
+
+        assert_eq!(ns.get::<Quote>("q1").await.unwrap(), Some(quote));
+    }
+
+    #[tokio::test]
+    async fn get_returns_none_for_a_key_without_a_value() {
+        let ns = Store::memory().unwrap().namespace("quotes").unwrap();
+
+        assert_eq!(ns.get::<Quote>("missing").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn set_replaces_the_value_of_a_key() {
+        let ns = Store::memory().unwrap().namespace("counter").unwrap();
+        ns.set("hits", &1_u32).await.unwrap();
+
+        ns.set("hits", &2_u32).await.unwrap();
+
+        assert_eq!(ns.get::<u32>("hits").await.unwrap(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn namespaces_keep_separate_values_for_the_same_key() {
+        let store = Store::memory().unwrap();
+        let quotes = store.namespace("quotes").unwrap();
+        let seen = store.namespace("seen").unwrap();
+
+        quotes.set("alice", "a quote").await.unwrap();
+        seen.set("alice", "#rust").await.unwrap();
+
+        assert_eq!(
+            quotes.get::<String>("alice").await.unwrap().as_deref(),
+            Some("a quote")
+        );
+        assert_eq!(
+            seen.get::<String>("alice").await.unwrap().as_deref(),
+            Some("#rust")
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_removes_the_value_and_tells_if_there_was_one() {
+        let ns = Store::memory().unwrap().namespace("quotes").unwrap();
+        ns.set("q1", "hello").await.unwrap();
+
+        assert!(ns.delete("q1").await.unwrap());
+        assert!(!ns.delete("q1").await.unwrap());
+        assert_eq!(ns.get::<String>("q1").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn keys_gives_the_keys_with_the_prefix_in_order() {
+        let ns = Store::memory().unwrap().namespace("seen").unwrap();
+        for key in ["nick:bob", "nick:alice", "chan:rust"] {
+            ns.set(key, &true).await.unwrap();
+        }
+
+        assert_eq!(
+            ns.keys("nick:").await.unwrap(),
+            vec!["nick:alice".to_string(), "nick:bob".to_string()]
+        );
+        assert_eq!(
+            ns.keys("").await.unwrap(),
+            vec![
+                "chan:rust".to_string(),
+                "nick:alice".to_string(),
+                "nick:bob".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn keys_treats_percent_and_underscore_as_text() {
+        let ns = Store::memory().unwrap().namespace("seen").unwrap();
+        for key in ["a_b", "axb", "a%c", "azc"] {
+            ns.set(key, &true).await.unwrap();
+        }
+
+        assert_eq!(ns.keys("a_").await.unwrap(), vec!["a_b".to_string()]);
+        assert_eq!(ns.keys("a%").await.unwrap(), vec!["a%c".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn keys_compares_all_bytes_of_a_key_with_a_nul() {
+        let ns = Store::memory().unwrap().namespace("seen").unwrap();
+        for key in ["a\0b", "a", ""] {
+            ns.set(key, &true).await.unwrap();
+        }
+
+        assert_eq!(ns.keys("a\0").await.unwrap(), vec!["a\0b".to_string()]);
+        assert_eq!(ns.keys("a\0b").await.unwrap(), vec!["a\0b".to_string()]);
+        assert_eq!(
+            ns.keys("").await.unwrap(),
+            vec![String::new(), "a".to_string(), "a\0b".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn keys_gives_only_the_keys_of_its_namespace() {
+        let store = Store::memory().unwrap();
+        store
+            .namespace("quotes")
+            .unwrap()
+            .set("k", &1)
+            .await
+            .unwrap();
+        let seen = store.namespace("seen").unwrap();
+
+        assert_eq!(seen.keys("").await.unwrap(), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn get_reports_a_value_that_does_not_decode() {
+        let ns = Store::memory().unwrap().namespace("quotes").unwrap();
+        ns.set("q1", "only a string").await.unwrap();
+
+        let err = ns.get::<Quote>("q1").await.unwrap_err();
+
+        assert!(
+            matches!(&err, StoreError::Decode { namespace, key, .. }
+                if namespace == "quotes" && key == "q1"),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_reports_a_value_that_does_not_encode() {
+        let ns = Store::memory().unwrap().namespace("quotes").unwrap();
+        // JSON refuses a map whose keys are not strings.
+        let value = std::collections::BTreeMap::from([((1, 2), "pair")]);
+
+        let err = ns.set("q1", &value).await.unwrap_err();
+
+        assert!(
+            matches!(&err, StoreError::Encode { namespace, key, .. }
+                if namespace == "quotes" && key == "q1"),
+            "got {err:?}"
+        );
+        assert_eq!(ns.keys("").await.unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn store_records_the_version_of_its_own_tables() {
+        let store = Store::memory().unwrap();
+
+        assert_eq!(recorded_version(&store, "_ircbot"), Some(1));
+        assert!(table_exists(&store, "_ircbot_kv"));
+    }
+
+    #[tokio::test]
+    async fn open_keeps_the_values_after_the_store_is_dropped() {
+        let file = TempFile::new("keeps-values");
+        Store::open(&file.0)
+            .unwrap()
+            .namespace("quotes")
+            .unwrap()
+            .set("q1", "kept")
+            .await
+            .unwrap();
+
+        let ns = Store::open(&file.0).unwrap().namespace("quotes").unwrap();
+
+        assert_eq!(
+            ns.get::<String>("q1").await.unwrap().as_deref(),
+            Some("kept")
+        );
+    }
+
     // ── open ─────────────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -944,6 +1355,34 @@ mod tests {
 
         holder.join().expect("lock holder thread");
         assert!(opened.is_ok(), "got {:?}", opened.err());
+    }
+
+    /// Given a new file, when many stores open it at the same time, then each
+    /// open succeeds: one applies the migration steps of the store, and the
+    /// others wait for it.
+    #[test]
+    fn concurrent_opens_of_a_new_file_all_succeed() {
+        const OPENERS: usize = 8;
+        let file = TempFile::new("concurrent");
+        let barrier = Arc::new(std::sync::Barrier::new(OPENERS));
+
+        let openers: Vec<_> = (0..OPENERS)
+            .map(|_| {
+                let path = file.0.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    Store::open(&path).map(|_| ())
+                })
+            })
+            .collect();
+        let failures: Vec<String> = openers
+            .into_iter()
+            .map(|opener| opener.join().expect("opener thread"))
+            .filter_map(|result| result.err().map(|e| e.to_string()))
+            .collect();
+
+        assert_eq!(failures, Vec::<String>::new());
     }
 
     #[test]
