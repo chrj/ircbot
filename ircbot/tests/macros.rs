@@ -483,21 +483,18 @@ async fn variadic_vec_collects_remaining_tokens() {
 
 // ─── from_state constructor ────────────────────────────────────────────────────
 
-/// State whose `Default` is *not* test-safe: it records whether it was built
-/// the easy way, so a test can prove `from_state` skipped `Default`.
+/// State whose `Default` is *not* test-safe. It stands in for real work
+/// (opening a DB, reading the environment, …) that a unit test must not
+/// trigger.
 struct StateBotState {
     greeting: String,
-    from_default: bool,
 }
 
 impl Default for StateBotState {
+    /// Panics, so a test fails if a constructor calls it, even when the
+    /// constructor discards the result.
     fn default() -> Self {
-        // Stand-in for real work (opening a DB, reading the environment, …)
-        // that a unit test must not trigger.
-        StateBotState {
-            greeting: "default".to_string(),
-            from_default: true,
-        }
+        panic!("StateBotState::default must not be called by the state-injection tests");
     }
 }
 
@@ -513,10 +510,7 @@ impl StateBot {
 async fn from_state_injects_given_state_and_skips_default() {
     let bot = StateBot::from_state(StateBotState {
         greeting: "hi!".to_string(),
-        from_default: false,
     });
-    // The injected state is used verbatim — `Default` never ran.
-    assert!(!bot.state.from_default);
 
     let mut tc = TestContext::channel("#test", "alice", "statebot: yo");
     bot.hello(tc.take_ctx(), "yo".to_string()).await.unwrap();
@@ -552,14 +546,12 @@ async fn new_with_state_connects_with_given_state_and_skips_default() {
         ["#test"],
         StateBotState {
             greeting: "hi!".to_string(),
-            from_default: false,
         },
     )
     .await
     .expect("connect failed");
 
     assert_eq!(bot.state.greeting, "hi!");
-    assert!(!bot.state.from_default);
     server.abort();
 }
 
