@@ -526,6 +526,43 @@ async fn from_state_injects_given_state_and_skips_default() {
     );
 }
 
+// ─── new_with_state constructor ──────────────────────────────────────────────
+
+/// Given a server that accepts the connection, when the bot is built with
+/// `new_with_state`, then it has the given state and `Default` did not run.
+#[tokio::test]
+async fn new_with_state_connects_with_given_state_and_skips_default() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind failed");
+    let addr = listener
+        .local_addr()
+        .expect("local_addr failed")
+        .to_string();
+    // Hold the socket open, so the bot does not see an EOF during the test.
+    let server = tokio::spawn(async move {
+        let (sock, _) = listener.accept().await.expect("accept failed");
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        drop(sock);
+    });
+
+    let bot = StateBot::new_with_state(
+        "statebot",
+        addr.as_str(),
+        ["#test"],
+        StateBotState {
+            greeting: "hi!".to_string(),
+            from_default: false,
+        },
+    )
+    .await
+    .expect("connect failed");
+
+    assert_eq!(bot.state.greeting, "hi!");
+    assert!(!bot.state.from_default);
+    server.abort();
+}
+
 // ─── include_self ────────────────────────────────────────────────────────────
 
 /// The entry whose trigger is the `event` with this name.

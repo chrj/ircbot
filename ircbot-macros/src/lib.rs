@@ -131,8 +131,8 @@ impl syn::parse::Parse for CommandArgs {
 /// `Send + Sync + 'static` (the bot is shared across tasks as an `Arc`; that
 /// bound is checked at `main_loop`). Because handlers receive `&self`, mutating
 /// state requires interior mutability — an `AtomicUsize`, a `Mutex<…>`, etc. To
-/// start from a non-default value, assign the public field after constructing:
-/// `let mut bot = MyBot::new(…).await?; bot.state = …;`.
+/// start from a non-default value, use `MyBot::new_with_state(…, state)`. It
+/// takes the state as a fourth argument and does not call `Default::default()`.
 ///
 /// This is sugar over the lower-level API: a bot is any
 /// `Arc<T: Send + Sync + 'static>` passed to `ircbot::internal::run_bot` with a
@@ -517,6 +517,43 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
         },
         None => quote! {},
     };
+    // This is `new` with a state that the caller built. The macro emits it
+    // only in the `state = Type` case, for the same reason as `from_state`.
+    let new_with_state_method = match &args.state {
+        Some(ty) => quote! {
+            /// Connect to an IRC server and return a bot ready to run, with a
+            /// pre-built `state`.
+            ///
+            /// Use this instead of [`new`](Self::new) when the state needs
+            /// work or input that `Default` cannot give, for example a
+            /// database path or a config value. This constructor does not call
+            /// `Default::default()`.
+            ///
+            /// ```rust,ignore
+            /// let state = MyState::open("bot.db")?;
+            /// MyBot::new_with_state("mybot", "irc.example.net:6667", ["rust"], state).await?;
+            /// ```
+            ///
+            /// # Errors
+            ///
+            /// Returns an error if the connection or the registration with the
+            /// server fails.
+            pub async fn new_with_state(
+                nick: impl Into<String>,
+                server: impl Into<ircbot::Server>,
+                channels: impl IntoIterator<Item = impl Into<String>>,
+                state: #ty,
+            ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+                let connection = ircbot::State::connect(
+                    nick.into(),
+                    server,
+                    channels.into_iter().map(|c| ircbot::Channel::from(c.into())).collect(),
+                ).await?;
+                Ok(#struct_name { __state: Some(connection), state })
+            }
+        },
+        None => quote! {},
+    };
 
     quote! {
         pub struct #struct_name {
@@ -555,6 +592,8 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                 ).await?;
                 Ok(#struct_name { __state: Some(state) #state_field_init })
             }
+
+            #new_with_state_method
 
             #from_state_method
 

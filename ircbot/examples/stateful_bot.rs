@@ -35,10 +35,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sy
 
     // As with `basic_bot`, we don't connect here — just show the API compiles.
     println!("stateful_bot example compiled successfully.");
-    println!("To start a non-default state, assign the field after `new()`:");
-    println!("  let mut bot = CounterBot::new(\"ircbot\", \"irc.libera.chat:6667\", [\"#rust\"]).await?;");
-    println!("  bot.state = Counter::default();");
-    println!("  bot.main_loop().await?;");
+    println!("To start from a non-default state, pass it to `new_with_state()`:");
+    println!("  let state = Counter::default();");
+    println!(
+        "  CounterBot::new_with_state(\"ircbot\", \"irc.libera.chat:6667\", [\"#rust\"], state)"
+    );
+    println!("      .await?");
+    println!("      .main_loop()");
+    println!("      .await?;");
     Ok(())
 }
 
