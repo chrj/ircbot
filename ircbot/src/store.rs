@@ -84,6 +84,7 @@ use std::time::Duration;
 ///
 /// Use this re-export, so the types match the version of this crate.
 pub use rusqlite;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{Connection, OptionalExtension};
 
 /// How long a write waits for a lock that another connection holds, before
@@ -189,9 +190,13 @@ pub struct Store {
 impl Store {
     /// Open the database at `path`, or make a new one there.
     ///
-    /// The store sets the journal mode to WAL, so a reader does not stop a
-    /// writer, and sets [`BUSY_TIMEOUT`]. This call blocks the thread, so call
-    /// it before the bot starts.
+    /// The store asks SQLite for the WAL journal mode, so a reader does not
+    /// stop a writer, and sets [`BUSY_TIMEOUT`]. Some databases cannot use
+    /// WAL, for example `:memory:` or a file on some network file systems.
+    /// Then the store keeps the mode that SQLite gives and logs a warning.
+    /// The store works correctly in each journal mode.
+    ///
+    /// This call blocks the thread, so call it before the bot starts.
     ///
     /// # Errors
     ///
@@ -203,17 +208,26 @@ impl Store {
             source,
         };
         let conn = Connection::open(path).map_err(open_error)?;
-        // The pragma returns the new mode as a row, so it needs the `_and_check`
-        // form.
-        conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))
+        // The pragma returns the mode that SQLite uses after the change, so
+        // it needs the `_and_check` form. This mode is not WAL when SQLite
+        // cannot use WAL for this database.
+        let journal_mode = conn
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))
             .map_err(open_error)?;
+        if !journal_mode.eq_ignore_ascii_case("wal") {
+            tracing::warn!(
+                path = %path.display(),
+                %journal_mode,
+                "SQLite cannot use WAL for this store, so a reader can make a writer wait"
+            );
+        }
         Self::prepare(conn).map_err(open_error)
     }
 
     /// Open a new, empty database in memory.
     ///
-    /// The data is lost when the last clone of the store is dropped. This is
-    /// for tests.
+    /// The data is lost when the store, all its clones, and all its
+    /// namespaces are dropped. This is for tests.
     ///
     /// # Errors
     ///
@@ -302,11 +316,15 @@ impl Namespace {
     /// A step can hold more than one SQL statement. All steps of one call run
     /// in one transaction: if a step fails, the call applies no step. Thus a
     /// step cannot use a statement that SQLite refuses in a transaction, for
-    /// example `VACUUM`.
+    /// example `VACUUM`. A step also cannot use `BEGIN`, `COMMIT`, `END` or
+    /// `ROLLBACK`, because these end the transaction of the call. The call
+    /// refuses such a step. `SAVEPOINT`, `RELEASE` and `ROLLBACK TO` are
+    /// permitted.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::Migration`] if a step fails, and
+    /// Returns [`StoreError::Migration`] if a step fails or controls the
+    /// transaction, and
     /// [`StoreError::UnknownMigrations`] if the database has more steps than
     /// `steps`.
     pub async fn migrate(&self, steps: &[&str]) -> Result<(), StoreError> {
@@ -376,14 +394,28 @@ fn apply_migrations(
         return Ok(());
     }
 
-    for (index, step) in steps.iter().enumerate().skip(applied) {
-        tx.execute_batch(step)
-            .map_err(|source| StoreError::Migration {
-                namespace: namespace.to_string(),
-                step: index + 1,
-                source,
-            })?;
-    }
+    // The authorizer makes SQLite refuse a statement that ends the
+    // transaction, so a step cannot apply part of the run. Remove it before
+    // each return: `commit`, and the rollback on drop, are also such
+    // statements.
+    tx.authorizer(Some(refuse_transaction_control))
+        .map_err(sql_error)?;
+    let result = steps
+        .iter()
+        .enumerate()
+        .skip(applied)
+        .try_for_each(|(index, step)| {
+            tx.execute_batch(step)
+                .map_err(|source| StoreError::Migration {
+                    namespace: namespace.to_string(),
+                    step: index + 1,
+                    source,
+                })
+        });
+    tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+        .map_err(sql_error)?;
+    result?;
+
     let version = i64::try_from(steps.len())
         .map_err(|e| sql_error(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
     tx.execute(
@@ -393,6 +425,16 @@ fn apply_migrations(
     )
     .map_err(sql_error)?;
     tx.commit().map_err(sql_error)
+}
+
+/// An SQLite authorizer that refuses `BEGIN`, `COMMIT`, `END` and `ROLLBACK`.
+///
+/// Savepoints stay permitted: in a transaction, they do not end it.
+fn refuse_transaction_control(ctx: AuthContext<'_>) -> Authorization {
+    match ctx.action {
+        AuthAction::Transaction { .. } => Authorization::Deny,
+        _ => Authorization::Allow,
+    }
 }
 
 /// Whether `name` obeys the rules for a namespace name.
@@ -667,6 +709,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migrate_refuses_a_step_that_commits() {
+        let store = Store::memory().unwrap();
+        let ns = store.namespace("quotes").unwrap();
+
+        let err = ns
+            .migrate(&[
+                "CREATE TABLE quotes_a (id INTEGER); COMMIT;",
+                "THIS IS NOT SQL",
+            ])
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&err, StoreError::Migration { step: 1, .. }),
+            "got {err:?}"
+        );
+        assert!(!table_exists(&store, "quotes_a"));
+        assert_eq!(recorded_version(&store, "quotes"), None);
+    }
+
+    #[tokio::test]
+    async fn migrate_refuses_a_step_that_rolls_back() {
+        let store = Store::memory().unwrap();
+        let ns = store.namespace("quotes").unwrap();
+
+        let err = ns
+            .migrate(&[
+                "CREATE TABLE quotes_a (id INTEGER)",
+                "ROLLBACK; CREATE TABLE quotes_b (id INTEGER);",
+            ])
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&err, StoreError::Migration { step: 2, .. }),
+            "got {err:?}"
+        );
+        assert!(!table_exists(&store, "quotes_a"));
+        assert!(!table_exists(&store, "quotes_b"));
+        assert_eq!(recorded_version(&store, "quotes"), None);
+    }
+
+    #[tokio::test]
+    async fn migrate_allows_a_savepoint_in_a_step() {
+        let store = Store::memory().unwrap();
+        let ns = store.namespace("quotes").unwrap();
+
+        ns.migrate(&["SAVEPOINT s; CREATE TABLE quotes_a (id INTEGER); RELEASE s;"])
+            .await
+            .unwrap();
+
+        assert!(table_exists(&store, "quotes_a"));
+        assert_eq!(recorded_version(&store, "quotes"), Some(1));
+    }
+
+    #[tokio::test]
     async fn migrate_refuses_fewer_steps_than_the_database_has() {
         let store = Store::memory().unwrap();
         let ns = store.namespace("quotes").unwrap();
@@ -746,6 +844,27 @@ mod tests {
             .unwrap();
 
         assert_eq!(mode, "wal");
+    }
+
+    #[test]
+    fn open_warns_when_sqlite_keeps_another_journal_mode() {
+        let capture = crate::test_capture::CaptureWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(capture.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // SQLite cannot use WAL for an in-memory database, and keeps the
+        // `memory` journal mode.
+        let opened = Store::open(":memory:");
+
+        assert!(opened.is_ok(), "got {:?}", opened.err());
+        let logs = capture.contents();
+        assert!(
+            logs.contains("WARN") && logs.contains("journal_mode=memory"),
+            "got {logs:?}"
+        );
     }
 
     #[test]

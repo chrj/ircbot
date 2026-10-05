@@ -46,8 +46,9 @@ rustls-native-certs = { version = "0.8", optional = true }
 # Store (optional, enabled by the `store` feature). `bundled` builds SQLite
 # from source, so a bot needs no system SQLite library. The `store` module
 # gives `rusqlite` types to the caller, so a major `rusqlite` update is a
-# breaking change of this crate.
-rusqlite = { version = "0.40", features = ["bundled"], optional = true }
+# breaking change of this crate. `hooks` gives the SQLite authorizer, which
+# `migrate` uses to refuse transaction control in a step.
+rusqlite = { version = "0.40", features = ["bundled", "hooks"], optional = true }
 
 [dev-dependencies]
 # `test-util` lets the SASL tests run the registration timeout on a paused
