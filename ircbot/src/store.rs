@@ -77,7 +77,7 @@
 //! Do not change these tables.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The `rusqlite` crate that [`Namespace::sql`] gives its connection from.
@@ -86,6 +86,7 @@ use std::time::Duration;
 pub use rusqlite;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{Connection, OptionalExtension};
+use tokio::sync::Mutex;
 
 /// How long a write waits for a lock that another connection holds, before
 /// it fails with `SQLITE_BUSY`.
@@ -290,7 +291,8 @@ impl Namespace {
     ///
     /// `f` gets the full [`rusqlite::Connection`], so it can prepare
     /// statements and start transactions. Calls from all namespaces of a store
-    /// run one at a time.
+    /// run one at a time. A call that waits for the connection does not
+    /// occupy a thread of the blocking pool.
     ///
     /// # Errors
     ///
@@ -340,18 +342,16 @@ impl Namespace {
         R: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<R, StoreError> + Send + 'static,
     {
-        let conn = Arc::clone(&self.conn);
-        tokio::task::spawn_blocking(move || {
-            // A closure that panicked while it held the lock does not make the
-            // connection unusable, so continue with the poisoned lock.
-            let mut conn = conn.lock().unwrap_or_else(|e| e.into_inner());
-            f(&mut conn)
-        })
-        .await
-        .map_err(|source| StoreError::Task {
-            namespace: self.name.clone(),
-            source,
-        })?
+        // Wait for the connection before the blocking task starts. Thus a call
+        // that waits does not occupy a thread of the blocking pool. The task
+        // owns the guard, and releases it also when `f` panics.
+        let mut conn = Arc::clone(&self.conn).lock_owned().await;
+        tokio::task::spawn_blocking(move || f(&mut conn))
+            .await
+            .map_err(|source| StoreError::Task {
+                namespace: self.name.clone(),
+                source,
+            })?
     }
 }
 
@@ -453,7 +453,7 @@ mod tests {
 
     /// The recorded migration version of `namespace`, or `None`.
     fn recorded_version(store: &Store, namespace: &str) -> Option<i64> {
-        let conn = store.conn.lock().expect("lock connection");
+        let conn = store.conn.try_lock().expect("no call holds the connection");
         conn.query_row(
             "SELECT version FROM _ircbot_migrations WHERE namespace = ?1",
             [namespace],
@@ -465,7 +465,7 @@ mod tests {
 
     /// Whether a table with the name `table` exists.
     fn table_exists(store: &Store, table: &str) -> bool {
-        let conn = store.conn.lock().expect("lock connection");
+        let conn = store.conn.try_lock().expect("no call holds the connection");
         conn.query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
             [table],
@@ -604,6 +604,58 @@ mod tests {
             .unwrap();
 
         assert_eq!(one, 1);
+    }
+
+    /// Given a call that holds the connection, when a second call waits for
+    /// it, then the second call does not occupy a blocking thread, so other
+    /// blocking work still runs.
+    #[test]
+    fn a_waiting_call_leaves_the_blocking_pool_free() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(2)
+            .enable_all()
+            .build()
+            .expect("build runtime");
+
+        runtime.block_on(async {
+            let ns = Store::memory().unwrap().namespace("pool").unwrap();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+
+            // Call A holds the connection on a blocking thread until other
+            // blocking work releases it.
+            let holder = tokio::spawn({
+                let ns = ns.clone();
+                async move {
+                    ns.sql(move |_conn| {
+                        let _ = started_tx.send(());
+                        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+                        Ok(())
+                    })
+                    .await
+                }
+            });
+            started_rx.await.expect("call A started");
+
+            // Call B waits for the connection.
+            let waiter = tokio::spawn({
+                let ns = ns.clone();
+                async move { ns.sql(|_conn| Ok(())).await }
+            });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            // Unrelated blocking work needs the second blocking thread.
+            let other = tokio::task::spawn_blocking(move || release_tx.send(()));
+            let finished = tokio::time::timeout(Duration::from_secs(2), other).await;
+
+            assert!(
+                finished.is_ok(),
+                "other blocking work did not run while a call waited for the connection"
+            );
+            holder.await.unwrap().unwrap();
+            waiter.await.unwrap().unwrap();
+        });
     }
 
     #[tokio::test]
