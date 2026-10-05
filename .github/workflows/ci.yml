@@ -24,10 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v2
-      # Test without and with `tls`. Each build compiles code that the other
-      # leaves out. `tls` also builds the `tls_bot` example.
+      # Test without features, and with `tls` and `store`. Each build
+      # compiles code that the other leaves out. `tls` also builds the
+      # `tls_bot` example.
       - run: cargo test --workspace
-      - run: cargo test --workspace --features tls
+      - run: cargo test --workspace --features tls,store
 
   fmt:
     name: Format
@@ -51,9 +52,9 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           components: clippy
-      # Lint without and with `tls`, for the same reason as the tests.
+      # Lint without and with the features, for the same reason as the tests.
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo clippy --workspace --all-targets --features tls -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features tls,store -- -D warnings
 
   integration:
     name: Integration tests
@@ -89,12 +90,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v2
-      # Without `tls`, a doc link to a TLS item breaks. With `tls`, the TLS
-      # items get docs, which docs.rs also builds. Thus build both.
+      # Without the features, a doc link to a feature item breaks. With the
+      # features, their items get docs, which docs.rs also builds. Thus build
+      # both.
       - run: cargo doc --no-deps --workspace
         env:
           RUSTDOCFLAGS: "-D warnings"
-      - run: cargo doc --no-deps --workspace --features tls
+      - run: cargo doc --no-deps --workspace --features tls,store
         env:
           RUSTDOCFLAGS: "-D warnings"
 
