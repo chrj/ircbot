@@ -42,7 +42,8 @@
 //!   (opens a database, reads config from the environment, dials a service).
 //!   Building such a bot with `Default::default` would run that work — and
 //!   often panic — inside your unit test. `from_state` lets you inject a
-//!   purpose-built state instead.
+//!   purpose-built state instead. A bot with `#[bot(state = T, no_default)]`
+//!   has no `Default`, so `from_state` is the only constructor for its tests.
 //!
 //! ```rust,no_run
 //! # use ircbot::{bot, Context, Result};
