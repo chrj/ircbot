@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ## Highlights
 
 - **Proc-macro API** — annotate methods with `#[command]` or `#[on]`; `#[bot]` wires everything up.
-- **Typed state** — `#[bot(state = MyState)]` adds a `pub state` field your handlers can read; mutate it through interior mutability (`Mutex`/atomics). See `examples/stateful_bot.rs`.
+- **Typed state** — `#[bot(state = MyState)]` adds a `pub state` field your handlers can read; mutate it through interior mutability (`Mutex`/atomics). `MyBot::new_with_state(…, state)` starts the bot from a state you built, for example one that opens a database. See `examples/stateful_bot.rs`.
 - **Flexible triggers** — commands (`!ping`), glob patterns (`"you are *"`), raw IRC events, mention detection, `/me` actions and CTCP commands, cron schedules — all with optional target-channel and regex filters. CTCP messages reach only the `action` and `ctcp` triggers, never the text triggers.
 - **Typed command arguments** — declare `async fn add(&self, ctx: Context, a: i64, b: i64)` and the words after `!add` are parsed into the parameters (`FromStr` types, a trailing `String`/`Vec`, `Option<T>`); on bad input the bot replies with a generated usage string.
 - **Reply helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, `ctx.whisper()`.

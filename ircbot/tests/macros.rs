@@ -483,21 +483,18 @@ async fn variadic_vec_collects_remaining_tokens() {
 
 // ─── from_state constructor ────────────────────────────────────────────────────
 
-/// State whose `Default` is *not* test-safe: it records whether it was built
-/// the easy way, so a test can prove `from_state` skipped `Default`.
+/// State whose `Default` is *not* test-safe. It stands in for real work
+/// (opening a DB, reading the environment, …) that a unit test must not
+/// trigger.
 struct StateBotState {
     greeting: String,
-    from_default: bool,
 }
 
 impl Default for StateBotState {
+    /// Panics, so a test fails if a constructor calls it, even when the
+    /// constructor discards the result.
     fn default() -> Self {
-        // Stand-in for real work (opening a DB, reading the environment, …)
-        // that a unit test must not trigger.
-        StateBotState {
-            greeting: "default".to_string(),
-            from_default: true,
-        }
+        panic!("StateBotState::default must not be called by the state-injection tests");
     }
 }
 
@@ -513,10 +510,7 @@ impl StateBot {
 async fn from_state_injects_given_state_and_skips_default() {
     let bot = StateBot::from_state(StateBotState {
         greeting: "hi!".to_string(),
-        from_default: false,
     });
-    // The injected state is used verbatim — `Default` never ran.
-    assert!(!bot.state.from_default);
 
     let mut tc = TestContext::channel("#test", "alice", "statebot: yo");
     bot.hello(tc.take_ctx(), "yo".to_string()).await.unwrap();
@@ -524,6 +518,41 @@ async fn from_state_injects_given_state_and_skips_default() {
         tc.next_reply(),
         Some("PRIVMSG #test :alice, hi!\r\n".to_string())
     );
+}
+
+// ─── new_with_state constructor ──────────────────────────────────────────────
+
+/// Given a server that accepts the connection, when the bot is built with
+/// `new_with_state`, then it has the given state and `Default` did not run.
+#[tokio::test]
+async fn new_with_state_connects_with_given_state_and_skips_default() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind failed");
+    let addr = listener
+        .local_addr()
+        .expect("local_addr failed")
+        .to_string();
+    // Hold the socket open, so the bot does not see an EOF during the test.
+    let server = tokio::spawn(async move {
+        let (sock, _) = listener.accept().await.expect("accept failed");
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        drop(sock);
+    });
+
+    let bot = StateBot::new_with_state(
+        "statebot",
+        addr.as_str(),
+        ["#test"],
+        StateBotState {
+            greeting: "hi!".to_string(),
+        },
+    )
+    .await
+    .expect("connect failed");
+
+    assert_eq!(bot.state.greeting, "hi!");
+    server.abort();
 }
 
 // ─── include_self ────────────────────────────────────────────────────────────
