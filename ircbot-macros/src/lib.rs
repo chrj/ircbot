@@ -15,31 +15,46 @@ use syn::{
 
 /// Parses the `#[bot(...)]` attribute arguments.
 ///
-/// Currently the only recognised argument is `state = <Type>`; an empty
-/// attribute (`#[bot]`) yields `state: None`.
+/// The recognised arguments are `state = <Type>` and the `no_default` flag. An
+/// empty attribute (`#[bot]`) yields `state: None`.
 struct BotArgs {
     state: Option<Type>,
+    no_default: bool,
 }
 
 impl syn::parse::Parse for BotArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut state = None;
+        let mut no_default = None;
         while !input.is_empty() {
             let key: Ident = input.parse()?;
-            let _: syn::Token![=] = input.parse()?;
-            if key == "state" {
+            if key == "no_default" {
+                no_default = Some(key);
+            } else if key == "state" {
+                let _: syn::Token![=] = input.parse()?;
                 state = Some(input.parse::<Type>()?);
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    format!("unknown #[bot] argument `{key}` (expected `state`)"),
+                    format!("unknown #[bot] argument `{key}` (expected `state` or `no_default`)"),
                 ));
             }
             if input.peek(syn::Token![,]) {
                 let _: syn::Token![,] = input.parse()?;
             }
         }
-        Ok(BotArgs { state })
+        // Without a state type, the bot always has a `Default`, so the flag
+        // has no effect. Refuse it instead of ignoring it.
+        if let (Some(key), None) = (&no_default, &state) {
+            return Err(syn::Error::new(
+                key.span(),
+                "`no_default` needs a state type: write `#[bot(state = MyState, no_default)]`",
+            ));
+        }
+        Ok(BotArgs {
+            state,
+            no_default: no_default.is_some(),
+        })
     }
 }
 
@@ -133,6 +148,26 @@ impl syn::parse::Parse for CommandArgs {
 /// state requires interior mutability — an `AtomicUsize`, a `Mutex<…>`, etc. To
 /// start from a non-default value, use `MyBot::new_with_state(…, state)`. It
 /// takes the state as a fourth argument and does not call `Default::default()`.
+///
+/// # State without `Default`
+///
+/// Some state has no useful default value, for example a handle to an open
+/// database. Add the `no_default` flag for this state:
+///
+/// ```ignore
+/// struct Data { db: MyDatabase }
+///
+/// #[bot(state = Data, no_default)]
+/// impl MyBot { /* … */ }
+///
+/// let data = Data { db: MyDatabase::open("bot.db")? };
+/// MyBot::new_with_state("mybot", "irc.example.net:6667", ["rust"], data).await?;
+/// ```
+///
+/// With `no_default`, the macro does not generate `impl Default for MyBot` or
+/// `MyBot::new`. Build the bot with `MyBot::new_with_state`, or with
+/// `MyBot::from_state` in a test. The flag needs `state = SomeType`. Without a
+/// state type, the macro refuses it.
 ///
 /// This is sugar over the lower-level API: a bot is any
 /// `Arc<T: Send + Sync + 'static>` passed to `ircbot::internal::run_bot` with a
@@ -555,19 +590,24 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
         None => quote! {},
     };
 
-    quote! {
-        pub struct #struct_name {
-            __state: std::option::Option<ircbot::State>,
-            #state_field_decl
-        }
-
-        impl Default for #struct_name {
-            fn default() -> Self {
-                #struct_name { __state: std::option::Option::None #state_field_init }
+    // `Default` and `new` both build the state with `Default::default()`. With
+    // `no_default`, the state type has no `Default`, so the macro leaves out
+    // both.
+    let default_impl = if args.no_default {
+        quote! {}
+    } else {
+        quote! {
+            impl Default for #struct_name {
+                fn default() -> Self {
+                    #struct_name { __state: std::option::Option::None #state_field_init }
+                }
             }
         }
-
-        impl #struct_name {
+    };
+    let new_method = if args.no_default {
+        quote! {}
+    } else {
+        quote! {
             /// Connect to an IRC server and return a bot ready to run.
             ///
             /// `server` is anything that converts into an
@@ -592,6 +632,19 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                 ).await?;
                 Ok(#struct_name { __state: Some(state) #state_field_init })
             }
+        }
+    };
+
+    quote! {
+        pub struct #struct_name {
+            __state: std::option::Option<ircbot::State>,
+            #state_field_decl
+        }
+
+        #default_impl
+
+        impl #struct_name {
+            #new_method
 
             #new_with_state_method
 

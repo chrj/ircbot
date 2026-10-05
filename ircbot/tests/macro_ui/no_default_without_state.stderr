@@ -1,0 +1,13 @@
+error: `no_default` needs a state type: write `#[bot(state = MyState, no_default)]`
+ --> tests/macro_ui/no_default_without_state.rs:3:7
+  |
+3 | #[bot(no_default)]
+  |       ^^^^^^^^^^
+
+warning: unused imports: `Context` and `Result`
+ --> tests/macro_ui/no_default_without_state.rs:1:19
+  |
+1 | use ircbot::{bot, Context, Result};
+  |                   ^^^^^^^  ^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
