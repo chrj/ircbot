@@ -97,7 +97,7 @@ use tokio::sync::Mutex;
 ///
 /// One store uses one connection. A second connection to the same file, for
 /// example from a second process, can hold a lock.
-pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The table that records the migration version of each namespace.
 const MIGRATIONS_TABLE: &str = "
@@ -197,10 +197,14 @@ impl Store {
     /// Open the database at `path`, or make a new one there.
     ///
     /// The store asks SQLite for the WAL journal mode, so a reader does not
-    /// stop a writer, and sets [`BUSY_TIMEOUT`]. Some databases cannot use
-    /// WAL, for example `:memory:` or a file on some network file systems.
-    /// Then the store keeps the mode that SQLite gives and logs a warning.
-    /// The store works correctly in each journal mode.
+    /// stop a writer. Some databases cannot use WAL, for example `:memory:`
+    /// or a file on some network file systems. Then the store keeps the mode
+    /// that SQLite gives and logs a warning. The store works correctly in
+    /// each journal mode.
+    ///
+    /// A write waits up to 5 seconds for a lock that another connection
+    /// holds, for example from a second process. Then it fails with
+    /// `SQLITE_BUSY`.
     ///
     /// This call blocks the thread, so call it before the bot starts.
     ///
@@ -253,7 +257,7 @@ impl Store {
     /// Make the tables of the store.
     ///
     /// An in-memory database is private to its connection, so only
-    /// [`Store::open`] needs [`BUSY_TIMEOUT`].
+    /// [`Store::open`] needs `BUSY_TIMEOUT`.
     fn prepare(conn: Connection) -> rusqlite::Result<Self> {
         conn.execute_batch(MIGRATIONS_TABLE)?;
         Ok(Store {
@@ -303,6 +307,12 @@ impl Namespace {
     /// statements and start transactions. Calls from all namespaces of a store
     /// run one at a time. A call that waits for the connection does not
     /// occupy a thread of the blocking pool.
+    ///
+    /// All namespaces of a store share this connection. The store sets its
+    /// connection-wide settings: the journal mode, the busy timeout, and the
+    /// authorizer, which [`Namespace::migrate`] uses while it runs. Do not
+    /// change these settings in `f`. For example, `migrate` removes an
+    /// authorizer that `f` installs.
     ///
     /// # Errors
     ///
