@@ -195,296 +195,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => panic!("#[bot] expects a simple struct name"),
     };
 
-    let mut handler_entries: Vec<TokenStream2> = Vec::new();
-    let mut cleaned_methods: Vec<TokenStream2> = Vec::new();
-
-    for item in &input.items {
-        if let ImplItem::Fn(method) = item {
-            let method_name = &method.sig.ident;
-
-            // Extra args beyond &self and ctx, retaining the full parsed type so
-            // command handlers can parse typed positional arguments.
-            let extra_args: Vec<(Ident, Type)> = method
-                .sig
-                .inputs
-                .iter()
-                .skip(2)
-                .filter_map(|arg| {
-                    if let FnArg::Typed(pt) = arg {
-                        let name = match pt.pat.as_ref() {
-                            Pat::Ident(pi) => pi.ident.clone(),
-                            _ => Ident::new("arg", Span::call_site()),
-                        };
-                        Some((name, (*pt.ty).clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            let mut trigger_tokens: Option<TokenStream2> = None;
-            // Whether the handler also gets the messages of the bot itself.
-            let mut include_self = false;
-            // Whether the trigger matches the text with the formatting codes.
-            let mut raw_text = false;
-            // Which kind of target the handler answers.
-            let mut scope: Option<String> = None;
-            // The command keyword, if this handler is triggered by a command
-            // (via `#[command]` or `#[on(command = "...")]`). Drives typed
-            // argument parsing and the generated usage string.
-            let mut command_name: Option<String> = None;
-            let mut cleaned_attrs: Vec<syn::Attribute> = Vec::new();
-
-            for attr in &method.attrs {
-                let Some(ident) = attr.path().get_ident() else {
-                    cleaned_attrs.push(attr.clone());
-                    continue;
-                };
-
-                match ident.to_string().as_str() {
-                    "command" => {
-                        if let Meta::List(ml) = &attr.meta {
-                            let args: CommandArgs =
-                                syn::parse2(ml.tokens.clone()).unwrap_or(CommandArgs {
-                                    name: String::new(),
-                                    target: None,
-                                    role: None,
-                                    scope: None,
-                                    include_self: false,
-                                    raw_text: false,
-                                });
-                            let name = &args.name;
-                            command_name = Some(args.name.clone());
-                            include_self = args.include_self;
-                            raw_text = args.raw_text;
-                            scope = args.scope.clone();
-                            let target_ts = opt_str_ts(args.target.as_deref());
-                            let role_ts = opt_str_ts(args.role.as_deref());
-                            trigger_tokens = Some(quote! {
-                                ircbot::Trigger::Command {
-                                    name: #name.to_string(),
-                                    target: #target_ts,
-                                    role: #role_ts,
-                                }
-                            });
-                        }
-                    }
-                    "on" => {
-                        if let Meta::List(ml) = &attr.meta {
-                            let metas_result = ml.parse_args_with(
-                                syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
-                            );
-
-                            let mut event: Option<String> = None;
-                            let mut message: Option<String> = None;
-                            let mut command_on: Option<String> = None;
-                            let mut target: Option<String> = None;
-                            let mut regex: Option<String> = None;
-                            let mut mention = false;
-                            let mut action: Option<String> = None;
-                            let mut ctcp: Option<String> = None;
-                            let mut cron_interval: Option<String> = None;
-                            let mut cron_tz: Option<String> = None;
-                            let mut role: Option<String> = None;
-                            let mut scope_on: Option<String> = None;
-
-                            if let Ok(metas) = metas_result {
-                                for meta in metas {
-                                    match &meta {
-                                        Meta::Path(p) if p.is_ident("mention") => {
-                                            mention = true;
-                                        }
-                                        Meta::Path(p) if p.is_ident("include_self") => {
-                                            include_self = true;
-                                        }
-                                        Meta::Path(p) if p.is_ident("raw") => {
-                                            raw_text = true;
-                                        }
-                                        Meta::NameValue(nv) => {
-                                            let k = nv
-                                                .path
-                                                .get_ident()
-                                                .map(ToString::to_string)
-                                                .unwrap_or_default();
-                                            if let Expr::Lit(ExprLit {
-                                                lit: Lit::Str(s), ..
-                                            }) = &nv.value
-                                            {
-                                                let v = s.value();
-                                                match k.as_str() {
-                                                    "event" => event = Some(v),
-                                                    "message" => message = Some(v),
-                                                    "command" => command_on = Some(v),
-                                                    "target" => target = Some(v),
-                                                    "regex" => regex = Some(v),
-                                                    "action" => action = Some(v),
-                                                    "ctcp" => ctcp = Some(v),
-                                                    "cron" => cron_interval = Some(v),
-                                                    "tz" => cron_tz = Some(v),
-                                                    "role" => role = Some(v),
-                                                    "scope" => scope_on = Some(v),
-                                                    _ => {}
-                                                }
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-
-                            if scope_on.is_some() {
-                                scope = scope_on;
-                            }
-
-                            let target_ts = opt_str_ts(target.as_deref());
-                            let role_ts = opt_str_ts(role.as_deref());
-                            // Precedence: message > command > event > mention > action
-                            // > ctcp > cron.
-                            // Only the first matching key wins; combining multiple
-                            // trigger types in one `#[on(...)]` is not supported.
-                            if let Some(msg_pat) = message {
-                                trigger_tokens = Some(quote! {
-                                    ircbot::Trigger::Message {
-                                        pattern: #msg_pat.to_string(),
-                                        target: #target_ts,
-                                    }
-                                });
-                            } else if let Some(cmd) = command_on {
-                                command_name = Some(cmd.clone());
-                                trigger_tokens = Some(quote! {
-                                    ircbot::Trigger::Command {
-                                        name: #cmd.to_string(),
-                                        target: #target_ts,
-                                        role: #role_ts,
-                                    }
-                                });
-                            } else if let Some(ev) = event {
-                                let regex_ts = opt_str_ts(regex.as_deref());
-                                trigger_tokens = Some(quote! {
-                                    ircbot::Trigger::Event {
-                                        event: #ev.to_string(),
-                                        target: #target_ts,
-                                        regex: #regex_ts,
-                                    }
-                                });
-                            } else if mention {
-                                trigger_tokens = Some(quote! {
-                                    ircbot::Trigger::Mention {
-                                        target: #target_ts,
-                                    }
-                                });
-                            } else if let Some(action_pat) = action {
-                                trigger_tokens = Some(quote! {
-                                    ircbot::Trigger::Action {
-                                        pattern: #action_pat.to_string(),
-                                        target: #target_ts,
-                                    }
-                                });
-                            } else if let Some(ctcp_cmd) = ctcp {
-                                validate_ctcp_command(&ctcp_cmd);
-                                trigger_tokens = Some(quote! {
-                                    ircbot::Trigger::Ctcp {
-                                        command: #ctcp_cmd.to_string(),
-                                        target: #target_ts,
-                                    }
-                                });
-                            } else if let Some(cron_str) = cron_interval {
-                                if scope.is_some() {
-                                    panic!(
-                                        "`scope` has no meaning with `cron`\n\
-                                         \n\
-                                         A cron handler fires on a schedule, not on a\n\
-                                         message, so it answers no channel or query.\n\
-                                         Use `target` to name where it sends."
-                                    );
-                                }
-                                if raw_text {
-                                    panic!(
-                                        "`raw` has no meaning with `cron`\n\
-                                         \n\
-                                         A cron handler fires on a schedule, not on a\n\
-                                         message, so it has no text. Remove `raw` from\n\
-                                         this handler."
-                                    );
-                                }
-                                if include_self {
-                                    panic!(
-                                        "`include_self` has no meaning with `cron`\n\
-                                         \n\
-                                         A cron handler fires on a schedule, not on a\n\
-                                         message, so it has no sender. Remove\n\
-                                         `include_self` from this handler."
-                                    );
-                                }
-                                // Validate the cron expression at compile time.
-                                if let Err(e) = cron_str.parse::<cron::Schedule>() {
-                                    panic!(
-                                        "invalid cron expression {cron_str:?}: {e}\n\
-                                         \n\
-                                         The expression must use the 6-field Quartz format \
-                                         with an optional 7th year field:\n\
-                                         \n\
-                                         sec  min  hour  day-of-month  month  day-of-week  [year]\n\
-                                         \n\
-                                         Examples:\n\
-                                         \"0 0 * * * *\"          every hour (on the minute)\n\
-                                         \"0 0 8-16 * * MON-FRI\" top of each hour, 8 a.m.–4 p.m., weekdays\n\
-                                         \"0 */15 * * * *\"        every 15 minutes\n\
-                                         \"0 0 9 * * MON\"         every Monday at 9 a.m."
-                                    );
-                                }
-                                // Validate the timezone at compile time (defaults to UTC).
-                                let tz_str = cron_tz.as_deref().unwrap_or("UTC");
-                                if let Err(e) = tz_str.parse::<chrono_tz::Tz>() {
-                                    panic!(
-                                        "invalid timezone {tz_str:?}: {e}\n\
-                                         \n\
-                                         Use an IANA timezone name such as:\n\
-                                         \"UTC\", \"America/New_York\", \"Europe/London\", \
-                                         \"Asia/Tokyo\""
-                                    );
-                                }
-                                let tz_str = tz_str.to_string();
-                                trigger_tokens = Some(quote! {
-                                    ircbot::Trigger::Cron {
-                                        schedule: #cron_str.to_string(),
-                                        tz: #tz_str.to_string(),
-                                        target: #target_ts,
-                                    }
-                                });
-                            }
-                        }
-                    }
-                    _ => {
-                        cleaned_attrs.push(attr.clone());
-                    }
-                }
-            }
-
-            if let Some(trigger) = trigger_tokens {
-                let scope_ts = scope_tokens(scope.as_deref());
-                let wrapper = build_wrapper(method_name, &extra_args, command_name.as_deref());
-                handler_entries.push(quote! {
-                    ircbot::HandlerEntry {
-                        trigger: #trigger,
-                        include_self: #include_self,
-                        raw_text: #raw_text,
-                        scope: #scope_ts,
-                        handler: std::boxed::Box::new(#wrapper),
-                    }
-                });
-
-                let mut cleaned = method.clone();
-                cleaned.attrs = cleaned_attrs;
-                cleaned_methods.push(quote! { #cleaned });
-            } else {
-                cleaned_methods.push(quote! { #method });
-            }
-        } else {
-            let it = item;
-            cleaned_methods.push(quote! { #it });
-        }
-    }
+    let (handler_entries, cleaned_methods) = expand_handlers(&input);
 
     // Optional user state field. When `state = Type` is absent both fragments are
     // empty, so the generated tokens are identical to the no-state case. The init
@@ -776,6 +487,308 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
+
+/// Build the handler list and the cleaned methods of an `impl` block.
+///
+/// Each method with a `#[command]` or `#[on(...)]` attribute gives one
+/// `ircbot::HandlerEntry` expression. The methods come back without these
+/// attributes. `#[bot]` and `#[plugin]` share this, so both accept the same
+/// handlers.
+#[allow(clippy::too_many_lines)]
+fn expand_handlers(input: &ItemImpl) -> (Vec<TokenStream2>, Vec<TokenStream2>) {
+    let mut handler_entries: Vec<TokenStream2> = Vec::new();
+    let mut cleaned_methods: Vec<TokenStream2> = Vec::new();
+
+    for item in &input.items {
+        if let ImplItem::Fn(method) = item {
+            let method_name = &method.sig.ident;
+
+            // Extra args beyond &self and ctx, retaining the full parsed type so
+            // command handlers can parse typed positional arguments.
+            let extra_args: Vec<(Ident, Type)> = method
+                .sig
+                .inputs
+                .iter()
+                .skip(2)
+                .filter_map(|arg| {
+                    if let FnArg::Typed(pt) = arg {
+                        let name = match pt.pat.as_ref() {
+                            Pat::Ident(pi) => pi.ident.clone(),
+                            _ => Ident::new("arg", Span::call_site()),
+                        };
+                        Some((name, (*pt.ty).clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let mut trigger_tokens: Option<TokenStream2> = None;
+            // Whether the handler also gets the messages of the bot itself.
+            let mut include_self = false;
+            // Whether the trigger matches the text with the formatting codes.
+            let mut raw_text = false;
+            // Which kind of target the handler answers.
+            let mut scope: Option<String> = None;
+            // The command keyword, if this handler is triggered by a command
+            // (via `#[command]` or `#[on(command = "...")]`). Drives typed
+            // argument parsing and the generated usage string.
+            let mut command_name: Option<String> = None;
+            let mut cleaned_attrs: Vec<syn::Attribute> = Vec::new();
+
+            for attr in &method.attrs {
+                let Some(ident) = attr.path().get_ident() else {
+                    cleaned_attrs.push(attr.clone());
+                    continue;
+                };
+
+                match ident.to_string().as_str() {
+                    "command" => {
+                        if let Meta::List(ml) = &attr.meta {
+                            let args: CommandArgs =
+                                syn::parse2(ml.tokens.clone()).unwrap_or(CommandArgs {
+                                    name: String::new(),
+                                    target: None,
+                                    role: None,
+                                    scope: None,
+                                    include_self: false,
+                                    raw_text: false,
+                                });
+                            let name = &args.name;
+                            command_name = Some(args.name.clone());
+                            include_self = args.include_self;
+                            raw_text = args.raw_text;
+                            scope = args.scope.clone();
+                            let target_ts = opt_str_ts(args.target.as_deref());
+                            let role_ts = opt_str_ts(args.role.as_deref());
+                            trigger_tokens = Some(quote! {
+                                ircbot::Trigger::Command {
+                                    name: #name.to_string(),
+                                    target: #target_ts,
+                                    role: #role_ts,
+                                }
+                            });
+                        }
+                    }
+                    "on" => {
+                        if let Meta::List(ml) = &attr.meta {
+                            let metas_result = ml.parse_args_with(
+                                syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
+                            );
+
+                            let mut event: Option<String> = None;
+                            let mut message: Option<String> = None;
+                            let mut command_on: Option<String> = None;
+                            let mut target: Option<String> = None;
+                            let mut regex: Option<String> = None;
+                            let mut mention = false;
+                            let mut action: Option<String> = None;
+                            let mut ctcp: Option<String> = None;
+                            let mut cron_interval: Option<String> = None;
+                            let mut cron_tz: Option<String> = None;
+                            let mut role: Option<String> = None;
+                            let mut scope_on: Option<String> = None;
+
+                            if let Ok(metas) = metas_result {
+                                for meta in metas {
+                                    match &meta {
+                                        Meta::Path(p) if p.is_ident("mention") => {
+                                            mention = true;
+                                        }
+                                        Meta::Path(p) if p.is_ident("include_self") => {
+                                            include_self = true;
+                                        }
+                                        Meta::Path(p) if p.is_ident("raw") => {
+                                            raw_text = true;
+                                        }
+                                        Meta::NameValue(nv) => {
+                                            let k = nv
+                                                .path
+                                                .get_ident()
+                                                .map(ToString::to_string)
+                                                .unwrap_or_default();
+                                            if let Expr::Lit(ExprLit {
+                                                lit: Lit::Str(s), ..
+                                            }) = &nv.value
+                                            {
+                                                let v = s.value();
+                                                match k.as_str() {
+                                                    "event" => event = Some(v),
+                                                    "message" => message = Some(v),
+                                                    "command" => command_on = Some(v),
+                                                    "target" => target = Some(v),
+                                                    "regex" => regex = Some(v),
+                                                    "action" => action = Some(v),
+                                                    "ctcp" => ctcp = Some(v),
+                                                    "cron" => cron_interval = Some(v),
+                                                    "tz" => cron_tz = Some(v),
+                                                    "role" => role = Some(v),
+                                                    "scope" => scope_on = Some(v),
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+
+                            if scope_on.is_some() {
+                                scope = scope_on;
+                            }
+
+                            let target_ts = opt_str_ts(target.as_deref());
+                            let role_ts = opt_str_ts(role.as_deref());
+                            // Precedence: message > command > event > mention > action
+                            // > ctcp > cron.
+                            // Only the first matching key wins; combining multiple
+                            // trigger types in one `#[on(...)]` is not supported.
+                            if let Some(msg_pat) = message {
+                                trigger_tokens = Some(quote! {
+                                    ircbot::Trigger::Message {
+                                        pattern: #msg_pat.to_string(),
+                                        target: #target_ts,
+                                    }
+                                });
+                            } else if let Some(cmd) = command_on {
+                                command_name = Some(cmd.clone());
+                                trigger_tokens = Some(quote! {
+                                    ircbot::Trigger::Command {
+                                        name: #cmd.to_string(),
+                                        target: #target_ts,
+                                        role: #role_ts,
+                                    }
+                                });
+                            } else if let Some(ev) = event {
+                                let regex_ts = opt_str_ts(regex.as_deref());
+                                trigger_tokens = Some(quote! {
+                                    ircbot::Trigger::Event {
+                                        event: #ev.to_string(),
+                                        target: #target_ts,
+                                        regex: #regex_ts,
+                                    }
+                                });
+                            } else if mention {
+                                trigger_tokens = Some(quote! {
+                                    ircbot::Trigger::Mention {
+                                        target: #target_ts,
+                                    }
+                                });
+                            } else if let Some(action_pat) = action {
+                                trigger_tokens = Some(quote! {
+                                    ircbot::Trigger::Action {
+                                        pattern: #action_pat.to_string(),
+                                        target: #target_ts,
+                                    }
+                                });
+                            } else if let Some(ctcp_cmd) = ctcp {
+                                validate_ctcp_command(&ctcp_cmd);
+                                trigger_tokens = Some(quote! {
+                                    ircbot::Trigger::Ctcp {
+                                        command: #ctcp_cmd.to_string(),
+                                        target: #target_ts,
+                                    }
+                                });
+                            } else if let Some(cron_str) = cron_interval {
+                                if scope.is_some() {
+                                    panic!(
+                                        "`scope` has no meaning with `cron`\n\
+                                         \n\
+                                         A cron handler fires on a schedule, not on a\n\
+                                         message, so it answers no channel or query.\n\
+                                         Use `target` to name where it sends."
+                                    );
+                                }
+                                if raw_text {
+                                    panic!(
+                                        "`raw` has no meaning with `cron`\n\
+                                         \n\
+                                         A cron handler fires on a schedule, not on a\n\
+                                         message, so it has no text. Remove `raw` from\n\
+                                         this handler."
+                                    );
+                                }
+                                if include_self {
+                                    panic!(
+                                        "`include_self` has no meaning with `cron`\n\
+                                         \n\
+                                         A cron handler fires on a schedule, not on a\n\
+                                         message, so it has no sender. Remove\n\
+                                         `include_self` from this handler."
+                                    );
+                                }
+                                // Validate the cron expression at compile time.
+                                if let Err(e) = cron_str.parse::<cron::Schedule>() {
+                                    panic!(
+                                        "invalid cron expression {cron_str:?}: {e}\n\
+                                         \n\
+                                         The expression must use the 6-field Quartz format \
+                                         with an optional 7th year field:\n\
+                                         \n\
+                                         sec  min  hour  day-of-month  month  day-of-week  [year]\n\
+                                         \n\
+                                         Examples:\n\
+                                         \"0 0 * * * *\"          every hour (on the minute)\n\
+                                         \"0 0 8-16 * * MON-FRI\" top of each hour, 8 a.m.–4 p.m., weekdays\n\
+                                         \"0 */15 * * * *\"        every 15 minutes\n\
+                                         \"0 0 9 * * MON\"         every Monday at 9 a.m."
+                                    );
+                                }
+                                // Validate the timezone at compile time (defaults to UTC).
+                                let tz_str = cron_tz.as_deref().unwrap_or("UTC");
+                                if let Err(e) = tz_str.parse::<chrono_tz::Tz>() {
+                                    panic!(
+                                        "invalid timezone {tz_str:?}: {e}\n\
+                                         \n\
+                                         Use an IANA timezone name such as:\n\
+                                         \"UTC\", \"America/New_York\", \"Europe/London\", \
+                                         \"Asia/Tokyo\""
+                                    );
+                                }
+                                let tz_str = tz_str.to_string();
+                                trigger_tokens = Some(quote! {
+                                    ircbot::Trigger::Cron {
+                                        schedule: #cron_str.to_string(),
+                                        tz: #tz_str.to_string(),
+                                        target: #target_ts,
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    _ => {
+                        cleaned_attrs.push(attr.clone());
+                    }
+                }
+            }
+
+            if let Some(trigger) = trigger_tokens {
+                let scope_ts = scope_tokens(scope.as_deref());
+                let wrapper = build_wrapper(method_name, &extra_args, command_name.as_deref());
+                handler_entries.push(quote! {
+                    ircbot::HandlerEntry {
+                        trigger: #trigger,
+                        include_self: #include_self,
+                        raw_text: #raw_text,
+                        scope: #scope_ts,
+                        handler: std::boxed::Box::new(#wrapper),
+                    }
+                });
+
+                let mut cleaned = method.clone();
+                cleaned.attrs = cleaned_attrs;
+                cleaned_methods.push(quote! { #cleaned });
+            } else {
+                cleaned_methods.push(quote! { #method });
+            }
+        } else {
+            let it = item;
+            cleaned_methods.push(quote! { #it });
+        }
+    }
+
+    (handler_entries, cleaned_methods)
+}
 
 /// The `ircbot::Scope` value for the `scope` option.
 ///
