@@ -10,8 +10,8 @@ surrounding code** — consistency with what exists beats personal preference.
 This is a Cargo workspace (`resolver = "2"`) with two published crates:
 
 - **`ircbot`** — the async IRC bot framework (library + examples + tests).
-- **`ircbot-macros`** — the `#[bot]`, `#[command]`, and `#[on]` procedural
-  macros. `proc-macro = true`; depends only on `proc-macro2`, `quote`, `syn`,
+- **`ircbot-macros`** — the `#[bot]`, `#[plugin]`, `#[command]`, and `#[on]`
+  procedural macros. `proc-macro = true`; depends only on `proc-macro2`, `quote`, `syn`,
   plus the validation crates (`cron`, `chrono-tz`) it needs at macro-expansion
   time.
 
@@ -114,7 +114,7 @@ secrets.
   (`tracing::error!(...)`) rather than panicking.
 - `unwrap()`/`expect()` are acceptable in **tests**, in **macro code** (compile-time,
   with a helpful message), and for genuinely-impossible invariants — but always
-  with an explanatory message (`expect("bot already started")`).
+  with an explanatory message (`expect("take_ctx called twice on the same TestContext")`).
 - `?` for propagation; map into `BoxError` at the boundary
   (`.map_err(|e| Box::new(e) as crate::BoxError)`).
 - New custom error enums derive `thiserror::Error` (see `Error` in `lib.rs` and
@@ -153,6 +153,15 @@ patterns already established:
 - **Spawned tasks must be cleaned up.** The read loop aborts the keepalive and cron
   tasks and drops the write sender before returning, then awaits the write task. Any
   new long-lived task must be aborted/joined on teardown the same way.
+- **Plugins run in their own tasks.** `plugin.rs` gives each plugin one Tokio
+  task and a bounded queue. The handler entries that dispatch sees only put a
+  message in the queue, so trigger matching, roles, ignore lists and cron stay in
+  one place. Keep it so: a plugin handler must never run on the read loop. The
+  handlers of the `#[bot]` itself still run in the dispatch loop.
+- **Constructors do not connect.** `#[bot]` keeps its server, settings and
+  plugins in a `BotSetup` (`setup.rs`), and only `main_loop` connects. The
+  generated methods are thin forwarders: put new logic in `BotSetup`, not in the
+  macro.
 - **Use channels to serialise side effects.** All socket writes funnel through a
   single `mpsc::UnboundedSender<String>` drained by one write task that enforces
   token-bucket flood control. Don't write to the socket from multiple places.

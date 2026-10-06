@@ -49,6 +49,10 @@ const MAX_NICK_ATTEMPTS: u32 = 8;
 /// this window.
 const CRON_RESCAN_INTERVAL: Duration = Duration::from_secs(60);
 
+/// How long a lost connection waits for its write task to send the lines it
+/// still has, before it stops the task. See the end of `run_session`.
+const WRITE_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// A shareable, atomically-swappable set of handler entries.
 ///
 /// The outer [`Arc`] allows the handle to be cloned cheaply.  The [`RwLock`]
@@ -391,7 +395,23 @@ pub(crate) async fn run_session<T: Send + Sync + 'static>(
         task.abort();
     }
     drop(write_tx);
-    let _ = write_task.await;
+    // The write task stops when the last sender is gone. A `Context` holds a
+    // sender too, and a plugin can hold a context across a disconnect, in its
+    // queue or in a blocked handler. Thus wait a short time for the write task
+    // to send what it has, then stop it, so the bot can reconnect. The
+    // connection is lost at this point, so the lines that are left cannot
+    // reach the server anyway.
+    let mut write_task = write_task;
+    if tokio::time::timeout(WRITE_DRAIN_TIMEOUT, &mut write_task)
+        .await
+        .is_err()
+    {
+        write_task.abort();
+        tracing::debug!(
+            timeout = ?WRITE_DRAIN_TIMEOUT,
+            "a context still holds the old connection, so the write task was stopped"
+        );
+    }
 
     let session = if registered.load(Ordering::Relaxed) {
         Session::Registered

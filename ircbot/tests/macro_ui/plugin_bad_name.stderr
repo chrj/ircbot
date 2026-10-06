@@ -1,0 +1,13 @@
+error: invalid plugin name "Bad-Name": start with a lowercase ASCII letter, use only lowercase ASCII letters, digits and `_`, and do not use `sqlite` or a name that starts with `sqlite_`
+ --> tests/macro_ui/plugin_bad_name.rs:3:17
+  |
+3 | #[plugin(name = "Bad-Name")]
+  |                 ^^^^^^^^^^
+
+warning: unused imports: `Context` and `Result`
+ --> tests/macro_ui/plugin_bad_name.rs:1:22
+  |
+1 | use ircbot::{plugin, Context, Result};
+  |                      ^^^^^^^  ^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

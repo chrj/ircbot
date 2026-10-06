@@ -522,46 +522,22 @@ async fn from_state_injects_given_state_and_skips_default() {
 
 // ─── new_with_state constructor ──────────────────────────────────────────────
 
-/// Start a server on loopback that accepts one connection and holds it open.
-///
-/// Returns the address and the server task. Abort the task at the end of the
-/// test.
-async fn accepting_server() -> (String, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind failed");
-    let addr = listener
-        .local_addr()
-        .expect("local_addr failed")
-        .to_string();
-    // Hold the socket open, so the bot does not see an EOF during the test.
-    let server = tokio::spawn(async move {
-        let (sock, _) = listener.accept().await.expect("accept failed");
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        drop(sock);
-    });
-    (addr, server)
-}
-
-/// Given a server that accepts the connection, when the bot is built with
-/// `new_with_state`, then it has the given state and `Default` did not run.
-#[tokio::test]
-async fn new_with_state_connects_with_given_state_and_skips_default() {
-    let (addr, server) = accepting_server().await;
-
+/// Given a pre-built state, when the bot is built with `new_with_state`, then
+/// it has the given state, `Default` did not run, and nothing connected.
+#[test]
+fn new_with_state_keeps_given_state_and_skips_default() {
+    // The server does not exist: `new_with_state` does not connect, so this
+    // does not fail. `main_loop` connects.
     let bot = StateBot::new_with_state(
         "statebot",
-        addr.as_str(),
+        "127.0.0.1:1",
         ["#test"],
         StateBotState {
             greeting: "hi!".to_string(),
         },
-    )
-    .await
-    .expect("connect failed");
+    );
 
     assert_eq!(bot.state.greeting, "hi!");
-    server.abort();
 }
 
 // ─── no_default ──────────────────────────────────────────────────────────────
@@ -581,24 +557,19 @@ impl NoDefaultBot {
 }
 
 /// Given a state type without `Default`, when the bot is built with
-/// `new_with_state`, then it connects with the given state.
-#[tokio::test]
-async fn no_default_bot_connects_with_new_with_state() {
-    let (addr, server) = accepting_server().await;
-
+/// `new_with_state`, then it has the given state.
+#[test]
+fn no_default_bot_builds_with_new_with_state() {
     let bot = NoDefaultBot::new_with_state(
         "nodefaultbot",
-        addr.as_str(),
+        "127.0.0.1:1",
         ["#test"],
         NoDefaultState {
             greeting: "hi!".to_string(),
         },
-    )
-    .await
-    .expect("connect failed");
+    );
 
     assert_eq!(bot.state.greeting, "hi!");
-    server.abort();
 }
 
 /// Given a state type without `Default`, when the bot is built with

@@ -58,6 +58,71 @@ impl syn::parse::Parse for BotArgs {
     }
 }
 
+/// Parses the `#[plugin(...)]` attribute arguments: `name = "..."` (required)
+/// and `state = <Type>` (optional).
+struct PluginArgs {
+    name: syn::LitStr,
+    state: Option<Type>,
+}
+
+impl syn::parse::Parse for PluginArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut name = None;
+        let mut state = None;
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+            let _: syn::Token![=] = input.parse()?;
+            if key == "name" {
+                name = Some(input.parse::<syn::LitStr>()?);
+            } else if key == "state" {
+                state = Some(input.parse::<Type>()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("unknown #[plugin] argument `{key}` (expected `name` or `state`)"),
+                ));
+            }
+            if input.peek(syn::Token![,]) {
+                let _: syn::Token![,] = input.parse()?;
+            }
+        }
+        let Some(name) = name else {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "#[plugin] needs a name: write `#[plugin(name = \"my_plugin\")]`",
+            ));
+        };
+        if !is_valid_plugin_name(&name.value()) {
+            return Err(syn::Error::new(
+                name.span(),
+                format!(
+                    "invalid plugin name {:?}: start with a lowercase ASCII letter, use \
+                     only lowercase ASCII letters, digits and `_`, and do not use \
+                     `sqlite` or a name that starts with `sqlite_`",
+                    name.value()
+                ),
+            ));
+        }
+        Ok(PluginArgs { name, state })
+    }
+}
+
+/// Whether `name` obeys the rules for a plugin name.
+///
+/// The rules are the same as for a store namespace in `ircbot`, because a
+/// plugin uses its name as its namespace. Keep this function the same as
+/// `is_valid_name` in `ircbot/src/name.rs`.
+fn is_valid_plugin_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    let reserved = name == "sqlite" || name.starts_with("sqlite_");
+    first.is_ascii_lowercase()
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && !reserved
+}
+
 /// Parses `#[command("name")]`, `#[command("name", target = "...")]`,
 /// `#[command("name", role = "...")]`, and/or the `include_self` and `raw`
 /// flags.
@@ -122,6 +187,29 @@ impl syn::parse::Parse for CommandArgs {
 /// The macro also implements `ircbot::Bot` for the type. This trait gives the
 /// list of handlers, and `ircbot::testing::TestBot` uses it in tests.
 ///
+/// # Starting the bot
+///
+/// `MyBot::new(nick, server, channels)` makes the bot. It does not connect.
+/// The `with_*` methods set roles, the ignore list, keepalive, flood control,
+/// reconnect delays, CTCP `VERSION` and keepnick. `main_loop` checks the
+/// setup, connects, and runs:
+///
+/// ```ignore
+/// MyBot::new("mybot", "irc.example.net:6667", ["rust"])
+///     .with_role("admin", ["*!*@trusted.host"])
+///     .main_loop()
+///     .await?;
+/// ```
+///
+/// `main_loop` refuses to start when a command needs a role that no
+/// `with_role` call defines, because such a command would never run.
+///
+/// # Plugins
+///
+/// The generated `plugin` method adds a `#[plugin]` to the bot. The bot runs
+/// its own handlers in the dispatch loop, and each plugin in its own task. See
+/// the `ircbot::plugin` module for the checks and the isolation of plugins.
+///
 /// # Custom state
 ///
 /// Pass `state = SomeType` to give the bot a public `state` field your handlers
@@ -162,7 +250,9 @@ impl syn::parse::Parse for CommandArgs {
 /// impl MyBot { /* … */ }
 ///
 /// let data = Data { db: MyDatabase::open("bot.db")? };
-/// MyBot::new_with_state("mybot", "irc.example.net:6667", ["rust"], data).await?;
+/// MyBot::new_with_state("mybot", "irc.example.net:6667", ["rust"], data)
+///     .main_loop()
+///     .await?;
 /// ```
 ///
 /// With `no_default`, the macro does not generate `impl Default for MyBot` or
@@ -195,6 +285,414 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => panic!("#[bot] expects a simple struct name"),
     };
 
+    let (handler_entries, cleaned_methods) = expand_handlers(&input);
+
+    // Optional user state field. When `state = Type` is absent both fragments are
+    // empty, so the generated tokens are the same as without state. The init
+    // fragment has a leading comma, because the `__setup` field in the struct
+    // literals below has no trailing comma.
+    let state_field_decl = match &args.state {
+        Some(ty) => quote! { pub state: #ty, },
+        None => quote! {},
+    };
+    let state_field_init = match &args.state {
+        Some(_) => quote! { , state: std::default::Default::default() },
+        None => quote! {},
+    };
+    // The constructors that take a state the caller built. The macro emits
+    // them only when the bot has a `state` field.
+    let state_constructors = match &args.state {
+        Some(ty) => quote! {
+            /// Make a bot that connects as `nick` to `server` and joins
+            /// `channels`, with a pre-built `state`. This does not connect:
+            /// [`main_loop`](Self::main_loop) does.
+            ///
+            /// Use this when the state needs work or input that `Default`
+            /// cannot give, for example a database path or a config value.
+            /// This constructor does not call `Default::default()`.
+            ///
+            /// ```rust,ignore
+            /// let state = MyState::open("bot.db")?;
+            /// MyBot::new_with_state("mybot", "irc.example.net:6667", ["rust"], state)
+            ///     .main_loop()
+            ///     .await?;
+            /// ```
+            #[must_use]
+            pub fn new_with_state(
+                nick: impl Into<String>,
+                server: impl Into<ircbot::Server>,
+                channels: impl IntoIterator<Item = impl Into<String>>,
+                state: #ty,
+            ) -> Self {
+                #struct_name {
+                    __setup: ircbot::internal::BotSetup::new(nick, server, channels),
+                    state,
+                }
+            }
+
+            /// Make the bot from a pre-built `state`, with no server.
+            ///
+            /// This is the intended way to unit-test handlers. Handlers take
+            /// `&self` and reach the connection only when they send a reply,
+            /// which in tests is captured by a
+            /// [`TestContext`](ircbot::testing::TestContext) instead. A bot
+            /// made this way cannot run: its `main_loop` returns
+            /// [`StartError::NoServer`](ircbot::StartError::NoServer).
+            ///
+            /// Prefer this over [`Default::default`] whenever your state type's
+            /// `Default` does real work (opening a database, reading config,
+            /// connecting to a service): `from_state` lets the test build a
+            /// purpose-made state — an in-memory store, a temp-dir fixture —
+            /// and inject it directly.
+            ///
+            /// # Example
+            ///
+            /// ```rust,no_run
+            /// # use ircbot::{bot, Context, Result};
+            /// # use ircbot::testing::TestContext;
+            /// #[derive(Default)]
+            /// struct State { greeting: String }
+            ///
+            /// #[bot(state = State)]
+            /// impl Greeter {
+            ///     #[on(mention)]
+            ///     async fn hello(&self, ctx: Context, _text: String) -> Result {
+            ///         ctx.reply(self.state.greeting.clone())
+            ///     }
+            /// }
+            ///
+            /// #[tokio::test]
+            /// async fn replies_with_configured_greeting() {
+            ///     let bot = Greeter::from_state(State { greeting: "hi!".into() });
+            ///     let mut tc = TestContext::channel("#test", "alice", "greeter: yo");
+            ///     bot.hello(tc.take_ctx(), "yo".into()).await.unwrap();
+            ///     // `reply` prefixes the sender's nick in a channel.
+            ///     assert_eq!(tc.next_reply().as_deref(), Some("PRIVMSG #test :alice, hi!\r\n"));
+            /// }
+            /// ```
+            #[must_use]
+            pub fn from_state(state: #ty) -> Self {
+                #struct_name {
+                    __setup: std::default::Default::default(),
+                    state,
+                }
+            }
+        },
+        None => quote! {},
+    };
+
+    // `Default` and `new` both build the state with `Default::default()`. With
+    // `no_default`, the state type has no `Default`, so the macro leaves out
+    // both.
+    let default_impl = if args.no_default {
+        quote! {}
+    } else {
+        quote! {
+            impl Default for #struct_name {
+                fn default() -> Self {
+                    #struct_name { __setup: std::default::Default::default() #state_field_init }
+                }
+            }
+        }
+    };
+    let new_method = if args.no_default {
+        quote! {}
+    } else {
+        quote! {
+            /// Make a bot that connects as `nick` to `server` and joins
+            /// `channels`. This does not connect:
+            /// [`main_loop`](Self::main_loop) does.
+            ///
+            /// `server` is anything that converts into an
+            /// [`ircbot::Server`](ircbot::Server). A bare `"host:port"` string
+            /// connects in plaintext; with the `tls` feature, `Server::tls`
+            /// connects over TLS:
+            ///
+            /// ```rust,ignore
+            /// MyBot::new("mybot", "irc.example.net:6667", ["rust"]);
+            /// MyBot::new("mybot", Server::tls("irc.libera.chat:6697"), ["rust"]);
+            /// ```
+            #[must_use]
+            pub fn new(
+                nick: impl Into<String>,
+                server: impl Into<ircbot::Server>,
+                channels: impl IntoIterator<Item = impl Into<String>>,
+            ) -> Self {
+                #struct_name {
+                    __setup: ircbot::internal::BotSetup::new(nick, server, channels)
+                    #state_field_init
+                }
+            }
+        }
+    };
+
+    quote! {
+        pub struct #struct_name {
+            __setup: ircbot::internal::BotSetup,
+            #state_field_decl
+        }
+
+        #default_impl
+
+        impl #struct_name {
+            #new_method
+
+            #state_constructors
+
+            /// Add `plugin`. Each plugin runs in its own task. See the
+            /// [`plugin` module](ircbot::plugin) for the checks and the
+            /// isolation of plugins.
+            #[must_use]
+            pub fn plugin<P: ircbot::Plugin>(mut self, plugin: P) -> Self {
+                self.__setup.add_plugin(plugin);
+                self
+            }
+
+            /// Set how many messages can wait in the queue of each plugin. The
+            /// default is [`DEFAULT_PLUGIN_QUEUE_CAPACITY`](ircbot::DEFAULT_PLUGIN_QUEUE_CAPACITY).
+            /// A value of 0 is changed to 1, and a value above the largest queue
+            /// that Tokio permits is changed to that size.
+            #[must_use]
+            pub fn with_queue_capacity(mut self, capacity: usize) -> Self {
+                self.__setup.set_queue_capacity(capacity);
+                self
+            }
+
+            /// Define an access-control role named `name`, authorising any
+            /// sender whose `nick!user@host` matches one of the given hostmask
+            /// glob patterns (`*` wildcard). Commands annotated with
+            /// `#[command(..., role = "name")]` only fire for matching
+            /// senders; everyone else is silently ignored.
+            ///
+            /// `main_loop` refuses to start when a command needs a role that
+            /// no call defines. See [`State::with_role`](ircbot::State::with_role).
+            #[must_use]
+            pub fn with_role(
+                mut self,
+                name: impl Into<String>,
+                masks: impl IntoIterator<Item = impl Into<String>>,
+            ) -> Self {
+                self.__setup.add_role(name, masks);
+                self
+            }
+
+            /// Ignore the senders whose hostmask matches one of `masks`. See
+            /// [`State::with_ignore`](ircbot::State::with_ignore).
+            #[must_use]
+            pub fn with_ignore(
+                mut self,
+                masks: impl IntoIterator<Item = impl Into<String>>,
+            ) -> Self {
+                self.__setup.add_ignore(masks);
+                self
+            }
+
+            /// Set the keepalive interval and timeout. See
+            /// [`State::with_keepalive`](ircbot::State::with_keepalive).
+            #[must_use]
+            pub fn with_keepalive(
+                mut self,
+                interval: std::time::Duration,
+                timeout: std::time::Duration,
+            ) -> Self {
+                self.__setup.set_keepalive(interval, timeout);
+                self
+            }
+
+            /// Set the flood control. See
+            /// [`State::with_flood_control`](ircbot::State::with_flood_control).
+            #[must_use]
+            pub fn with_flood_control(
+                mut self,
+                burst: usize,
+                rate: std::time::Duration,
+            ) -> Self {
+                self.__setup.set_flood_control(burst, rate);
+                self
+            }
+
+            /// Override the reconnect delays. After a lost connection the bot
+            /// waits `delay`, then attempts to reconnect. Each failed attempt
+            /// doubles the delay, up to `max_delay`, and the bot retries until
+            /// it is connected again. The delay returns to `delay` after a
+            /// connection that reached registration. The defaults are 5 seconds
+            /// and 5 minutes.
+            #[must_use]
+            pub fn with_reconnect(
+                mut self,
+                delay: std::time::Duration,
+                max_delay: std::time::Duration,
+            ) -> Self {
+                self.__setup.set_reconnect(delay, max_delay);
+                self
+            }
+
+            /// Set a custom CTCP `VERSION` reply.
+            ///
+            /// By default the bot answers CTCP `VERSION` with
+            /// `ircbot <crate-version>`. Call this to reply with your own
+            /// identifier instead.
+            #[must_use]
+            pub fn with_ctcp_version(mut self, version: impl Into<String>) -> Self {
+                self.__setup.set_ctcp_version(version);
+                self
+            }
+
+            /// Enable keepnick: periodically re-attempt to reclaim the
+            /// originally-requested nick whenever the bot is using a different
+            /// one. Disabled by default.
+            #[must_use]
+            pub fn with_keepnick_interval(mut self, interval: std::time::Duration) -> Self {
+                self.__setup.set_keepnick_interval(interval);
+                self
+            }
+
+            /// Enable keepnick with the default reclaim interval
+            /// ([`DEFAULT_KEEPNICK_INTERVAL`](ircbot::DEFAULT_KEEPNICK_INTERVAL)).
+            #[must_use]
+            pub fn with_keepnick(mut self) -> Self {
+                self.__setup.set_keepnick_interval(ircbot::DEFAULT_KEEPNICK_INTERVAL);
+                self
+            }
+
+            /// Check the setup, connect, and run the bot with its plugins.
+            ///
+            /// Before it connects, this checks the commands of the bot and of
+            /// its plugins: see the [`plugin` module](ircbot::plugin). The bot
+            /// reconnects on its own when the connection is lost, and retries
+            /// until it is connected again, so this does not return while the
+            /// process runs.
+            ///
+            /// # Errors
+            ///
+            /// Returns a [`StartError`](ircbot::StartError) (in the
+            /// `BoxError`) if a check fails, if the bot has no server, or if
+            /// the first connection fails.
+            pub async fn main_loop(mut self) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                let setup = std::mem::take(&mut self.__setup);
+                setup.run(self).await
+            }
+
+            #(#cleaned_methods)*
+        }
+
+        impl ircbot::Bot for #struct_name {
+            fn handlers() -> std::vec::Vec<ircbot::HandlerEntry<#struct_name>> {
+                std::vec![ #(#handler_entries),* ]
+            }
+        }
+    }
+    .into()
+}
+
+// ─── #[plugin] ───────────────────────────────────────────────────────────────
+
+/// Turns an `impl` block into a plugin that a `#[bot]` can run.
+///
+/// A plugin has handlers, as a `#[bot]` has, but no connection of its own. Add
+/// it to a bot with the generated `plugin` method. Each plugin runs in its own
+/// task, so a slow or failing plugin does not stop the bot or the others. See
+/// the `ircbot::plugin` module.
+///
+/// ```ignore
+/// #[plugin(name = "greeter")]
+/// impl Greeter {
+///     #[command("hello")]
+///     async fn hello(&self, ctx: ircbot::Context) -> ircbot::Result {
+///         ctx.reply("hello!")
+///     }
+/// }
+/// ```
+///
+/// # Arguments
+///
+/// * `name = "..."` (required): the name of the plugin. It starts with a
+///   lowercase ASCII letter, and has only lowercase ASCII letters, digits and
+///   `_`. It cannot be `sqlite` or start with `sqlite_`. A bot refuses to
+///   start with two plugins of the same name. A plugin that keeps data uses this name as
+///   its store namespace.
+/// * `state = Type` (optional): gives the plugin a public `state` field, as
+///   for `#[bot]`. Make the plugin with `MyPlugin::from_state(state)`. The
+///   state type does not need `Default`.
+///
+/// Without `state`, the plugin is a unit struct: make it with
+/// `MyPlugin::default()` or `MyPlugin`.
+///
+/// The macro implements `ircbot::Plugin` and `ircbot::Bot` for the type. Thus
+/// `ircbot::testing::TestBot` can send a test line through the handlers of a
+/// plugin.
+///
+/// # Panics
+///
+/// Panics at compile time if the annotated `impl` block does not use a simple
+/// (non-generic, non-path) type name, e.g. `impl MyPlugin { … }`.
+#[proc_macro_attribute]
+pub fn plugin(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as PluginArgs);
+    let input = parse_macro_input!(item as ItemImpl);
+
+    let struct_name = match input.self_ty.as_ref() {
+        Type::Path(tp) => tp
+            .path
+            .get_ident()
+            .cloned()
+            .expect("#[plugin] expects a simple struct name"),
+        _ => panic!("#[plugin] expects a simple struct name"),
+    };
+    let name = &args.name;
+    let (handler_entries, cleaned_methods) = expand_handlers(&input);
+
+    let definition = match &args.state {
+        Some(ty) => quote! {
+            pub struct #struct_name {
+                /// The state of the plugin.
+                pub state: #ty,
+            }
+
+            impl #struct_name {
+                /// Make the plugin with `state`.
+                #[must_use]
+                pub fn from_state(state: #ty) -> Self {
+                    #struct_name { state }
+                }
+            }
+        },
+        None => quote! {
+            #[derive(Default)]
+            pub struct #struct_name;
+        },
+    };
+
+    quote! {
+        #definition
+
+        impl #struct_name {
+            #(#cleaned_methods)*
+        }
+
+        impl ircbot::Bot for #struct_name {
+            fn handlers() -> std::vec::Vec<ircbot::HandlerEntry<#struct_name>> {
+                std::vec![ #(#handler_entries),* ]
+            }
+        }
+
+        impl ircbot::Plugin for #struct_name {
+            const NAME: &'static str = #name;
+        }
+    }
+    .into()
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+/// Build the handler list and the cleaned methods of an `impl` block.
+///
+/// Each method with a `#[command]` or `#[on(...)]` attribute gives one
+/// `ircbot::HandlerEntry` expression. The methods come back without these
+/// attributes. `#[bot]` and `#[plugin]` share this, so both accept the same
+/// handlers.
+#[allow(clippy::too_many_lines)]
+fn expand_handlers(input: &ItemImpl) -> (Vec<TokenStream2>, Vec<TokenStream2>) {
     let mut handler_entries: Vec<TokenStream2> = Vec::new();
     let mut cleaned_methods: Vec<TokenStream2> = Vec::new();
 
@@ -486,296 +984,8 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    // Optional user state field. When `state = Type` is absent both fragments are
-    // empty, so the generated tokens are identical to the no-state case. The init
-    // fragment carries a leading comma because the `__state` field in the struct
-    // literals below has no trailing comma.
-    let state_field_decl = match &args.state {
-        Some(ty) => quote! { pub state: #ty, },
-        None => quote! {},
-    };
-    let state_field_init = match &args.state {
-        Some(_) => quote! { , state: std::default::Default::default() },
-        None => quote! {},
-    };
-    // A constructor that takes a pre-built state and attaches no live
-    // connection. Only meaningful when the bot has a `state` field, so it is
-    // emitted solely in the `state = Type` case. This is the supported entry
-    // point for unit-testing handlers (see `ircbot::testing`): it bypasses the
-    // `Default` impl, which would build state via `Default::default()` — wrong
-    // for any state that opens files, sockets, or other real resources.
-    let from_state_method = match &args.state {
-        Some(ty) => quote! {
-            /// Construct the bot from a pre-built `state`, with no live IRC
-            /// connection attached.
-            ///
-            /// This is the intended way to unit-test handlers. Handlers take
-            /// `&self` and reach the connection only when they send a reply,
-            /// which in tests is captured by a
-            /// [`TestContext`](ircbot::testing::TestContext) instead — so a bot
-            /// built this way can drive handlers directly without ever touching
-            /// the network.
-            ///
-            /// Prefer this over [`Default::default`] whenever your state type's
-            /// `Default` does real work (opening a database, reading config,
-            /// connecting to a service): `from_state` lets the test build a
-            /// purpose-made state — an in-memory store, a temp-dir fixture —
-            /// and inject it directly.
-            ///
-            /// # Example
-            ///
-            /// ```rust,no_run
-            /// # use ircbot::{bot, Context, Result};
-            /// # use ircbot::testing::TestContext;
-            /// #[derive(Default)]
-            /// struct State { greeting: String }
-            ///
-            /// #[bot(state = State)]
-            /// impl Greeter {
-            ///     #[on(mention)]
-            ///     async fn hello(&self, ctx: Context, _text: String) -> Result {
-            ///         ctx.reply(self.state.greeting.clone())
-            ///     }
-            /// }
-            ///
-            /// #[tokio::test]
-            /// async fn replies_with_configured_greeting() {
-            ///     let bot = Greeter::from_state(State { greeting: "hi!".into() });
-            ///     let mut tc = TestContext::channel("#test", "alice", "greeter: yo");
-            ///     bot.hello(tc.take_ctx(), "yo".into()).await.unwrap();
-            ///     // `reply` prefixes the sender's nick in a channel.
-            ///     assert_eq!(tc.next_reply().as_deref(), Some("PRIVMSG #test :alice, hi!\r\n"));
-            /// }
-            /// ```
-            pub fn from_state(state: #ty) -> Self {
-                #struct_name { __state: std::option::Option::None, state }
-            }
-        },
-        None => quote! {},
-    };
-    // This is `new` with a state that the caller built. The macro emits it
-    // only in the `state = Type` case, for the same reason as `from_state`.
-    let new_with_state_method = match &args.state {
-        Some(ty) => quote! {
-            /// Connect to an IRC server and return a bot ready to run, with a
-            /// pre-built `state`.
-            ///
-            /// Use this when the state needs work or input that `Default`
-            /// cannot give, for example a database path or a config value.
-            /// This constructor does not call `Default::default()`.
-            ///
-            /// ```rust,ignore
-            /// let state = MyState::open("bot.db")?;
-            /// MyBot::new_with_state("mybot", "irc.example.net:6667", ["rust"], state).await?;
-            /// ```
-            ///
-            /// # Errors
-            ///
-            /// Returns an error if the connection or the registration with the
-            /// server fails.
-            pub async fn new_with_state(
-                nick: impl Into<String>,
-                server: impl Into<ircbot::Server>,
-                channels: impl IntoIterator<Item = impl Into<String>>,
-                state: #ty,
-            ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-                let connection = ircbot::State::connect(
-                    nick.into(),
-                    server,
-                    channels.into_iter().map(|c| ircbot::Channel::from(c.into())).collect(),
-                ).await?;
-                Ok(#struct_name { __state: Some(connection), state })
-            }
-        },
-        None => quote! {},
-    };
-
-    // `Default` and `new` both build the state with `Default::default()`. With
-    // `no_default`, the state type has no `Default`, so the macro leaves out
-    // both.
-    let default_impl = if args.no_default {
-        quote! {}
-    } else {
-        quote! {
-            impl Default for #struct_name {
-                fn default() -> Self {
-                    #struct_name { __state: std::option::Option::None #state_field_init }
-                }
-            }
-        }
-    };
-    let new_method = if args.no_default {
-        quote! {}
-    } else {
-        quote! {
-            /// Connect to an IRC server and return a bot ready to run.
-            ///
-            /// `server` is anything that converts into an
-            /// [`ircbot::Server`](ircbot::Server). A bare `"host:port"` string
-            /// connects in plaintext; with the `tls` feature, `Server::tls`
-            /// connects over TLS:
-            ///
-            /// ```rust,ignore
-            /// MyBot::new("mybot", "irc.example.net:6667", ["rust"]).await?;
-            /// MyBot::new("mybot", Server::tls("irc.libera.chat:6697"), ["rust"]).await?;
-            /// ```
-            ///
-            pub async fn new(
-                nick: impl Into<String>,
-                server: impl Into<ircbot::Server>,
-                channels: impl IntoIterator<Item = impl Into<String>>,
-            ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-                let state = ircbot::State::connect(
-                    nick.into(),
-                    server,
-                    channels.into_iter().map(|c| ircbot::Channel::from(c.into())).collect(),
-                ).await?;
-                Ok(#struct_name { __state: Some(state) #state_field_init })
-            }
-        }
-    };
-
-    quote! {
-        pub struct #struct_name {
-            __state: std::option::Option<ircbot::State>,
-            #state_field_decl
-        }
-
-        #default_impl
-
-        impl #struct_name {
-            #new_method
-
-            #new_with_state_method
-
-            #from_state_method
-
-            /// Override the reconnect delays. After a lost connection the bot
-            /// waits `delay`, then attempts to reconnect. Each failed attempt
-            /// doubles the delay, up to `max_delay`, and the bot retries until
-            /// it is connected again. The delay returns to `delay` after a
-            /// connection that reached registration. The defaults are 5 seconds
-            /// and 5 minutes.
-            ///
-            /// Call this before `main_loop`.
-            #[must_use]
-            pub fn with_reconnect(
-                mut self,
-                delay: std::time::Duration,
-                max_delay: std::time::Duration,
-            ) -> Self {
-                if let Some(state) = self.__state.take() {
-                    self.__state = Some(state.with_reconnect(delay, max_delay));
-                }
-                self
-            }
-
-            /// Set a custom CTCP `VERSION` reply.
-            ///
-            /// By default the bot answers CTCP `VERSION` with
-            /// `ircbot <crate-version>`. Call this (before `main_loop`) to reply
-            /// with your own identifier instead.
-            #[must_use]
-            pub fn with_ctcp_version(mut self, version: impl Into<String>) -> Self {
-                if let Some(state) = self.__state.take() {
-                    self.__state = Some(state.with_ctcp_version(version));
-                }
-                self
-            }
-
-            /// Enable keepnick: periodically re-attempt to reclaim the
-            /// originally-requested nick whenever the bot is using a different
-            /// one. Disabled by default. Call this before `main_loop`.
-            #[must_use]
-            pub fn with_keepnick_interval(mut self, interval: std::time::Duration) -> Self {
-                if let Some(state) = self.__state.take() {
-                    self.__state = Some(state.with_keepnick_interval(interval));
-                }
-                self
-            }
-
-            /// Enable keepnick with the default reclaim interval
-            /// (60 seconds). Convenience wrapper around
-            /// `with_keepnick_interval`.
-            #[must_use]
-            pub fn with_keepnick(mut self) -> Self {
-                if let Some(state) = self.__state.take() {
-                    self.__state = Some(state.with_keepnick());
-                }
-                self
-            }
-
-            /// Define an access-control role named `name`, authorising any
-            /// sender whose `nick!user@host` matches one of the given hostmask
-            /// glob patterns (`*` wildcard). Commands annotated with
-            /// `#[command(..., role = #name)]` only fire for matching senders;
-            /// everyone else is silently ignored.
-            ///
-            /// Call this before `main_loop`. May be called repeatedly to add
-            /// patterns or roles.
-            #[must_use]
-            pub fn with_role(
-                mut self,
-                name: impl Into<String>,
-                masks: impl IntoIterator<Item = impl Into<String>>,
-            ) -> Self {
-                if let Some(state) = self.__state.take() {
-                    self.__state = Some(state.with_role(name, masks));
-                }
-                self
-            }
-
-            /// Ignore the senders whose `nick!user@host` hostmask matches
-            /// one of the given glob patterns (`*` wildcard). A message from
-            /// such a sender reaches no handler, and the framework answers no
-            /// CTCP for it.
-            ///
-            /// Call this before `main_loop`. May be called repeatedly to add
-            /// masks.
-            #[must_use]
-            pub fn with_ignore(
-                mut self,
-                masks: impl IntoIterator<Item = impl Into<String>>,
-            ) -> Self {
-                if let Some(state) = self.__state.take() {
-                    self.__state = Some(state.with_ignore(masks));
-                }
-                self
-            }
-
-            /// Run the bot's main event loop.
-            ///
-            /// The bot reconnects on its own when the connection is lost, and
-            /// retries until it is connected again, so this does not return
-            /// while the process runs. A server that cannot be reached at all
-            /// is reported by the constructor that connects, before this
-            /// call. The `Result` stays in the signature so `main` can take it
-            /// with `?`.
-            pub async fn main_loop(mut self) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                let state = self.__state.take().expect("bot already started");
-                let bot_arc = std::sync::Arc::new(self);
-
-                ircbot::internal::run_bot(
-                    bot_arc,
-                    state,
-                    <#struct_name as ircbot::Bot>::handlers(),
-                )
-                .await
-            }
-
-            #(#cleaned_methods)*
-        }
-
-        impl ircbot::Bot for #struct_name {
-            fn handlers() -> std::vec::Vec<ircbot::HandlerEntry<#struct_name>> {
-                std::vec![ #(#handler_entries),* ]
-            }
-        }
-    }
-    .into()
+    (handler_entries, cleaned_methods)
 }
-
-// ─── helpers ─────────────────────────────────────────────────────────────────
 
 /// The `ircbot::Scope` value for the `scope` option.
 ///

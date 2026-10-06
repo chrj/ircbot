@@ -734,7 +734,7 @@ impl State {
     /// # Example
     ///
     /// ```rust,ignore
-    /// MyBot::new("mybot", "irc.example.net:6667", ["chan"]).await?
+    /// MyBot::new("mybot", "irc.example.net:6667", ["chan"])
     ///     .with_ignore(["*!*@spam.example", "otherbot!*@*"])
     ///     .main_loop()
     ///     .await

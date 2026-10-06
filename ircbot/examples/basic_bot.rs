@@ -74,8 +74,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sy
     // so we just demonstrate the API compiles correctly.
     println!("basic_bot example compiled successfully.");
     println!("To connect for real, uncomment the lines below and point at a live server:");
-    println!("  let bot = MyBot::new(\"ircbot\", \"irc.libera.chat:6667\", [\"#rust\"]).await?;");
-    println!("  bot.main_loop().await?;");
+    println!("  MyBot::new(\"ircbot\", \"irc.libera.chat:6667\", [\"#rust\"]).main_loop().await?;");
     Ok(())
 }
 

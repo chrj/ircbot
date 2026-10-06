@@ -1,4 +1,4 @@
-Registers the annotated method as a command handler inside a [`#[bot]`](macro@bot) impl block.
+Registers the annotated method as a command handler inside a [`#[bot]`](macro@bot) or [`#[plugin]`](macro@plugin) impl block.
 
 Fires when a user sends `!name` (case-insensitive) to any channel the bot
 has joined, or as a private message.  The text that follows `!name` on the
@@ -28,7 +28,7 @@ When `role = "name"` is set, the command only fires for senders whose
 role via `with_role` on the bot builder:
 
 ```rust,ignore
-MyBot::new("bot", "irc.example.net:6667", ["ops"]).await?
+MyBot::new("bot", "irc.example.net:6667", ["ops"])
     .with_role("admin", ["*!*@trusted.host", "alice!*@*"])
     .main_loop()
     .await
@@ -142,6 +142,6 @@ unknown `scope` value fails the build.
 
 # Note
 
-`#[command]` is meaningful **only** when placed on a method inside an
-`#[bot]` impl block.  Outside that context it is a no-op marker that leaves
-the item unchanged.
+`#[command]` is meaningful **only** when placed on a method inside a
+`#[bot]` or `#[plugin]` impl block.  Outside that context it is a no-op
+marker that leaves the item unchanged.

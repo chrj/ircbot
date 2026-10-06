@@ -40,7 +40,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sy
     println!(
         "  CounterBot::new_with_state(\"ircbot\", \"irc.libera.chat:6667\", [\"#rust\"], state)"
     );
-    println!("      .await?");
     println!("      .main_loop()");
     println!("      .await?;");
     Ok(())

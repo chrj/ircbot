@@ -41,7 +41,6 @@ impl MyBot {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     MyBot::new("mybot", "localhost:6667", ["general"])
-        .await?
         .main_loop()
         .await
 }
@@ -50,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ## Highlights
 
 - **Proc-macro API** — annotate methods with `#[command]` or `#[on]`; `#[bot]` wires everything up.
+- **Plugins** — `#[plugin]` makes a set of handlers with its own state; `.plugin(..)` adds it to a bot, and each plugin runs in its own task. See [Plugins](#plugins).
 - **Typed state** — `#[bot(state = MyState)]` adds a `pub state` field your handlers can read; mutate it through interior mutability (`Mutex`/atomics). `MyBot::new_with_state(…, state)` starts the bot from a state you built, for example one that opens a database. Add `no_default` (`#[bot(state = MyState, no_default)]`) when the state has no `Default`. See `examples/stateful_bot.rs`, and `examples/sqlite_bot.rs` for a state that keeps its data in the store (see [Persistence](#persistence)).
 - **Flexible triggers** — commands (`!ping`), glob patterns (`"you are *"`), raw IRC events, mention detection, `/me` actions and CTCP commands, cron schedules — all with optional target-channel and regex filters. CTCP messages reach only the `action` and `ctcp` triggers, never the text triggers.
 - **Typed command arguments** — declare `async fn add(&self, ctx: Context, a: i64, b: i64)` and the words after `!add` are parsed into the parameters (`FromStr` types, a trailing `String`/`Vec`, `Option<T>`); on bad input the bot replies with a generated usage string.
@@ -146,7 +146,6 @@ verifying the certificate against the platform's root store:
 use ircbot::Server;
 
 MyBot::new("mybot", Server::tls("irc.libera.chat:6697"), ["rust"])
-    .await?
     .main_loop()
     .await
 ```
@@ -168,6 +167,44 @@ hostname when connecting by IP.
 `danger_accept_invalid_certs` disables verification entirely — it is meant for a
 development server on `localhost`, leaves the connection unauthenticated, and
 logs a warning on every connect.
+
+## Plugins
+
+A bot can use plugins. A plugin is a set of handlers with its own state, made
+with `#[plugin]`. The `plugin` method of a `#[bot]` adds it:
+
+```rust,ignore
+use ircbot::{bot, plugin, Context, Result};
+
+#[plugin(name = "greeter")]
+impl Greeter {
+    #[command("hello")]
+    async fn hello(&self, ctx: Context) -> Result {
+        ctx.reply("hello!")
+    }
+}
+
+#[bot]
+impl MyBot {}   // a bot can also have its own handlers
+
+MyBot::new("mybot", "irc.example.net:6667", ["rust"])
+    .plugin(Greeter)
+    .plugin(Counter::from_state(CounterState::default()))
+    .main_loop()
+    .await
+```
+
+`main_loop` checks the bot and its plugins before it connects. It refuses two
+plugins with the same name, a command that two of them have (the bot itself
+included), and a command whose role no `with_role` defines.
+
+The handlers of the bot itself run in the dispatch loop. Each plugin runs in
+its own task, with a queue. A slow plugin does not delay the others, a panic
+in a plugin is logged and does not stop the bot, and each plugin gets its
+messages in order. A reply that a plugin sends after the connection is lost
+does not reach the server, also after the bot reconnects. See the
+[`plugin` module docs](https://docs.rs/ircbot/latest/ircbot/plugin/) for the
+details and the reason.
 
 ## Persistence
 

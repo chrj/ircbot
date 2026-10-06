@@ -13,7 +13,10 @@ pub mod format;
 pub mod handler;
 pub mod irc;
 pub mod logging;
+mod name;
+pub mod plugin;
 pub mod server;
+mod setup;
 #[cfg(feature = "store")]
 pub mod store;
 #[cfg(test)]
@@ -36,10 +39,13 @@ pub use ircbot_macros::bot;
 pub use ircbot_macros::command;
 #[doc = include_str!("../docs/on.md")]
 pub use ircbot_macros::on;
+pub use ircbot_macros::plugin;
 pub use logging::PROTOCOL_LOG_TARGET;
+pub use plugin::{Plugin, DEFAULT_PLUGIN_QUEUE_CAPACITY};
 pub use server::Server;
 #[cfg(feature = "tls")]
 pub use server::TlsServer;
+pub use setup::{CommandOwner, StartError};
 #[cfg(feature = "store")]
 pub use store::{Namespace, Store, StoreError};
 pub use types::{Channel, Nick, Target};
@@ -116,6 +122,7 @@ pub mod internal {
     use crate::{bot::HandlerSet, BoxError, HandlerEntry, Server, State};
 
     pub use crate::args::Args;
+    pub use crate::setup::BotSetup;
 
     /// Wrap a `Vec<HandlerEntry<T>>` in a [`HandlerSet`].
     ///

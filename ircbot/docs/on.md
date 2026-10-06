@@ -1,4 +1,4 @@
-Registers the annotated method as an event handler inside a [`#[bot]`](macro@bot) impl block.
+Registers the annotated method as an event handler inside a [`#[bot]`](macro@bot) or [`#[plugin]`](macro@plugin) impl block.
 
 The general-purpose trigger attribute.  Exactly one of `command`,
 `message`, `event`, `mention`, `action`, `ctcp`, or `cron` must be present.  `target`,
@@ -277,6 +277,6 @@ as private. Give a handler for such an event no `scope`.
 
 # Note
 
-`#[on]` is meaningful **only** when placed on a method inside an `#[bot]`
-impl block.  Outside that context it is a no-op marker that leaves the
-item unchanged.
+`#[on]` is meaningful **only** when placed on a method inside a `#[bot]` or
+`#[plugin]` impl block.  Outside that context it is a no-op marker that
+leaves the item unchanged.
