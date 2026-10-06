@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ircbot::{plugin, Context, Host, Result};
+use ircbot::{bot, plugin, Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -81,11 +81,14 @@ impl MockServer {
     }
 }
 
-/// Connect `host` to `server`, start it, and finish the registration.
-async fn run(host: Host, server: &MockServer) -> tokio::task::JoinHandle<()> {
-    let connected = host.connect().await.expect("connect failed");
+/// A bot whose handlers all come from plugins.
+#[bot]
+impl HostBot {}
+
+/// Start `bot`, and finish the registration with `server`.
+fn run(bot: HostBot, server: &MockServer) -> tokio::task::JoinHandle<()> {
     let task = tokio::spawn(async move {
-        let _ = connected.main_loop().await;
+        let _ = bot.main_loop().await;
     });
     server.send(":server 001 testbot :Welcome");
     task
@@ -148,8 +151,8 @@ async fn a_panic_is_logged_with_the_plugin_name_and_message() {
     let _guard = tracing::subscriber::set_default(subscriber);
 
     let mut server = MockServer::start().await;
-    let host = Host::new("testbot", server.addr.clone(), ["#chan"]).plugin(Panicky);
-    let task = run(host, &server).await;
+    let bot = HostBot::new("testbot", server.addr.clone(), ["#chan"]).plugin(Panicky);
+    let task = run(bot, &server);
 
     server.say("!boom");
     server.say("!alive");

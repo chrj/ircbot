@@ -11,11 +11,12 @@ pub mod connection;
 pub mod context;
 pub mod format;
 pub mod handler;
-pub mod host;
 pub mod irc;
 pub mod logging;
 mod name;
+pub mod plugin;
 pub mod server;
+mod setup;
 #[cfg(feature = "store")]
 pub mod store;
 #[cfg(test)]
@@ -32,7 +33,6 @@ pub use connection::{
 };
 pub use context::{make_messages, Context, User};
 pub use handler::{Bot, BoxFuture, HandlerEntry, HandlerFn, Scope, Trigger};
-pub use host::{ConnectedHost, Host, HostError, Plugin, DEFAULT_PLUGIN_QUEUE_CAPACITY};
 pub use irc::CtcpMessage;
 pub use ircbot_macros::bot;
 #[doc = include_str!("../docs/command.md")]
@@ -41,9 +41,11 @@ pub use ircbot_macros::command;
 pub use ircbot_macros::on;
 pub use ircbot_macros::plugin;
 pub use logging::PROTOCOL_LOG_TARGET;
+pub use plugin::{Plugin, DEFAULT_PLUGIN_QUEUE_CAPACITY};
 pub use server::Server;
 #[cfg(feature = "tls")]
 pub use server::TlsServer;
+pub use setup::{CommandOwner, StartError};
 #[cfg(feature = "store")]
 pub use store::{Namespace, Store, StoreError};
 pub use types::{Channel, Nick, Target};
@@ -120,6 +122,7 @@ pub mod internal {
     use crate::{bot::HandlerSet, BoxError, HandlerEntry, Server, State};
 
     pub use crate::args::Args;
+    pub use crate::setup::BotSetup;
 
     /// Wrap a `Vec<HandlerEntry<T>>` in a [`HandlerSet`].
     ///

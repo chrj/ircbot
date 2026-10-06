@@ -83,7 +83,6 @@
 //! let quotes = store.namespace("quotes")?;
 //! quotes.migrate(QUOTE_MIGRATIONS).await?;
 //! QuoteBot::new_with_state("quotebot", "irc.example.net:6667", ["#rust"], Data { quotes })
-//!     .await?
 //!     .main_loop()
 //!     .await
 //! ```

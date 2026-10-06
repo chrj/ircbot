@@ -163,9 +163,8 @@ async fn test_ping_command() {
     let addr = format!("127.0.0.1:{port}");
 
     // Start the bot and let it run in a background task.
-    let bot = TestBot::new("testbot", &addr, ["#test"])
-        .await
-        .expect("bot failed to connect");
+    // `main_loop` connects, in the background task.
+    let bot = TestBot::new("testbot", &addr, ["#test"]);
     let bot_task = tokio::spawn(bot.main_loop());
 
     // Connect the test client via the `irc` crate.
@@ -211,9 +210,8 @@ async fn test_echo_command() {
     let (_container, port) = start_ngircd().await;
     let addr = format!("127.0.0.1:{port}");
 
-    let bot = TestBot::new("testbot", &addr, ["#test"])
-        .await
-        .expect("bot failed to connect");
+    // `main_loop` connects, in the background task.
+    let bot = TestBot::new("testbot", &addr, ["#test"]);
     let bot_task = tokio::spawn(bot.main_loop());
 
     let mut client = Client::from_config(irc_config(port, "client", vec!["#test".into()]))
