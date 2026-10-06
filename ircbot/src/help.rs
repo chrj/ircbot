@@ -35,30 +35,38 @@ struct Guard {
     scope: Scope,
 }
 
-/// One command, with its help text and the handlers that run it.
-struct Topic {
+/// One command handler: its help text, and its trigger and scope.
+///
+/// A command can have more than one handler, for example one for each
+/// channel, and each handler can have its own usage and role. Thus each
+/// handler keeps its own help text.
+struct Entry {
     help: CommandHelp,
-    guards: Vec<Guard>,
+    guard: Guard,
 }
 
-/// The help text and the handlers of each command of a bot and its plugins.
+/// The help text and the trigger of each command handler of a bot and its
+/// plugins.
 #[derive(Default)]
 pub(crate) struct HelpIndex {
-    topics: Vec<Topic>,
+    entries: Vec<Entry>,
 }
 
-/// The help text and command handlers of one bot or plugin type, before they
-/// go in a [`HelpIndex`].
+/// The command handlers of one bot or plugin type, with their help text,
+/// before they go in a [`HelpIndex`].
 #[derive(Default)]
 pub(crate) struct HelpSource {
-    help: Vec<CommandHelp>,
-    guards: Vec<(String, Guard)>,
+    entries: Vec<Entry>,
 }
 
 impl HelpSource {
-    /// The help text and command handlers of `B`.
+    /// The command handlers of `B`, with their help text.
+    ///
+    /// [`Bot::help`] gives one entry for each command handler, in the order of
+    /// [`Bot::handlers`]. When the lists do not agree, for example for a `Bot`
+    /// written by hand without `help`, each command shows only its name.
     pub(crate) fn of<B: Bot>() -> Self {
-        let guards = B::handlers()
+        let guards: Vec<(String, Guard)> = B::handlers()
             .into_iter()
             .filter_map(|entry| match &entry.trigger {
                 Trigger::Command { name, .. } => Some((
@@ -71,55 +79,54 @@ impl HelpSource {
                 _ => None,
             })
             .collect();
-        HelpSource {
-            help: B::help(),
-            guards,
-        }
+        let help = B::help();
+        let paired = help.len() == guards.len()
+            && help
+                .iter()
+                .zip(&guards)
+                .all(|(help, (name, _))| help.command.eq_ignore_ascii_case(name));
+
+        let entries = if paired {
+            help.into_iter()
+                .zip(guards)
+                .map(|(help, (_, guard))| Entry { help, guard })
+                .collect()
+        } else {
+            guards
+                .into_iter()
+                .map(|(name, guard)| Entry {
+                    help: CommandHelp {
+                        usage: format!("!{name}"),
+                        command: name,
+                        summary: None,
+                    },
+                    guard,
+                })
+                .collect()
+        };
+        HelpSource { entries }
     }
 }
 
 impl HelpIndex {
-    /// Add the commands of `source`. A command keeps the help text of its
-    /// first handler. The case of a command does not matter.
+    /// Add the command handlers of `source`.
     pub(crate) fn add(&mut self, source: HelpSource) {
-        for help in source.help {
-            if self.topic(&help.command).is_none() {
-                self.topics.push(Topic {
-                    help,
-                    guards: Vec::new(),
-                });
-            }
-        }
-        for (command, guard) in source.guards {
-            if let Some(topic) = self
-                .topics
-                .iter_mut()
-                .find(|t| t.help.command.eq_ignore_ascii_case(&command))
-            {
-                topic.guards.push(guard);
-            }
-        }
+        self.entries.extend(source.entries);
     }
 
     /// Add the built-in help command itself.
     fn add_help_command(&mut self) {
-        self.topics.push(Topic {
+        self.entries.push(Entry {
             help: CommandHelp {
                 command: HELP_COMMAND.to_string(),
                 usage: HELP_USAGE.to_string(),
                 summary: Some(HELP_SUMMARY.to_string()),
             },
-            guards: vec![Guard {
+            guard: Guard {
                 trigger: help_trigger(),
                 scope: Scope::Any,
-            }],
+            },
         });
-    }
-
-    fn topic(&self, command: &str) -> Option<&Topic> {
-        self.topics
-            .iter()
-            .find(|t| t.help.command.eq_ignore_ascii_case(command))
     }
 
     /// The reply to `!help`, with `argument` as the text after the command.
@@ -135,8 +142,12 @@ impl HelpIndex {
         sender: Option<&User>,
         argument: &str,
     ) -> String {
-        let visible = |topic: &&Topic| {
-            topic.guards.iter().any(|guard| {
+        // The handlers that would run for this sender, here.
+        let visible: Vec<&Entry> = self
+            .entries
+            .iter()
+            .filter(|entry| {
+                let guard = &entry.guard;
                 let filter = match &guard.trigger {
                     Trigger::Command { target, .. } => target.as_deref(),
                     _ => None,
@@ -145,15 +156,12 @@ impl HelpIndex {
                     && scope_matches(guard.scope, target)
                     && target_matches(target_param(msg), filter)
             })
-        };
+            .collect();
 
-        let wanted = argument.split_whitespace().next();
-        let Some(wanted) = wanted else {
-            let mut commands: Vec<String> = self
-                .topics
+        let Some(wanted) = argument.split_whitespace().next() else {
+            let mut commands: Vec<String> = visible
                 .iter()
-                .filter(visible)
-                .map(|t| format!("!{}", t.help.command))
+                .map(|entry| format!("!{}", entry.help.command.to_ascii_lowercase()))
                 .collect();
             commands.sort_unstable();
             commands.dedup();
@@ -164,15 +172,25 @@ impl HelpIndex {
         };
 
         let wanted = wanted.trim_start_matches('!');
-        match self.topic(wanted).filter(visible) {
-            Some(topic) => match &topic.help.summary {
-                Some(summary) => format!("{} — {summary}", topic.help.usage),
-                None => topic.help.usage.clone(),
-            },
+        let mut texts: Vec<String> = Vec::new();
+        for entry in visible
+            .iter()
+            .filter(|entry| entry.help.command.eq_ignore_ascii_case(wanted))
+        {
+            let text = match &entry.help.summary {
+                Some(summary) => format!("{} — {summary}", entry.help.usage),
+                None => entry.help.usage.clone(),
+            };
+            if !texts.contains(&text) {
+                texts.push(text);
+            }
+        }
+        if texts.is_empty() {
             // A command that the sender cannot use gets the same answer as a
             // command that does not exist, so `!help` does not show it.
-            None => format!("No command !{wanted}. Use !help to list the commands."),
+            return format!("No command !{wanted}. Use !help to list the commands.");
         }
+        texts.join(" | ")
     }
 }
 
@@ -220,55 +238,66 @@ pub(crate) fn help_entry<T: Send + Sync + 'static>(
 mod tests {
     use super::*;
 
-    /// A command handler for the index: `name`, with an optional role and
-    /// target, and a scope.
-    fn guard(
-        name: &str,
+    /// A command handler with its help text: `name`, with an optional role
+    /// and target, and a scope.
+    fn entry(
+        usage: &str,
+        summary: Option<&str>,
         role: Option<&str>,
         target: Option<&str>,
         scope: Scope,
-    ) -> (String, Guard) {
-        (
-            name.to_string(),
-            Guard {
+    ) -> Entry {
+        let name = usage
+            .trim_start_matches('!')
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_string();
+        Entry {
+            help: CommandHelp {
+                command: name.clone(),
+                usage: usage.to_string(),
+                summary: summary.map(str::to_string),
+            },
+            guard: Guard {
                 trigger: Trigger::Command {
-                    name: name.to_string(),
+                    name,
                     target: target.map(str::to_string),
                     role: role.map(str::to_string),
                 },
                 scope,
             },
-        )
+        }
     }
 
-    fn help(command: &str, usage: &str, summary: Option<&str>) -> CommandHelp {
-        CommandHelp {
-            command: command.to_string(),
-            usage: usage.to_string(),
-            summary: summary.map(str::to_string),
-        }
+    fn index_of(entries: Vec<Entry>) -> HelpIndex {
+        let mut index = HelpIndex::default();
+        index.add(HelpSource { entries });
+        index.add_help_command();
+        index
     }
 
     /// An index with `!echo`, `!seen` (in #rust only), `!kick` (role `op`), and
     /// `!secret` (private messages only).
     fn index() -> HelpIndex {
-        let mut index = HelpIndex::default();
-        index.add(HelpSource {
-            help: vec![
-                help("echo", "!echo <text>", Some("Say the text again.")),
-                help("seen", "!seen <nick>", None),
-                help("kick", "!kick <nick>", Some("Kick a user.")),
-                help("secret", "!secret", None),
-            ],
-            guards: vec![
-                guard("echo", None, None, Scope::Any),
-                guard("seen", None, Some("#rust"), Scope::Any),
-                guard("kick", Some("op"), None, Scope::Any),
-                guard("secret", None, None, Scope::Private),
-            ],
-        });
-        index.add_help_command();
-        index
+        index_of(vec![
+            entry(
+                "!echo <text>",
+                Some("Say the text again."),
+                None,
+                None,
+                Scope::Any,
+            ),
+            entry("!seen <nick>", None, None, Some("#rust"), Scope::Any),
+            entry(
+                "!kick <nick>",
+                Some("Kick a user."),
+                Some("op"),
+                None,
+                Scope::Any,
+            ),
+            entry("!secret", None, None, None, Scope::Private),
+        ])
     }
 
     fn roles() -> Vec<(String, Vec<String>)> {
@@ -283,18 +312,22 @@ mod tests {
         }
     }
 
-    /// The reply to `text` from `sender` in `target`.
-    fn ask(target: &str, sender: &User, argument: &str) -> String {
+    /// The reply of `index` to `!help <argument>` from `sender` in `target`.
+    fn ask_index(index: &HelpIndex, target: &str, sender: &User, argument: &str) -> String {
         let msg: Message = format!(":{} PRIVMSG {target} :!help {argument}", sender.hostmask())
             .parse()
             .expect("valid message");
-        index().reply(
+        index.reply(
             &roles(),
             &msg,
             &Target::from_raw(target),
             Some(sender),
             argument,
         )
+    }
+
+    fn ask(target: &str, sender: &User, argument: &str) -> String {
+        ask_index(&index(), target, sender, argument)
     }
 
     #[test]
@@ -383,22 +416,65 @@ mod tests {
     }
 
     #[test]
-    fn a_command_with_two_handlers_shows_one_time() {
-        let mut index = HelpIndex::default();
-        index.add(HelpSource {
-            help: vec![
-                help("seen", "!seen <nick>", None),
-                help("seen", "!seen <nick>", None),
-            ],
-            guards: vec![
-                guard("seen", None, Some("#rust"), Scope::Any),
-                guard("seen", None, Some("#tokio"), Scope::Any),
-            ],
-        });
-        let msg: Message = ":alice!a@h PRIVMSG #tokio :!help".parse().unwrap();
+    fn a_command_with_two_handlers_shows_one_time_in_the_list() {
+        let index = index_of(vec![
+            entry("!seen <nick>", None, None, Some("#rust"), Scope::Any),
+            entry("!seen <nick>", None, None, Some("#tokio"), Scope::Any),
+            entry("!seen <nick>", None, None, None, Scope::Any),
+        ]);
 
-        let reply = index.reply(&[], &msg, &Target::from_raw("#tokio"), None, "");
+        let reply = ask_index(&index, "#tokio", &user("home.host"), "");
 
-        assert_eq!(reply, "Commands: !seen. Use !help <command> for details.");
+        assert_eq!(
+            reply,
+            "Commands: !help, !seen. Use !help <command> for details."
+        );
+    }
+
+    #[test]
+    fn help_for_a_command_gives_the_handler_of_this_channel() {
+        let index = index_of(vec![
+            entry(
+                "!lookup <nick>",
+                Some("Find a person."),
+                None,
+                Some("#people"),
+                Scope::Any,
+            ),
+            entry(
+                "!lookup <id>",
+                Some("Find a ticket."),
+                None,
+                Some("#tickets"),
+                Scope::Any,
+            ),
+        ]);
+
+        let reply = ask_index(&index, "#tickets", &user("home.host"), "lookup");
+
+        assert_eq!(reply, "!lookup <id> — Find a ticket.");
+    }
+
+    #[test]
+    fn help_does_not_show_the_text_of_a_role_handler_without_the_role() {
+        let index = index_of(vec![
+            entry("!user <nick>", Some("Show a user."), None, None, Scope::Any),
+            entry(
+                "!user <nick> <ban>",
+                Some("Ban a user."),
+                Some("op"),
+                None,
+                Scope::Any,
+            ),
+        ]);
+
+        let without = ask_index(&index, "#rust", &user("home.host"), "user");
+        let with = ask_index(&index, "#rust", &user("ops.host"), "user");
+
+        assert_eq!(without, "!user <nick> — Show a user.");
+        assert_eq!(
+            with,
+            "!user <nick> — Show a user. | !user <nick> <ban> — Ban a user."
+        );
     }
 }

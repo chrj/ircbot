@@ -1253,7 +1253,10 @@ fn command_usage(extra_args: &[(Ident, Type)], cmd: &str) -> String {
     usage
 }
 
-/// The first line of the doc comment of a method, if it has one.
+/// The first non-empty line of the doc comment of a method, if it has one.
+///
+/// One doc attribute can hold more than one line, for example a block comment
+/// or `#[doc = "a\nb"]`, so this splits each attribute into lines.
 fn doc_summary(attrs: &[syn::Attribute]) -> Option<String> {
     attrs
         .iter()
@@ -1263,10 +1266,14 @@ fn doc_summary(attrs: &[syn::Attribute]) -> Option<String> {
                 Expr::Lit(ExprLit {
                     lit: Lit::Str(text),
                     ..
-                }) => {
-                    let line = text.value().trim().to_string();
-                    (!line.is_empty()).then_some(line)
-                }
+                }) => text
+                    .value()
+                    .lines()
+                    // A block comment (`/** ... */`) often starts each line
+                    // with `*`.
+                    .map(|line| line.trim().trim_start_matches('*').trim())
+                    .find(|line| !line.is_empty())
+                    .map(str::to_string),
                 _ => None,
             },
             _ => None,

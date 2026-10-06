@@ -183,6 +183,11 @@ pub trait Bot: Sized {
 
     /// Returns the help text of each command handler, for `!help`.
     ///
+    /// Give one entry for each handler with a [`Trigger::Command`], in the
+    /// order of [`Bot::handlers`]: `!help` pairs each entry with the trigger
+    /// of its handler. When the lists do not agree, each command shows only
+    /// its name.
+    ///
     /// The `#[bot]` and `#[plugin]` macros implement this from the signature
     /// and the doc comment of each command. The default gives no help.
     fn help() -> Vec<CommandHelp> {
