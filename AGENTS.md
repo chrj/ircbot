@@ -31,8 +31,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features tls,store -- -D warnings
 ```
 
-CI runs Test, Clippy and Docs both without features and with all of them (see
-[Dependencies](#dependencies)).
+CI runs Test, Clippy and Docs two times: without features, and with `tls` and
+`store` (see [Dependencies](#dependencies)). The `integration` feature has its
+own CI job.
 
 CI also enforces:
 
@@ -116,8 +117,9 @@ secrets.
   with an explanatory message (`expect("bot already started")`).
 - `?` for propagation; map into `BoxError` at the boundary
   (`.map_err(|e| Box::new(e) as crate::BoxError)`).
-- Custom error enums derive `thiserror::Error` (see `Error` in `lib.rs` and
-  `StoreError` in `store.rs`). Each variant carries the context that makes its
+- New custom error enums derive `thiserror::Error` (see `Error` in `lib.rs` and
+  `StoreError` in `store.rs`). `DeliverError` in `testing.rs` implements
+  `Display` and `Error` by hand. Do not use it as a model. Each variant carries the context that makes its
   message actionable (a namespace, a path, a key). A variant that wraps another
   error keeps it in a `source` field. Mark a public error enum
   `#[non_exhaustive]` when new variants are likely, so adding one is not a
@@ -280,7 +282,7 @@ This crate talks to a hostile network; treat all wire input as untrusted.
   `INTERNAL_MIGRATIONS`: add new steps at the end, never change an old one. The `store` module re-exports `rusqlite` and gives its
   `Connection` to callers, so a major `rusqlite` update is a breaking change.
 - Every change must compile, lint, test, and document **both** without features
-  and with all of them. CI runs both:
+  and with `tls` and `store`. CI runs both:
 
   ```sh
   cargo clippy --workspace --all-targets --features tls,store -- -D warnings
