@@ -126,6 +126,15 @@ impl EchoAgain {
     }
 }
 
+/// A plugin with the command of `Echo`, in upper case.
+#[plugin(name = "echo_upper")]
+impl EchoUpper {
+    #[command("ECHO")]
+    async fn echo(&self, ctx: Context, text: String) -> Result {
+        ctx.say(text)
+    }
+}
+
 #[plugin(name = "admin")]
 impl Admin {
     #[command("shutdown", role = "admin")]
@@ -264,6 +273,24 @@ async fn connect_refuses_two_plugins_with_the_same_command() {
 }
 
 #[tokio::test]
+async fn connect_refuses_the_same_command_in_another_case() {
+    // The dispatch ignores the case of a command, so `!echo` would run both.
+    let err = host()
+        .plugin(Echo)
+        .plugin(EchoUpper)
+        .connect()
+        .await
+        .err()
+        .unwrap();
+
+    assert!(
+        matches!(&err, HostError::DuplicateCommand { first, second, .. }
+            if first == "echo" && second == "echo_upper"),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn connect_refuses_a_command_whose_role_is_not_defined() {
     let err = host().plugin(Admin).connect().await.err().unwrap();
 
@@ -386,6 +413,33 @@ async fn a_full_queue_drops_new_messages_for_that_plugin() {
     server.expect_no_privmsg(Duration::from_millis(300)).await;
 
     task.abort();
+}
+
+#[tokio::test]
+async fn dropping_the_main_loop_stops_a_blocked_plugin() {
+    let mut server = MockServer::start().await;
+    let release = Arc::new(Notify::new());
+    let host = Host::new("testbot", server.addr.clone(), ["#chan"])
+        .plugin(Slow::from_state(Arc::clone(&release)));
+    let task = run(host, &server).await;
+
+    // The plugin blocks, and the test never releases it.
+    server.say("!wait");
+    assert_eq!(server.next_privmsg().await, "PRIVMSG #chan :waiting");
+    assert_eq!(Arc::strong_count(&release), 2);
+
+    task.abort();
+    let _ = task.await;
+
+    // The task of the plugin held the plugin and its state. When it stops,
+    // only the test holds the state.
+    let stopped = tokio::time::timeout(Duration::from_secs(2), async {
+        while Arc::strong_count(&release) > 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(stopped.is_ok(), "the plugin task still runs");
 }
 
 // ─── #[bot] still works next to #[plugin] ────────────────────────────────────

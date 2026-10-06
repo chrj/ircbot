@@ -340,21 +340,37 @@ impl ConnectedHost {
     /// in its queue.
     pub async fn main_loop(self) -> Result<(), BoxError> {
         let mut entries = Vec::new();
-        let mut tasks = Vec::new();
+        let mut tasks = PluginTasks(Vec::new());
         for registration in self.plugins {
             let started = (registration.start)(self.queue_capacity);
             entries.extend(started.entries);
-            tasks.push((registration.name, started.task));
+            tasks.0.push((registration.name, started.task));
         }
 
         let result = crate::internal::run_bot(Arc::new(()), self.state, entries).await;
 
         // `run_bot` dropped the handler entries, and with them each sender of
         // a plugin queue. Thus each plugin task stops after its last message.
-        for (name, task) in tasks {
+        for (name, task) in std::mem::take(&mut tasks.0) {
             stop_plugin(name, task).await;
         }
         result
+    }
+}
+
+/// The tasks of the plugins of a running host.
+///
+/// `run_bot` usually runs until the program stops, so a program often stops
+/// `main_loop` by dropping its future, for example in `tokio::select!`. Then
+/// the code after `run_bot` does not run. Dropping a `JoinHandle` does not
+/// stop its task, so this guard aborts each task that is still in it.
+struct PluginTasks(Vec<(&'static str, JoinHandle<()>)>);
+
+impl Drop for PluginTasks {
+    fn drop(&mut self) {
+        for (_, task) in &self.0 {
+            task.abort();
+        }
     }
 }
 
@@ -379,9 +395,11 @@ fn check(plugins: &[Registration], roles: &[(String, Vec<String>)]) -> Result<()
         for command in &plugin.commands {
             // A plugin can have more than one handler for its own command,
             // for example one for each channel. Only a second plugin clashes.
+            // The dispatch ignores the case of a command, so this check does
+            // too: `echo` and `ECHO` are the same command.
             let owner = commands
                 .iter()
-                .find(|(name, _)| *name == command.name)
+                .find(|(name, _)| name.eq_ignore_ascii_case(&command.name))
                 .map(|(_, owner)| *owner);
             match owner {
                 Some(first) if first != plugin.name => {
