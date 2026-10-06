@@ -210,6 +210,13 @@ impl syn::parse::Parse for CommandArgs {
 /// its own handlers in the dispatch loop, and each plugin in its own task. See
 /// the `ircbot::plugin` module for the checks and the isolation of plugins.
 ///
+/// # Help
+///
+/// The generated `with_help` method turns on a built-in `!help` command. It
+/// lists the commands of the bot and its plugins, with the usage from each
+/// signature and the first line of each doc comment. See
+/// [`macro@command`] for an example.
+///
 /// # Custom state
 ///
 /// Pass `state = SomeType` to give the bot a public `state` field your handlers
@@ -285,7 +292,11 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => panic!("#[bot] expects a simple struct name"),
     };
 
-    let (handler_entries, cleaned_methods) = expand_handlers(&input);
+    let Expanded {
+        handler_entries,
+        help_entries,
+        cleaned_methods,
+    } = expand_handlers(&input);
 
     // Optional user state field. When `state = Type` is absent both fragments are
     // empty, so the generated tokens are the same as without state. The init
@@ -458,6 +469,22 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                 self
             }
 
+            /// Turn on the built-in `!help` command.
+            ///
+            /// `!help` lists the commands of the bot and of its plugins that
+            /// the sender can use in this place: a command with a role, a
+            /// target channel, or a scope shows only where it would run.
+            /// `!help <command>` gives the usage of the command, and the first
+            /// line of the doc comment of its handler.
+            ///
+            /// `main_loop` refuses to start when the bot or a plugin also has
+            /// a `help` command.
+            #[must_use]
+            pub fn with_help(mut self) -> Self {
+                self.__setup.enable_help();
+                self
+            }
+
             /// Define an access-control role named `name`, authorising any
             /// sender whose `nick!user@host` matches one of the given hostmask
             /// glob patterns (`*` wildcard). Commands annotated with
@@ -580,6 +607,10 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             fn handlers() -> std::vec::Vec<ircbot::HandlerEntry<#struct_name>> {
                 std::vec![ #(#handler_entries),* ]
             }
+
+            fn help() -> std::vec::Vec<ircbot::CommandHelp> {
+                std::vec![ #(#help_entries),* ]
+            }
         }
     }
     .into()
@@ -640,7 +671,11 @@ pub fn plugin(attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => panic!("#[plugin] expects a simple struct name"),
     };
     let name = &args.name;
-    let (handler_entries, cleaned_methods) = expand_handlers(&input);
+    let Expanded {
+        handler_entries,
+        help_entries,
+        cleaned_methods,
+    } = expand_handlers(&input);
 
     let definition = match &args.state {
         Some(ty) => quote! {
@@ -674,6 +709,10 @@ pub fn plugin(attr: TokenStream, item: TokenStream) -> TokenStream {
             fn handlers() -> std::vec::Vec<ircbot::HandlerEntry<#struct_name>> {
                 std::vec![ #(#handler_entries),* ]
             }
+
+            fn help() -> std::vec::Vec<ircbot::CommandHelp> {
+                std::vec![ #(#help_entries),* ]
+            }
         }
 
         impl ircbot::Plugin for #struct_name {
@@ -685,6 +724,16 @@ pub fn plugin(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+/// What `expand_handlers` gives for an `impl` block.
+struct Expanded {
+    /// One `ircbot::HandlerEntry` expression for each handler.
+    handler_entries: Vec<TokenStream2>,
+    /// One `ircbot::CommandHelp` expression for each command handler.
+    help_entries: Vec<TokenStream2>,
+    /// The methods, without the handler attributes.
+    cleaned_methods: Vec<TokenStream2>,
+}
+
 /// Build the handler list and the cleaned methods of an `impl` block.
 ///
 /// Each method with a `#[command]` or `#[on(...)]` attribute gives one
@@ -692,8 +741,9 @@ pub fn plugin(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// attributes. `#[bot]` and `#[plugin]` share this, so both accept the same
 /// handlers.
 #[allow(clippy::too_many_lines)]
-fn expand_handlers(input: &ItemImpl) -> (Vec<TokenStream2>, Vec<TokenStream2>) {
+fn expand_handlers(input: &ItemImpl) -> Expanded {
     let mut handler_entries: Vec<TokenStream2> = Vec::new();
+    let mut help_entries: Vec<TokenStream2> = Vec::new();
     let mut cleaned_methods: Vec<TokenStream2> = Vec::new();
 
     for item in &input.items {
@@ -960,6 +1010,17 @@ fn expand_handlers(input: &ItemImpl) -> (Vec<TokenStream2>, Vec<TokenStream2>) {
             }
 
             if let Some(trigger) = trigger_tokens {
+                if let Some(cmd) = &command_name {
+                    let usage = command_usage(&extra_args, cmd);
+                    let summary = opt_str_ts(doc_summary(&method.attrs).as_deref());
+                    help_entries.push(quote! {
+                        ircbot::CommandHelp {
+                            command: #cmd.to_string(),
+                            usage: #usage.to_string(),
+                            summary: #summary,
+                        }
+                    });
+                }
                 let scope_ts = scope_tokens(scope.as_deref());
                 let wrapper = build_wrapper(method_name, &extra_args, command_name.as_deref());
                 handler_entries.push(quote! {
@@ -984,7 +1045,11 @@ fn expand_handlers(input: &ItemImpl) -> (Vec<TokenStream2>, Vec<TokenStream2>) {
         }
     }
 
-    (handler_entries, cleaned_methods)
+    Expanded {
+        handler_entries,
+        help_entries,
+        cleaned_methods,
+    }
 }
 
 /// The `ircbot::Scope` value for the `scope` option.
@@ -1171,6 +1236,43 @@ fn legacy_extractions(extra_args: &[(Ident, Type)]) -> Vec<TokenStream2> {
     out
 }
 
+/// The usage of a command from its signature, for example `!add <a> <b>`.
+///
+/// An `Option` argument shows as `[name]`, a `Vec` as `[name...]`, and a `User`
+/// argument does not show, because it comes from the sender.
+fn command_usage(extra_args: &[(Ident, Type)], cmd: &str) -> String {
+    let mut usage = format!("!{cmd}");
+    for (name, ty) in extra_args {
+        match classify(ty) {
+            TypeClass::User => {}
+            TypeClass::Opt { .. } => usage.push_str(&format!(" [{name}]")),
+            TypeClass::VecTy { .. } => usage.push_str(&format!(" [{name}...]")),
+            _ => usage.push_str(&format!(" <{name}>")),
+        }
+    }
+    usage
+}
+
+/// The first line of the doc comment of a method, if it has one.
+fn doc_summary(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("doc"))
+        .find_map(|attr| match &attr.meta {
+            Meta::NameValue(nv) => match &nv.value {
+                Expr::Lit(ExprLit {
+                    lit: Lit::Str(text),
+                    ..
+                }) => {
+                    let line = text.value().trim().to_string();
+                    (!line.is_empty()).then_some(line)
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
 /// Argument extraction for command triggers: typed positional parsing of the
 /// command tail, replying with a generated usage string (and skipping the
 /// handler) when a required argument is missing or fails to parse.
@@ -1179,21 +1281,7 @@ fn command_extractions(extra_args: &[(Ident, Type)], cmd: &str) -> Vec<TokenStre
     // trailing `String` here captures the rest of the line.
     let last_tail_idx = extra_args.iter().rposition(|(_, ty)| !type_is(ty, "User"));
 
-    // Build the usage string from the signature.
-    let mut usage_parts: Vec<String> = Vec::new();
-    for (name, ty) in extra_args {
-        match classify(ty) {
-            TypeClass::User => {}
-            TypeClass::Opt { .. } => usage_parts.push(format!("[{name}]")),
-            TypeClass::VecTy { .. } => usage_parts.push(format!("[{name}...]")),
-            _ => usage_parts.push(format!("<{name}>")),
-        }
-    }
-    let usage = if usage_parts.is_empty() {
-        format!("usage: !{cmd}")
-    } else {
-        format!("usage: !{cmd} {}", usage_parts.join(" "))
-    };
+    let usage = format!("usage: {}", command_usage(extra_args, cmd));
     let usage_fail = quote! {
         { let _ = ctx.reply(#usage); return std::result::Result::Ok(()); }
     };

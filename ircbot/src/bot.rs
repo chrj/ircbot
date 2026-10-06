@@ -704,7 +704,7 @@ fn check_trigger_text(
 /// A message with no target, such as a `QUIT`, belongs to neither scope, so a
 /// handler that names one does not fire for it.
 #[must_use]
-fn scope_matches(scope: Scope, target: &Target) -> bool {
+pub(crate) fn scope_matches(scope: Scope, target: &Target) -> bool {
     match scope {
         Scope::Any => true,
         Scope::Channel => target.is_channel(),
@@ -714,7 +714,7 @@ fn scope_matches(scope: Scope, target: &Target) -> bool {
 
 /// Whether the target of the message satisfies the optional target filter of a
 /// trigger. A trigger without a filter takes every target.
-fn target_matches(msg_target: Option<&str>, filter: Option<&str>) -> bool {
+pub(crate) fn target_matches(msg_target: Option<&str>, filter: Option<&str>) -> bool {
     match filter {
         Some(t) => msg_target == Some(t),
         None => true,
@@ -778,7 +778,7 @@ fn trailing_param(msg: &Message) -> Option<&str> {
 }
 
 /// The first parameter — typically the target channel or nick.
-fn target_param(msg: &Message) -> Option<&str> {
+pub(crate) fn target_param(msg: &Message) -> Option<&str> {
     match &msg.command {
         Command::PRIVMSG(target, _) | Command::NOTICE(target, _) => Some(target),
         Command::JOIN(channel, _, _) => Some(channel),

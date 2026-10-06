@@ -139,6 +139,9 @@ impl GuardedBot {
 
 #[plugin(name = "echo")]
 impl Echo {
+    /// Say the text again.
+    ///
+    /// Only the first line of this comment shows in `!help`.
     #[command("echo")]
     async fn echo(&self, ctx: Context, text: String) -> Result {
         ctx.say(text)
@@ -213,6 +216,15 @@ impl Ordered {
     #[command("quickly")]
     async fn quickly(&self, ctx: Context) -> Result {
         ctx.say("second")
+    }
+}
+
+/// A plugin with its own `help` command.
+#[plugin(name = "helper")]
+impl Helper {
+    #[command("help")]
+    async fn help(&self, ctx: Context) -> Result {
+        ctx.say("my own help")
     }
 }
 
@@ -540,6 +552,64 @@ async fn the_largest_queue_capacity_does_not_panic() {
     assert_eq!(server.next_privmsg().await, "PRIVMSG #chan :still here");
 
     task.abort();
+}
+
+// ─── !help ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn help_lists_the_commands_of_the_bot_and_its_plugins() {
+    let mut server = MockServer::start().await;
+    let bot = HostBot::new("testbot", server.addr.clone(), ["#chan"])
+        .with_help()
+        .with_role("admin", ["*!*@trusted.host"])
+        .plugin(Echo)
+        .plugin(Ordered)
+        .plugin(Admin);
+    let task = run(bot, &server);
+
+    // `alice!a@h` does not have the role `admin`, so `!shutdown` is left out.
+    server.say("!help");
+    assert_eq!(
+        server.next_privmsg().await,
+        "PRIVMSG #chan :alice, Commands: !echo, !help, !quickly, !slowly. Use !help <command> \
+         for details."
+    );
+
+    server.say("!help echo");
+    assert_eq!(
+        server.next_privmsg().await,
+        "PRIVMSG #chan :alice, !echo <text> — Say the text again."
+    );
+
+    task.abort();
+}
+
+#[tokio::test]
+async fn help_is_off_by_default() {
+    let mut server = MockServer::start().await;
+    let bot = HostBot::new("testbot", server.addr.clone(), ["#chan"]).plugin(Echo);
+    let task = run(bot, &server);
+
+    server.say("!help");
+    server.expect_no_privmsg(Duration::from_millis(300)).await;
+
+    task.abort();
+}
+
+#[tokio::test]
+async fn main_loop_refuses_a_help_command_next_to_the_built_in_help() {
+    let err = start_error(host().with_help().plugin(Helper)).await;
+
+    assert!(
+        matches!(
+            &err,
+            StartError::DuplicateCommand {
+                first: CommandOwner::Help,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
 }
 
 // ─── #[bot] still works next to #[plugin] ────────────────────────────────────
