@@ -145,9 +145,11 @@ impl BotSetup {
     }
 
     /// Set the capacity of the queue of each plugin. A value of 0 is changed
-    /// to 1.
+    /// to 1. Tokio refuses a queue larger than
+    /// [`Semaphore::MAX_PERMITS`](tokio::sync::Semaphore::MAX_PERMITS), so a
+    /// larger value is changed to that number.
     pub fn set_queue_capacity(&mut self, capacity: usize) {
-        self.queue_capacity = Some(capacity.max(1));
+        self.queue_capacity = Some(capacity.clamp(1, tokio::sync::Semaphore::MAX_PERMITS));
     }
 
     /// Define a role. See [`State::with_role`].

@@ -317,6 +317,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             ///     .main_loop()
             ///     .await?;
             /// ```
+            #[must_use]
             pub fn new_with_state(
                 nick: impl Into<String>,
                 server: impl Into<ircbot::Server>,
@@ -369,6 +370,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             ///     assert_eq!(tc.next_reply().as_deref(), Some("PRIVMSG #test :alice, hi!\r\n"));
             /// }
             /// ```
+            #[must_use]
             pub fn from_state(state: #ty) -> Self {
                 #struct_name {
                     __setup: std::default::Default::default(),
@@ -410,6 +412,7 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// MyBot::new("mybot", "irc.example.net:6667", ["rust"]);
             /// MyBot::new("mybot", Server::tls("irc.libera.chat:6697"), ["rust"]);
             /// ```
+            #[must_use]
             pub fn new(
                 nick: impl Into<String>,
                 server: impl Into<ircbot::Server>,
@@ -447,7 +450,8 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             /// Set how many messages can wait in the queue of each plugin. The
             /// default is [`DEFAULT_PLUGIN_QUEUE_CAPACITY`](ircbot::DEFAULT_PLUGIN_QUEUE_CAPACITY).
-            /// A value of 0 is changed to 1.
+            /// A value of 0 is changed to 1, and a value above the largest queue
+            /// that Tokio permits is changed to that size.
             #[must_use]
             pub fn with_queue_capacity(mut self, capacity: usize) -> Self {
                 self.__setup.set_queue_capacity(capacity);
@@ -647,6 +651,7 @@ pub fn plugin(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             impl #struct_name {
                 /// Make the plugin with `state`.
+                #[must_use]
                 pub fn from_state(state: #ty) -> Self {
                     #struct_name { state }
                 }

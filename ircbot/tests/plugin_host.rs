@@ -528,6 +528,20 @@ async fn a_blocked_plugin_does_not_stop_the_reconnect() {
     task.abort();
 }
 
+#[tokio::test]
+async fn the_largest_queue_capacity_does_not_panic() {
+    let mut server = MockServer::start().await;
+    let bot = HostBot::new("testbot", server.addr.clone(), ["#chan"])
+        .with_queue_capacity(usize::MAX)
+        .plugin(Echo);
+    let task = run(bot, &server);
+
+    server.say("!echo still here");
+    assert_eq!(server.next_privmsg().await, "PRIVMSG #chan :still here");
+
+    task.abort();
+}
+
 // ─── #[bot] still works next to #[plugin] ────────────────────────────────────
 
 #[bot]
