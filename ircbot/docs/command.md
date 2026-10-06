@@ -48,15 +48,18 @@ order.  The declared type decides how each word is consumed:
   consumes one whitespace-delimited token and parses it.
 - **A trailing `String`** captures the rest of the line verbatim (it may be
   empty).  A non-final `String` consumes a single token.
-- **`Option<T>`** (as the last parameter) is optional: `None` when no word is
-  left, otherwise the parsed value.
+- **`Option<T>`** is optional: `None` when no word is left, otherwise the
+  parsed value of the next word.  A trailing `Option<String>` captures the rest
+  of the line, as a trailing `String` does.
 - **`Vec<T>`** (as the last parameter) collects every remaining word.
 - **`User`** is filled with the message sender (it is not taken from the text).
 
 If a required argument is missing or fails to parse, the bot replies with a
 generated usage string (e.g. `usage: !add <a> <b>`) and the handler body does
-**not** run.  `Option<T>` and `Vec<T>` are only supported as the **last**
-parameter.
+**not** run.  `Vec<T>` is only supported as the **last** parameter.  Put an
+`Option<T>` after the required parameters, or just before a `Vec<T>`: an
+`Option<T>` before a required parameter takes the word that the required one
+needs.
 
 # Usage
 

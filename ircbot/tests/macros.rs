@@ -677,3 +677,60 @@ fn scope_channel_on_an_on_trigger_sets_the_field() {
 fn scope_private_on_a_command_sets_the_field() {
     assert_eq!(command_entry("scopedcmd").scope, Scope::Private);
 }
+
+// ─── Option<String> arguments ────────────────────────────────────────────────
+
+#[bot]
+impl OptionBot {
+    /// `Option<String>` before another argument takes one word.
+    #[command("whisper")]
+    async fn whisper(&self, ctx: Context, nick: Option<String>, words: Vec<String>) -> Result {
+        ctx.say(format!("{nick:?} {words:?}"))
+    }
+
+    /// `Option<String>` as the last argument takes the rest of the line.
+    #[command("note")]
+    async fn note(&self, ctx: Context, text: Option<String>) -> Result {
+        ctx.say(format!("{text:?}"))
+    }
+}
+
+/// The reply of `OptionBot` to `text` from alice in #c.
+async fn option_reply(text: &str) -> Vec<String> {
+    ircbot::testing::TestBot::new(OptionBot::default())
+        .deliver(&format!(":alice!a@h PRIVMSG #c :{text}"))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn option_string_before_a_vec_takes_one_word() {
+    assert_eq!(
+        option_reply("!whisper bob hello there").await,
+        vec!["PRIVMSG #c :Some(\"bob\") [\"hello\", \"there\"]\r\n".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn option_string_before_a_vec_is_none_without_words() {
+    assert_eq!(
+        option_reply("!whisper").await,
+        vec!["PRIVMSG #c :None []\r\n".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn option_string_as_the_last_argument_takes_the_rest_of_the_line() {
+    assert_eq!(
+        option_reply("!note buy milk and eggs").await,
+        vec!["PRIVMSG #c :Some(\"buy milk and eggs\")\r\n".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn option_string_as_the_last_argument_is_none_without_text() {
+    assert_eq!(
+        option_reply("!note").await,
+        vec!["PRIVMSG #c :None\r\n".to_string()]
+    );
+}
