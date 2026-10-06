@@ -58,6 +58,71 @@ impl syn::parse::Parse for BotArgs {
     }
 }
 
+/// Parses the `#[plugin(...)]` attribute arguments: `name = "..."` (required)
+/// and `state = <Type>` (optional).
+struct PluginArgs {
+    name: syn::LitStr,
+    state: Option<Type>,
+}
+
+impl syn::parse::Parse for PluginArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut name = None;
+        let mut state = None;
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+            let _: syn::Token![=] = input.parse()?;
+            if key == "name" {
+                name = Some(input.parse::<syn::LitStr>()?);
+            } else if key == "state" {
+                state = Some(input.parse::<Type>()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("unknown #[plugin] argument `{key}` (expected `name` or `state`)"),
+                ));
+            }
+            if input.peek(syn::Token![,]) {
+                let _: syn::Token![,] = input.parse()?;
+            }
+        }
+        let Some(name) = name else {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "#[plugin] needs a name: write `#[plugin(name = \"my_plugin\")]`",
+            ));
+        };
+        if !is_valid_plugin_name(&name.value()) {
+            return Err(syn::Error::new(
+                name.span(),
+                format!(
+                    "invalid plugin name {:?}: start with a lowercase ASCII letter, use \
+                     only lowercase ASCII letters, digits and `_`, and do not use \
+                     `sqlite` or a name that starts with `sqlite_`",
+                    name.value()
+                ),
+            ));
+        }
+        Ok(PluginArgs { name, state })
+    }
+}
+
+/// Whether `name` obeys the rules for a plugin name.
+///
+/// The rules are the same as for a store namespace in `ircbot`, because a
+/// plugin uses its name as its namespace. Keep this function the same as
+/// `is_valid_name` in `ircbot/src/name.rs`.
+fn is_valid_plugin_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    let reserved = name == "sqlite" || name.starts_with("sqlite_");
+    first.is_ascii_lowercase()
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && !reserved
+}
+
 /// Parses `#[command("name")]`, `#[command("name", target = "...")]`,
 /// `#[command("name", role = "...")]`, and/or the `include_self` and `raw`
 /// flags.
@@ -481,6 +546,102 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
             fn handlers() -> std::vec::Vec<ircbot::HandlerEntry<#struct_name>> {
                 std::vec![ #(#handler_entries),* ]
             }
+        }
+    }
+    .into()
+}
+
+// ─── #[plugin] ───────────────────────────────────────────────────────────────
+
+/// Turns an `impl` block into a plugin that an `ircbot::Host` can run.
+///
+/// A plugin has handlers, as a `#[bot]` has, but no connection of its own. A
+/// host runs many plugins on one connection. Each plugin runs in its own task,
+/// so a slow or failing plugin does not stop the others.
+///
+/// ```ignore
+/// #[plugin(name = "greeter")]
+/// impl Greeter {
+///     #[command("hello")]
+///     async fn hello(&self, ctx: ircbot::Context) -> ircbot::Result {
+///         ctx.reply("hello!")
+///     }
+/// }
+/// ```
+///
+/// # Arguments
+///
+/// * `name = "..."` (required): the name of the plugin. It starts with a
+///   lowercase ASCII letter, and has only lowercase ASCII letters, digits and
+///   `_`. It cannot be `sqlite` or start with `sqlite_`. A host refuses two
+///   plugins with the same name. A plugin that keeps data uses this name as
+///   its store namespace.
+/// * `state = Type` (optional): gives the plugin a public `state` field, as
+///   for `#[bot]`. Make the plugin with `MyPlugin::from_state(state)`. The
+///   state type does not need `Default`.
+///
+/// Without `state`, the plugin is a unit struct: make it with
+/// `MyPlugin::default()` or `MyPlugin`.
+///
+/// The macro implements `ircbot::Plugin` and `ircbot::Bot` for the type. Thus
+/// `ircbot::testing::TestBot` can send a test line through the handlers of a
+/// plugin.
+///
+/// # Panics
+///
+/// Panics at compile time if the annotated `impl` block does not use a simple
+/// (non-generic, non-path) type name, e.g. `impl MyPlugin { … }`.
+#[proc_macro_attribute]
+pub fn plugin(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as PluginArgs);
+    let input = parse_macro_input!(item as ItemImpl);
+
+    let struct_name = match input.self_ty.as_ref() {
+        Type::Path(tp) => tp
+            .path
+            .get_ident()
+            .cloned()
+            .expect("#[plugin] expects a simple struct name"),
+        _ => panic!("#[plugin] expects a simple struct name"),
+    };
+    let name = &args.name;
+    let (handler_entries, cleaned_methods) = expand_handlers(&input);
+
+    let definition = match &args.state {
+        Some(ty) => quote! {
+            pub struct #struct_name {
+                /// The state of the plugin.
+                pub state: #ty,
+            }
+
+            impl #struct_name {
+                /// Make the plugin with `state`.
+                pub fn from_state(state: #ty) -> Self {
+                    #struct_name { state }
+                }
+            }
+        },
+        None => quote! {
+            #[derive(Default)]
+            pub struct #struct_name;
+        },
+    };
+
+    quote! {
+        #definition
+
+        impl #struct_name {
+            #(#cleaned_methods)*
+        }
+
+        impl ircbot::Bot for #struct_name {
+            fn handlers() -> std::vec::Vec<ircbot::HandlerEntry<#struct_name>> {
+                std::vec![ #(#handler_entries),* ]
+            }
+        }
+
+        impl ircbot::Plugin for #struct_name {
+            const NAME: &'static str = #name;
         }
     }
     .into()

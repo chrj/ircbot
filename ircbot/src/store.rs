@@ -353,7 +353,7 @@ impl Store {
     /// in the [module docs](self#names).
     pub fn namespace(&self, name: impl Into<String>) -> Result<Namespace, StoreError> {
         let name = name.into();
-        if !is_valid_name(&name) {
+        if !crate::name::is_valid_name(&name) {
             return Err(StoreError::InvalidName { name });
         }
         Ok(Namespace {
@@ -684,20 +684,6 @@ fn refuse_transaction_control(ctx: AuthContext<'_>) -> Authorization {
     }
 }
 
-/// Whether `name` obeys the rules for a namespace name.
-fn is_valid_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    // SQLite refuses a table name that starts with `sqlite_`, so the
-    // `{namespace}_{table}` names of these namespaces cannot exist.
-    let reserved = name == "sqlite" || name.starts_with("sqlite_");
-    first.is_ascii_lowercase()
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-        && !reserved
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,29 +741,6 @@ mod tests {
     }
 
     // ── names ────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn namespace_names_follow_the_rules() {
-        let cases = [
-            ("quotes", true),
-            ("seen_v2", true),
-            ("a", true),
-            ("", false),
-            ("Quotes", false),
-            ("2quotes", false),
-            ("_ircbot", false),
-            ("quo-tes", false),
-            ("quo tes", false),
-            ("quotes;", false),
-            ("cité", false),
-            ("sqlite", false),
-            ("sqlite_stat", false),
-            ("sqlitefoo", true),
-        ];
-        for (name, valid) in cases {
-            assert_eq!(is_valid_name(name), valid, "name {name:?}");
-        }
-    }
 
     #[test]
     fn namespace_refuses_an_invalid_name() {

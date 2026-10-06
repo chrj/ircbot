@@ -11,8 +11,10 @@ pub mod connection;
 pub mod context;
 pub mod format;
 pub mod handler;
+pub mod host;
 pub mod irc;
 pub mod logging;
+mod name;
 pub mod server;
 #[cfg(feature = "store")]
 pub mod store;
@@ -30,12 +32,14 @@ pub use connection::{
 };
 pub use context::{make_messages, Context, User};
 pub use handler::{Bot, BoxFuture, HandlerEntry, HandlerFn, Scope, Trigger};
+pub use host::{ConnectedHost, Host, HostError, Plugin, DEFAULT_PLUGIN_QUEUE_CAPACITY};
 pub use irc::CtcpMessage;
 pub use ircbot_macros::bot;
 #[doc = include_str!("../docs/command.md")]
 pub use ircbot_macros::command;
 #[doc = include_str!("../docs/on.md")]
 pub use ircbot_macros::on;
+pub use ircbot_macros::plugin;
 pub use logging::PROTOCOL_LOG_TARGET;
 pub use server::Server;
 #[cfg(feature = "tls")]
