@@ -24,16 +24,21 @@ Every change must pass the full CI pipeline. Run the non-Docker checks locally
 before considering any task complete:
 
 ```sh
-cargo test --workspace
 cargo fmt --all --check
+cargo test --workspace
+cargo test --workspace --features tls,store
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features tls,store -- -D warnings
 ```
+
+CI runs Test, Clippy and Docs both without features and with all of them (see
+[Dependencies](#dependencies)).
 
 CI also enforces:
 
 - **Integration tests** (Docker, ngIRCd): `cargo test --features integration --test integration -- --test-threads=1`
 - **Security audit**: `cargo audit`
-- **Docs**: `cargo doc --no-deps --workspace` with `RUSTDOCFLAGS="-D warnings"` — broken doc links fail the build.
+- **Docs**: `cargo doc --no-deps --workspace`, also with `--features tls,store`, with `RUSTDOCFLAGS="-D warnings"` — broken doc links fail the build.
 - **Sync check**: duplicated docs must be byte-identical (see below).
 
 On pull requests, a separate `pr.yml` workflow additionally enforces:
