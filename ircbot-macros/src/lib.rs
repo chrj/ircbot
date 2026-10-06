@@ -1207,7 +1207,7 @@ fn command_extractions(extra_args: &[(Ident, Type)], cmd: &str) -> Vec<TokenStre
             TypeClass::User => false,
             TypeClass::StringTy => !is_last_tail,
             TypeClass::Scalar(_) => true,
-            TypeClass::Opt { is_string, .. } => !is_string,
+            TypeClass::Opt { is_string, .. } => !is_string || !is_last_tail,
             TypeClass::VecTy { .. } => false,
         }
     });
@@ -1250,13 +1250,21 @@ fn command_extractions(extra_args: &[(Ident, Type)], cmd: &str) -> Vec<TokenStre
                     None => #usage_fail,
                 };
             }),
+            // As for `String`: the last argument takes the rest of the line,
+            // and an earlier one takes one word. `rest` consumes the parser, so
+            // only the last argument can call it.
             TypeClass::Opt {
                 is_string: true, ..
-            } => out.push(quote! {
+            } if is_last_tail => out.push(quote! {
                 let #name: Option<String> = {
                     let __r = __args.rest();
                     if __r.is_empty() { None } else { Some(__r.to_string()) }
                 };
+            }),
+            TypeClass::Opt {
+                is_string: true, ..
+            } => out.push(quote! {
+                let #name: Option<String> = __args.next_token().map(str::to_string);
             }),
             TypeClass::Opt { inner, .. } => out.push(quote! {
                 let #name: Option<#inner> = match __args.next_token() {
