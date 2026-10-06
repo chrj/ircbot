@@ -15,8 +15,8 @@ This is a Cargo workspace (`resolver = "2"`) with two published crates:
   plus the validation crates (`cron`, `chrono-tz`) it needs at macro-expansion
   time.
 
-The two crate versions are kept **in lockstep** (both `0.1.6` today). You do not
-bump versions by hand — see [Releasing](#releasing).
+The two crate versions are kept **in lockstep**. You do not bump versions by hand
+— see [Releasing](#releasing).
 
 ## Before you finish: CI must pass
 
@@ -111,10 +111,12 @@ secrets.
   with an explanatory message (`expect("bot already started")`).
 - `?` for propagation; map into `BoxError` at the boundary
   (`.map_err(|e| Box::new(e) as crate::BoxError)`).
-- Custom error enums implement `Display` + `std::error::Error` by hand (see
-  `Error::MissingContext`) rather than pulling in a derive macro dependency. The
-  crate keeps its dependency surface deliberately small — don't add `thiserror`/
-  `anyhow` without a strong reason.
+- Custom error enums derive `thiserror::Error` (see `Error` in `lib.rs` and
+  `StoreError` in `store.rs`). Each variant carries the context that makes its
+  message actionable (a namespace, a path, a key). A variant that wraps another
+  error keeps it in a `source` field. Mark a public error enum
+  `#[non_exhaustive]` when new variants are likely, so adding one is not a
+  breaking change. Don't add `anyhow`: a library returns typed errors.
 - Framework diagnostics go through the [`tracing`](https://docs.rs/tracing) facade,
   not `println!`/`eprintln!`. Lifecycle and failure events use `error!`/`warn!`/`info!`
   with structured fields (`error = %e`, `%server`, …) rather than a `[ircbot]` text
@@ -181,10 +183,8 @@ This crate talks to a hostile network; treat all wire input as untrusted.
 - **Respect protocol limits.** IRC lines are capped at 512 bytes; `make_messages`
   splits long output on UTF-8 boundaries (preferring word breaks). Don't emit raw
   unbounded strings.
-- **Be careful with `unsafe`.** The crate has none left: the one region, which
-  reconstructed a `TcpStream` from an inherited fd for the hot-reload feature,
-  went with that feature. Any new `unsafe` must be localised, carry a
-  `// Safety:` comment for its invariant, and be avoided if at all possible.
+- **No `unsafe`.** `ircbot/src/lib.rs` sets `#![forbid(unsafe_code)]`, so the
+  compiler refuses it. Do not remove this attribute: find a safe way.
 - Slicing strings by byte offset is only done where an invariant guarantees a char
   boundary, and that invariant is spelled out in a comment (see the ASCII-nick note
   in `check_trigger`).
@@ -264,9 +264,9 @@ This crate talks to a hostile network; treat all wire input as untrusted.
   on the lightweight facade and emits events; it never pulls in a subscriber.
   `tracing-subscriber` is a **dev-dependency** only (used by the examples). Choosing
   and installing a subscriber is the downstream application's job.
-- Platform-specific deps are gated (`[target.'cfg(unix)'.dependencies] libc`), and
-  the corresponding code is behind `#[cfg(unix)]` with a documented non-Unix
-  fallback.
+- The crate has no platform-specific code. If one is necessary, gate the
+  dependency (`[target.'cfg(unix)'.dependencies]`) and the code
+  (`#[cfg(unix)]`), and document the fallback for other platforms.
 - TLS is optional, behind the non-default `tls` feature (`tokio-rustls` +
   `rustls-native-certs`), so a plaintext-only bot pays nothing for it.
 - Persistence is optional, behind the non-default `store` feature (`rusqlite`
