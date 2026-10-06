@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ## Highlights
 
 - **Proc-macro API** — annotate methods with `#[command]` or `#[on]`; `#[bot]` wires everything up.
-- **Typed state** — `#[bot(state = MyState)]` adds a `pub state` field your handlers can read; mutate it through interior mutability (`Mutex`/atomics). `MyBot::new_with_state(…, state)` starts the bot from a state you built, for example one that opens a database. Add `no_default` (`#[bot(state = MyState, no_default)]`) when the state has no `Default`. See `examples/stateful_bot.rs`, and `examples/sqlite_bot.rs` for a state that keeps its data in SQLite.
+- **Typed state** — `#[bot(state = MyState)]` adds a `pub state` field your handlers can read; mutate it through interior mutability (`Mutex`/atomics). `MyBot::new_with_state(…, state)` starts the bot from a state you built, for example one that opens a database. Add `no_default` (`#[bot(state = MyState, no_default)]`) when the state has no `Default`. See `examples/stateful_bot.rs`, and `examples/sqlite_bot.rs` for a state that keeps its data in the store (see [Persistence](#persistence)).
 - **Flexible triggers** — commands (`!ping`), glob patterns (`"you are *"`), raw IRC events, mention detection, `/me` actions and CTCP commands, cron schedules — all with optional target-channel and regex filters. CTCP messages reach only the `action` and `ctcp` triggers, never the text triggers.
 - **Typed command arguments** — declare `async fn add(&self, ctx: Context, a: i64, b: i64)` and the words after `!add` are parsed into the parameters (`FromStr` types, a trailing `String`/`Vec`, `Option<T>`); on bad input the bot replies with a generated usage string.
 - **Reply helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, `ctx.whisper()`.
@@ -208,7 +208,9 @@ let count: i64 = quotes
 Put the namespace in the bot state with `#[bot(state = MyState, no_default)]`,
 and start the bot with `new_with_state`. See the
 [`store` module docs](https://docs.rs/ircbot/latest/ircbot/store/) for the
-naming rules and how migrations work.
+naming rules and how migrations work. The
+[`sqlite_bot` example](ircbot/examples/sqlite_bot.rs) is a complete bot that uses
+the store.
 
 ## Logging
 
