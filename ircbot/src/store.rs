@@ -70,7 +70,8 @@
 //!
 //! To use a store in handlers, put the namespace in the bot state. An open
 //! database has no useful `Default`, so use `no_default` and start the bot
-//! with `new_with_state`:
+//! with `new_with_state`. The `sqlite_bot` example of this crate is a
+//! complete bot that does this:
 //!
 //! ```rust,ignore
 //! struct Data { quotes: Namespace }
