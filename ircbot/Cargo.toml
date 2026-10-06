@@ -63,9 +63,6 @@ irc = { version = "1", default-features = false }
 trybuild = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rcgen = "0.14"
-# For the `sqlite_bot` example only. `bundled` builds SQLite from source, so
-# the example needs no system SQLite library.
-rusqlite = { version = "0.40", features = ["bundled"] }
 # For the store tests, which derive `Serialize` and `Deserialize`.
 serde = { version = "1", features = ["derive"] }
 
@@ -82,6 +79,7 @@ test = true
 
 [[example]]
 name = "sqlite_bot"
+required-features = ["store"]
 test = true
 
 [[example]]
