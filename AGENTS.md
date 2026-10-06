@@ -10,8 +10,8 @@ surrounding code** — consistency with what exists beats personal preference.
 This is a Cargo workspace (`resolver = "2"`) with two published crates:
 
 - **`ircbot`** — the async IRC bot framework (library + examples + tests).
-- **`ircbot-macros`** — the `#[bot]`, `#[command]`, and `#[on]` procedural
-  macros. `proc-macro = true`; depends only on `proc-macro2`, `quote`, `syn`,
+- **`ircbot-macros`** — the `#[bot]`, `#[plugin]`, `#[command]`, and `#[on]`
+  procedural macros. `proc-macro = true`; depends only on `proc-macro2`, `quote`, `syn`,
   plus the validation crates (`cron`, `chrono-tz`) it needs at macro-expansion
   time.
 
@@ -153,6 +153,10 @@ patterns already established:
 - **Spawned tasks must be cleaned up.** The read loop aborts the keepalive and cron
   tasks and drops the write sender before returning, then awaits the write task. Any
   new long-lived task must be aborted/joined on teardown the same way.
+- **Plugins run in their own tasks.** `Host` (`host.rs`) gives each plugin one
+  Tokio task and a bounded queue. The handler entries that dispatch sees only put
+  a message in the queue, so trigger matching, roles, ignore lists and cron stay
+  in one place. Keep it so: a plugin handler must never run on the read loop.
 - **Use channels to serialise side effects.** All socket writes funnel through a
   single `mpsc::UnboundedSender<String>` drained by one write task that enforces
   token-bucket flood control. Don't write to the socket from multiple places.
