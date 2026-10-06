@@ -55,9 +55,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sy
     // than letting the bot arrive unauthenticated.
 
     println!("tls_bot example compiled successfully.");
-    println!("Connecting for real is two lines:");
-    println!("  let bot = TlsBot::new(\"ircbot\", {server}, [\"#rust\"]).await?;");
-    println!("  bot.main_loop().await?;");
+    println!("Connecting for real is one line:");
+    println!("  TlsBot::new(\"ircbot\", {server}, [\"#rust\"]).main_loop().await?;");
 
     Ok(())
 }

@@ -28,7 +28,7 @@ When `role = "name"` is set, the command only fires for senders whose
 role via `with_role` on the bot builder:
 
 ```rust,ignore
-MyBot::new("bot", "irc.example.net:6667", ["ops"]).await?
+MyBot::new("bot", "irc.example.net:6667", ["ops"])
     .with_role("admin", ["*!*@trusted.host", "alice!*@*"])
     .main_loop()
     .await

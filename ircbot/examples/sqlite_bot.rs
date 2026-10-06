@@ -112,7 +112,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sy
     println!("  let store = Store::open(\"bot.db\")?;");
     println!("  let seen = seen_namespace(&store).await?;");
     println!("  SeenBot::new_with_state(\"ircbot\", \"irc.libera.chat:6667\", [\"#rust\"], seen)");
-    println!("      .await?");
     println!("      .main_loop()");
     println!("      .await?;");
     Ok(())
