@@ -194,6 +194,10 @@ MyBot::new("mybot", "irc.example.net:6667", ["rust"])
     .await
 ```
 
+`with_help()` turns on a built-in `!help`. It lists the commands of the bot
+and its plugins that the sender can use, and `!help <command>` shows the usage
+and the first line of the doc comment of the handler.
+
 `main_loop` checks the bot and its plugins before it connects. It refuses two
 plugins with the same name, a command that two of them have (the bot itself
 included), and a command whose role no `with_role` defines.
