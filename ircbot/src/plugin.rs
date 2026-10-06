@@ -43,6 +43,22 @@
 //!   plugin stays.
 //!
 //! Replies of different plugins can arrive at the server in any order.
+//!
+//! # Replies across a lost connection
+//!
+//! A reply goes to the connection that the message came from. When that
+//! connection is lost, its replies are lost too, also after the bot
+//! reconnects. For example, a handler that waits during an outage loses the
+//! reply that it sends after the outage. The send returns an error, and the
+//! bot logs it as a plugin handler error.
+//!
+//! This is a choice. The bot stops the write side of a lost connection after
+//! 1 second, so a plugin that holds a context, in its queue or in a handler,
+//! cannot stop the bot from reconnecting. The other choice, a channel that
+//! sends late replies to the new connection, could send an answer out of
+//! context, for example before the bot is in the channel again. A plugin that
+//! must not lose a result can store it, and send it when the next message
+//! comes.
 
 use std::any::Any;
 use std::panic::AssertUnwindSafe;

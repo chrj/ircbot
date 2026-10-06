@@ -201,9 +201,10 @@ included), and a command whose role no `with_role` defines.
 The handlers of the bot itself run in the dispatch loop. Each plugin runs in
 its own task, with a queue. A slow plugin does not delay the others, a panic
 in a plugin is logged and does not stop the bot, and each plugin gets its
-messages in order. See the
+messages in order. A reply that a plugin sends after the connection is lost
+does not reach the server, also after the bot reconnects. See the
 [`plugin` module docs](https://docs.rs/ircbot/latest/ircbot/plugin/) for the
-details.
+details and the reason.
 
 ## Persistence
 
