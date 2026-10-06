@@ -485,6 +485,49 @@ async fn dropping_the_main_loop_stops_a_blocked_plugin() {
     assert!(stopped.is_ok(), "the plugin task still runs");
 }
 
+/// Given a plugin that is blocked in a handler, when the server drops the
+/// connection, then the bot still reconnects. The context of the blocked
+/// handler holds a sender of the old connection.
+#[tokio::test]
+async fn a_blocked_plugin_does_not_stop_the_reconnect() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let release = Arc::new(Notify::new());
+    let bot = HostBot::new("testbot", addr, ["#chan"])
+        .with_reconnect(Duration::from_millis(50), Duration::from_millis(50))
+        .plugin(Slow::from_state(Arc::clone(&release)));
+    let task = tokio::spawn(async move {
+        let _ = bot.main_loop().await;
+    });
+
+    // First connection: block the plugin, then drop the connection.
+    let (first, _) = listener.accept().await.unwrap();
+    let (read_half, mut write_half) = first.into_split();
+    write_half
+        .write_all(b":server 001 testbot :Welcome\r\n:alice!a@h PRIVMSG #chan :!wait\r\n")
+        .await
+        .unwrap();
+    let mut lines = BufReader::new(read_half).lines();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(line) = lines.next_line().await.unwrap() {
+            if line == "PRIVMSG #chan :waiting" {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the plugin did not start to wait");
+    drop(lines);
+    drop(write_half);
+
+    // The bot must connect again, while the plugin is still blocked.
+    let second = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await;
+
+    assert!(second.is_ok(), "the bot did not reconnect");
+    release.notify_one();
+    task.abort();
+}
+
 // ─── #[bot] still works next to #[plugin] ────────────────────────────────────
 
 #[bot]
