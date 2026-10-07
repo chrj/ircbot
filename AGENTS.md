@@ -18,7 +18,8 @@ This is a Cargo workspace (`resolver = "2"`) with three published crates:
   all on by default. It depends on `ircbot` with the `store` feature, and uses
   only the public API of `ircbot`, as a third-party plugin would. A plugin that
   needs something that `ircbot` does not offer shows a gap in the public API:
-  add it to `ircbot` instead of a workaround.
+  add it to `ircbot` instead of a workaround. The crate must also build with
+  no plugin feature on: CI runs Clippy and the docs with `--no-default-features`.
 
 `ircbot` and `ircbot-macros` are kept **in lockstep**. `ircbot-plugins` has its
 own version. You do not bump versions by hand — see [Releasing](#releasing).
