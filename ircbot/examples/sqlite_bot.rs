@@ -26,19 +26,38 @@ use ircbot::{bot, Context, Result};
 /// change a step that a database already has.
 ///
 /// The table name starts with the name of the namespace, so it cannot clash
-/// with the tables of another namespace. A row is the last line of one nick in
-/// one channel. IRC nicks and channel names are case-insensitive, so both use
-/// `COLLATE NOCASE`. This ignores the RFC 1459 rule for `[]\~` and `{}|^`,
-/// which is enough here.
-const MIGRATIONS: &[&str] = &["
+/// with the tables of another namespace. IRC nicks and channel names are
+/// case-insensitive, so both use `COLLATE NOCASE`. This ignores the RFC 1459
+/// rule for `[]\~` and `{}|^`, which is enough here.
+///
+/// Step 1 made one row for each nick. A lookup with it could tell what a nick
+/// said in another channel, so step 2 makes one row for each channel and nick.
+/// Step 2 builds a new table, copies the rows, and replaces the old table,
+/// because SQLite cannot change the primary key of a table. A database that
+/// has step 1 gets step 2 when the bot starts, and keeps its rows.
+const MIGRATIONS: &[&str] = &[
+    "
     CREATE TABLE seen_last (
+        nick    TEXT PRIMARY KEY COLLATE NOCASE,
+        channel TEXT NOT NULL,
+        message TEXT NOT NULL,
+        seen_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    ",
+    "
+    CREATE TABLE seen_last_by_channel (
         channel TEXT NOT NULL COLLATE NOCASE,
         nick    TEXT NOT NULL COLLATE NOCASE,
         message TEXT NOT NULL,
         seen_at INTEGER NOT NULL DEFAULT (unixepoch()),
         PRIMARY KEY (channel, nick)
     );
-"];
+    INSERT INTO seen_last_by_channel (channel, nick, message, seen_at)
+        SELECT channel, nick, message, seen_at FROM seen_last;
+    DROP TABLE seen_last;
+    ALTER TABLE seen_last_by_channel RENAME TO seen_last;
+    ",
+];
 
 /// Get the `seen` namespace of `store`, with its schema applied.
 async fn seen_namespace(store: &Store) -> std::result::Result<Namespace, StoreError> {
@@ -300,5 +319,47 @@ mod tests {
             .unwrap();
 
         assert_eq!(replies, Vec::<String>::new());
+    }
+
+    /// Given a database from the first version of this example, with one row
+    /// for each nick, when the bot opens it, then the schema changes to one
+    /// row for each channel and nick, and the old rows stay.
+    #[tokio::test]
+    async fn a_database_of_the_first_version_gets_the_new_schema() {
+        let store = Store::memory().unwrap();
+        let old = store.namespace("seen").unwrap();
+        old.migrate(&["
+            CREATE TABLE seen_last (
+                nick    TEXT PRIMARY KEY COLLATE NOCASE,
+                channel TEXT NOT NULL,
+                message TEXT NOT NULL,
+                seen_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+        "])
+            .await
+            .unwrap();
+        old.sql(|conn| {
+            conn.execute(
+                "INSERT INTO seen_last (nick, channel, message, seen_at)
+                 VALUES ('alice', '#rust', 'old line', 1791194400)",
+                [],
+            )
+        })
+        .await
+        .unwrap();
+
+        let bot = SeenBot::from_state(seen_namespace(&store).await.expect("apply schema"));
+        let mut tc = TestContext::channel("#tokio", "alice", "new line");
+        bot.record(tc.take_ctx())
+            .await
+            .expect("record with the new schema");
+
+        assert_eq!(
+            stored_rows(&bot, "alice").await,
+            vec![
+                ("#rust".to_string(), "old line".to_string()),
+                ("#tokio".to_string(), "new line".to_string()),
+            ],
+        );
     }
 }
