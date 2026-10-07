@@ -7,6 +7,7 @@
 //!
 //! | Plugin | Feature | Commands |
 //! |---|---|---|
+//! | `Notify` | `notify` | `!notify <nick> <message>` |
 //! | `Seen` | `seen` | `!seen <nick>` |
 //!
 //! A plugin that keeps data takes an [`ircbot::Store`]. It uses the namespace
@@ -14,7 +15,7 @@
 //!
 //! ```rust,ignore
 //! use ircbot::{bot, store::Store};
-//! use ircbot_plugins::Seen;
+//! use ircbot_plugins::{Notify, Seen};
 //!
 //! #[bot]
 //! impl MyBot {}
@@ -23,14 +24,19 @@
 //! MyBot::new("mybot", "irc.example.net:6667", ["rust"])
 //!     .with_help()
 //!     .plugin(Seen::open(&store).await?)
+//!     .plugin(Notify::open(&store).await?)
 //!     .main_loop()
 //!     .await
 //! ```
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "notify")]
+pub mod notify;
 #[cfg(feature = "seen")]
 pub mod seen;
 
+#[cfg(feature = "notify")]
+pub use notify::Notify;
 #[cfg(feature = "seen")]
 pub use seen::Seen;
