@@ -180,4 +180,29 @@ pub struct HandlerEntry<T> {
 pub trait Bot: Sized {
     /// Returns a new list with one entry for each handler of the bot.
     fn handlers() -> Vec<HandlerEntry<Self>>;
+
+    /// Returns the help text of each command handler, for `!help`.
+    ///
+    /// Give one entry for each handler with a [`Trigger::Command`], in the
+    /// order of [`Bot::handlers`]: `!help` pairs each entry with the trigger
+    /// of its handler. When the lists do not agree, each command shows only
+    /// its name.
+    ///
+    /// The `#[bot]` and `#[plugin]` macros implement this from the signature
+    /// and the doc comment of each command. The default gives no help.
+    fn help() -> Vec<CommandHelp> {
+        Vec::new()
+    }
+}
+
+/// The help text of one command handler, for `!help`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandHelp {
+    /// The name of the command, without the `!` prefix.
+    pub command: String,
+    /// How to call the command, for example `!add <a> <b>`. An argument in
+    /// `[]` is optional.
+    pub usage: String,
+    /// The first line of the doc comment of the handler, if it has one.
+    pub summary: Option<String>,
 }

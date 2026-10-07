@@ -734,3 +734,65 @@ async fn option_string_as_the_last_argument_is_none_without_text() {
         vec!["PRIVMSG #c :None\r\n".to_string()]
     );
 }
+
+// ─── help text ───────────────────────────────────────────────────────────────
+
+#[bot]
+impl HelpBot {
+    /// Add two numbers.
+    ///
+    /// The second paragraph does not show in `!help`.
+    #[command("add")]
+    async fn add(&self, ctx: Context, a: i64, b: i64) -> Result {
+        ctx.reply(a + b)
+    }
+
+    #[doc = "Shout the text.\nThe second line does not show."]
+    #[command("shout")]
+    async fn shout(&self, ctx: Context, text: String) -> Result {
+        ctx.say(text)
+    }
+
+    /**
+     * Whisper the text.
+     */
+    #[command("whisper")]
+    async fn whisper(&self, ctx: Context, times: Option<u32>, words: Vec<String>) -> Result {
+        ctx.say(format!("{times:?} {words:?}"))
+    }
+
+    #[command("bare")]
+    async fn bare(&self, ctx: Context) -> Result {
+        ctx.say("bare")
+    }
+}
+
+#[test]
+fn help_has_the_usage_and_the_first_doc_line_of_each_command() {
+    let help: Vec<(String, String, Option<String>)> = HelpBot::help()
+        .into_iter()
+        .map(|h| (h.command, h.usage, h.summary))
+        .collect();
+
+    assert_eq!(
+        help,
+        vec![
+            (
+                "add".to_string(),
+                "!add <a> <b>".to_string(),
+                Some("Add two numbers.".to_string())
+            ),
+            (
+                "shout".to_string(),
+                "!shout <text>".to_string(),
+                Some("Shout the text.".to_string())
+            ),
+            (
+                "whisper".to_string(),
+                "!whisper [times] [words...]".to_string(),
+                Some("Whisper the text.".to_string())
+            ),
+            ("bare".to_string(), "!bare".to_string(), None),
+        ]
+    );
+}

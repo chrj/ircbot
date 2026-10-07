@@ -11,6 +11,7 @@ pub mod connection;
 pub mod context;
 pub mod format;
 pub mod handler;
+mod help;
 pub mod irc;
 pub mod logging;
 mod name;
@@ -32,7 +33,7 @@ pub use connection::{
     DEFAULT_RECONNECT_DELAY, REGISTRATION_TIMEOUT,
 };
 pub use context::{make_messages, Context, User};
-pub use handler::{Bot, BoxFuture, HandlerEntry, HandlerFn, Scope, Trigger};
+pub use handler::{Bot, BoxFuture, CommandHelp, HandlerEntry, HandlerFn, Scope, Trigger};
 pub use irc::CtcpMessage;
 pub use ircbot_macros::bot;
 #[doc = include_str!("../docs/command.md")]

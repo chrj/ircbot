@@ -104,6 +104,8 @@ pub(crate) struct CommandInfo {
 pub(crate) struct Registration {
     pub(crate) name: &'static str,
     pub(crate) commands: Vec<CommandInfo>,
+    /// The help text and command handlers of the plugin, for `!help`.
+    pub(crate) help: crate::help::HelpSource,
     /// Starts the task of the plugin, and gives the entries that put messages
     /// in its queue.
     start: Box<dyn FnOnce(usize) -> Started + Send + Sync>,
@@ -122,6 +124,7 @@ impl Registration {
         Registration {
             name: P::NAME,
             commands,
+            help: crate::help::HelpSource::of::<P>(),
             start: Box::new(move |capacity| start_plugin(plugin, capacity)),
         }
     }

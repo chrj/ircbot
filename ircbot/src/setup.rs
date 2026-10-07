@@ -10,16 +10,20 @@ use std::time::Duration;
 
 use crate::connection::Settings;
 use crate::handler::{Bot, HandlerEntry, Trigger};
+use crate::help::{help_entry, HelpIndex, HelpSource, HELP_COMMAND};
 use crate::plugin::{Plugin, PluginTasks, Registration, DEFAULT_PLUGIN_QUEUE_CAPACITY};
 use crate::{BoxError, Channel, Nick, Server, State};
 
-/// Who has a command: the bot itself, or a plugin.
+/// Who has a command: the bot itself, a plugin, or the built-in `!help`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CommandOwner {
     /// A handler in the `#[bot]` impl block.
     Bot,
     /// A plugin, with its name.
     Plugin(String),
+    /// The built-in `!help` of the generated `with_help` method.
+    Help,
 }
 
 impl fmt::Display for CommandOwner {
@@ -27,6 +31,7 @@ impl fmt::Display for CommandOwner {
         match self {
             CommandOwner::Bot => write!(f, "the bot"),
             CommandOwner::Plugin(name) => write!(f, "plugin {name:?}"),
+            CommandOwner::Help => write!(f, "the built-in help"),
         }
     }
 }
@@ -117,6 +122,7 @@ pub struct BotSetup {
     settings: Settings,
     queue_capacity: Option<usize>,
     plugins: Vec<Registration>,
+    help: bool,
 }
 
 impl BotSetup {
@@ -142,6 +148,11 @@ impl BotSetup {
     /// Add `plugin`.
     pub fn add_plugin<P: Plugin>(&mut self, plugin: P) {
         self.plugins.push(Registration::new(plugin));
+    }
+
+    /// Turn on the built-in `!help` command. See the `help` module.
+    pub fn enable_help(&mut self) {
+        self.help = true;
     }
 
     /// Set the capacity of the queue of each plugin. A value of 0 is changed
@@ -207,7 +218,12 @@ impl BotSetup {
         let Some(target) = self.target else {
             return Err(StartError::NoServer.into());
         };
-        check(&own_commands::<T>(), &self.plugins, &self.settings.roles)?;
+        check(
+            &own_commands::<T>(),
+            &self.plugins,
+            self.help,
+            &self.settings.roles,
+        )?;
 
         let mut state = State::connect(target.nick, target.server, target.channels)
             .await
@@ -216,8 +232,17 @@ impl BotSetup {
 
         let capacity = self.queue_capacity.unwrap_or(DEFAULT_PLUGIN_QUEUE_CAPACITY);
         let mut entries: Vec<HandlerEntry<T>> = T::handlers();
+        let mut plugins = self.plugins;
+        if self.help {
+            let mut index = HelpIndex::default();
+            index.add(HelpSource::of::<T>());
+            for registration in &mut plugins {
+                index.add(std::mem::take(&mut registration.help));
+            }
+            entries.push(help_entry(index, state.settings.roles.clone()));
+        }
         let mut tasks = PluginTasks::new();
-        for registration in self.plugins {
+        for registration in plugins {
             let name = registration.name;
             let started = registration.start(capacity);
             entries.extend(
@@ -253,9 +278,13 @@ fn own_commands<T: Bot>() -> Vec<(String, Option<String>)> {
 fn check(
     own: &[(String, Option<String>)],
     plugins: &[Registration],
+    help: bool,
     roles: &[(String, Vec<String>)],
 ) -> Result<(), StartError> {
     let mut owners: Vec<(String, CommandOwner)> = Vec::new();
+    if help {
+        claim(&mut owners, roles, HELP_COMMAND, None, CommandOwner::Help)?;
+    }
     for (command, role) in own {
         claim(
             &mut owners,

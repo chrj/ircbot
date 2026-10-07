@@ -98,6 +98,30 @@ impl MyBot {
 }
 ```
 
+# Help
+
+With `with_help` on the bot, the built-in `!help` lists the commands that the
+sender can use, and `!help <command>` shows one of them:
+
+```text
+<alice> !help add
+<bot>   alice, !add <a> <b> — Add two numbers.
+```
+
+The usage comes from the signature, as for the usage message above. The text
+after it is the first line of the doc comment of the handler:
+
+```rust,ignore
+/// Add two numbers.
+#[command("add")]
+async fn add(&self, ctx: Context, a: i64, b: i64) -> Result {
+    ctx.reply(a + b)
+}
+```
+
+A command with a `role`, a `target` or a `scope` shows only for the senders and
+in the places where it would run.
+
 # Own messages
 
 With the IRCv3 `echo-message` capability, the server sends the bot its own
