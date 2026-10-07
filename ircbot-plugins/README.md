@@ -5,14 +5,15 @@ framework.
 
 | Plugin | Feature | Commands |
 |---|---|---|
-| `Seen` | `seen` | `!seen <nick>`: when and where a nick said its last line |
+| `Seen` | `seen` | `!seen <nick>`: when a nick last spoke in this channel, and what it said |
 
-Each plugin has a feature, and all features are on by default. A bot that wants
+The plugins need the plugin support of `ircbot` 0.7 or later. Each plugin has a
+feature, and all features are on by default. A bot that wants
 fewer plugins turns the default features off and names the plugins it needs:
 
 ```toml
 [dependencies]
-ircbot = { version = "0.6", features = ["store"] }
+ircbot = { version = "0.7", features = ["store"] }
 ircbot-plugins = { version = "0.1", default-features = false, features = ["seen"] }
 ```
 
