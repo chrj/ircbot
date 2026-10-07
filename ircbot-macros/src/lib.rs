@@ -303,7 +303,10 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
     // fragment has a leading comma, because the `__setup` field in the struct
     // literals below has no trailing comma.
     let state_field_decl = match &args.state {
-        Some(ty) => quote! { pub state: #ty, },
+        Some(ty) => quote! {
+            /// The state of the bot.
+            pub state: #ty,
+        },
         None => quote! {},
     };
     let state_field_init = match &args.state {
@@ -437,7 +440,10 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    let struct_docs = doc_attrs(&input.attrs);
+
     quote! {
+        #(#struct_docs)*
         pub struct #struct_name {
             __setup: ircbot::internal::BotSetup,
             #state_field_decl
@@ -677,8 +683,10 @@ pub fn plugin(attr: TokenStream, item: TokenStream) -> TokenStream {
         cleaned_methods,
     } = expand_handlers(&input);
 
+    let struct_docs = doc_attrs(&input.attrs);
     let definition = match &args.state {
         Some(ty) => quote! {
+            #(#struct_docs)*
             pub struct #struct_name {
                 /// The state of the plugin.
                 pub state: #ty,
@@ -693,6 +701,7 @@ pub fn plugin(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         },
         None => quote! {
+            #(#struct_docs)*
             #[derive(Default)]
             pub struct #struct_name;
         },
@@ -1251,6 +1260,17 @@ fn command_usage(extra_args: &[(Ident, Type)], cmd: &str) -> String {
         }
     }
     usage
+}
+
+/// The doc comment attributes of an item.
+///
+/// The macros put the doc comment of the `impl` block on the struct that they
+/// make, so the struct has docs, for example for `#![warn(missing_docs)]`.
+fn doc_attrs(attrs: &[syn::Attribute]) -> Vec<&syn::Attribute> {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("doc"))
+        .collect()
 }
 
 /// The first non-empty line of the doc comment of a method, if it has one.
