@@ -79,7 +79,7 @@ Full API reference: **[docs.rs/ircbot](https://docs.rs/ircbot)**
 
 ```toml
 [dependencies]
-ircbot = "0.4"
+ircbot = "0.7"
 tokio  = { version = "1", features = ["full"] }
 ```
 
@@ -135,7 +135,7 @@ TLS is behind the optional `tls` feature, which pulls in
 
 ```toml
 [dependencies]
-ircbot = { version = "0.4", features = ["tls"] }
+ircbot = { version = "0.7", features = ["tls"] }
 ```
 
 The second argument to `new` is the server, and it decides the transport. A bare
@@ -221,7 +221,7 @@ builds SQLite from source, so a bot needs no system SQLite library:
 
 ```toml
 [dependencies]
-ircbot = { version = "0.6", features = ["store"] }
+ircbot = { version = "0.7", features = ["store"] }
 ```
 
 A `Store` is the open database. Each part of the bot gets its own `Namespace`.
