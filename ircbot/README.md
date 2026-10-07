@@ -202,6 +202,9 @@ and the first line of the doc comment of the handler.
 plugins with the same name, a command that two of them have (the bot itself
 included), and a command whose role no `with_role` defines.
 
+The [`ircbot-plugins`](https://crates.io/crates/ircbot-plugins) crate has
+standard plugins, for example `seen`.
+
 The handlers of the bot itself run in the dispatch loop. Each plugin runs in
 its own task, with a queue. A slow plugin does not delay the others, a panic
 in a plugin is logged and does not stop the bot, and each plugin gets its

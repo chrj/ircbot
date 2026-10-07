@@ -7,16 +7,21 @@ surrounding code** — consistency with what exists beats personal preference.
 
 ## Project layout
 
-This is a Cargo workspace (`resolver = "2"`) with two published crates:
+This is a Cargo workspace (`resolver = "2"`) with three published crates:
 
 - **`ircbot`** — the async IRC bot framework (library + examples + tests).
 - **`ircbot-macros`** — the `#[bot]`, `#[plugin]`, `#[command]`, and `#[on]`
   procedural macros. `proc-macro = true`; depends only on `proc-macro2`, `quote`, `syn`,
   plus the validation crates (`cron`, `chrono-tz`) it needs at macro-expansion
   time.
+- **`ircbot-plugins`** — the standard plugins (`seen`, …), one feature for each,
+  all on by default. It depends on `ircbot` with the `store` feature, and uses
+  only the public API of `ircbot`, as a third-party plugin would. A plugin that
+  needs something that `ircbot` does not offer shows a gap in the public API:
+  add it to `ircbot` instead of a workaround.
 
-The two crate versions are kept **in lockstep**. You do not bump versions by hand
-— see [Releasing](#releasing).
+`ircbot` and `ircbot-macros` are kept **in lockstep**. `ircbot-plugins` has its
+own version. You do not bump versions by hand — see [Releasing](#releasing).
 
 ## Before you finish: CI must pass
 
@@ -25,9 +30,9 @@ before considering any task complete:
 
 ```sh
 cargo fmt --all --check
-cargo test --workspace
+cargo test --workspace --exclude ircbot-plugins
 cargo test --workspace --features tls,store
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --exclude ircbot-plugins --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features tls,store -- -D warnings
 ```
 
@@ -39,7 +44,7 @@ CI also enforces:
 
 - **Integration tests** (Docker, ngIRCd): `cargo test --features integration --test integration -- --test-threads=1`
 - **Security audit**: `cargo audit`
-- **Docs**: `cargo doc --no-deps --workspace`, also with `--features tls,store`, with `RUSTDOCFLAGS="-D warnings"` — broken doc links fail the build.
+- **Docs**: `cargo doc --no-deps --workspace --exclude ircbot-plugins`, and `cargo doc --no-deps --workspace --features tls,store`, with `RUSTDOCFLAGS="-D warnings"` — broken doc links fail the build.
 - **Sync check**: duplicated docs must be byte-identical (see below).
 
 On pull requests, a separate `pr.yml` workflow additionally enforces:
@@ -64,12 +69,15 @@ Releases are automated with [release-plz](https://release-plz.dev) (see
 changelogs, or push tags by hand.**
 
 - Every push to `main` runs release-plz, which opens (or updates) a **release PR**
-  that bumps both crate versions in lockstep, updates the `CHANGELOG.md` files, and
-  rewrites the `ircbot-macros` dependency requirement in `ircbot/Cargo.toml`.
+  that bumps the versions of `ircbot` and `ircbot-macros` in lockstep, bumps
+  `ircbot-plugins` on its own, updates the `CHANGELOG.md` files, and rewrites the
+  dependency requirements between the crates.
 - Merge the release PR with a **squash merge** (the `main` ruleset requires linear
-  history). That publishes both crates to crates.io in dependency order
-  (`ircbot-macros`, then `ircbot`) and creates the `v{version}` git tag and GitHub
-  release for `ircbot`. `ircbot-macros` is published silently (no tag/release).
+  history). That publishes the crates to crates.io in dependency order
+  (`ircbot-macros`, `ircbot`, then `ircbot-plugins`) and creates the `v{version}`
+  git tag and GitHub release for `ircbot`. `ircbot-macros` is published silently
+  (no tag/release). `ircbot-plugins` gets its own `ircbot-plugins-v{version}` tag
+  and release.
 - Lockstep is enforced by a shared `version_group` in `release-plz.toml`.
 
 The `v*` tags are protected by the `Versions` ruleset, so the workflow
@@ -291,7 +299,9 @@ This crate talks to a hostile network; treat all wire input as untrusted.
   `INTERNAL_MIGRATIONS`: add new steps at the end, never change an old one. The `store` module re-exports `rusqlite` and gives its
   `Connection` to callers, so a major `rusqlite` update is a breaking change.
 - Every change must compile, lint, test, and document **both** without features
-  and with `tls` and `store`. CI runs both:
+  and with `tls` and `store`. `ircbot-plugins` turns on `store`, and Cargo joins
+  the features of all packages in one build, so the run without features leaves
+  it out with `--exclude ircbot-plugins`. CI runs both:
 
   ```sh
   cargo clippy --workspace --all-targets --features tls,store -- -D warnings
