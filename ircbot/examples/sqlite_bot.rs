@@ -1,7 +1,13 @@
 //! Demonstrates a bot that keeps its data in SQLite, with the `store` module.
 //!
-//! The bot records the last line that each nick said in a channel. `!seen
-//! <nick>` tells when and where that was.
+//! The bot records the last line of each nick in each channel. `!seen <nick>`
+//! in a channel tells when that nick last spoke in this channel, and what it
+//! said.
+//!
+//! `!seen` never tells what a nick said in another channel, because a channel
+//! can be secret. Thus the command only works in a channel, and only looks at
+//! that channel. The `seen` plugin of the `ircbot-plugins` crate does the same,
+//! as a ready-made plugin.
 //!
 //! The state is a `Namespace` of a `Store`. An open database has no useful
 //! `Default`, so the bot uses `#[bot(state = Namespace, no_default)]` and
@@ -20,17 +26,38 @@ use ircbot::{bot, Context, Result};
 /// change a step that a database already has.
 ///
 /// The table name starts with the name of the namespace, so it cannot clash
-/// with the tables of another namespace. IRC nicks are case-insensitive, so
-/// `nick` uses `COLLATE NOCASE`. This ignores the RFC 1459 rule for `[]\~` and
-/// `{}|^`, which is enough here.
-const MIGRATIONS: &[&str] = &["
+/// with the tables of another namespace. IRC nicks and channel names are
+/// case-insensitive, so both use `COLLATE NOCASE`. This ignores the RFC 1459
+/// rule for `[]\~` and `{}|^`, which is enough here.
+///
+/// Step 1 made one row for each nick. A lookup with it could tell what a nick
+/// said in another channel, so step 2 makes one row for each channel and nick.
+/// Step 2 builds a new table, copies the rows, and replaces the old table,
+/// because SQLite cannot change the primary key of a table. A database that
+/// has step 1 gets step 2 when the bot starts, and keeps its rows.
+const MIGRATIONS: &[&str] = &[
+    "
     CREATE TABLE seen_last (
         nick    TEXT PRIMARY KEY COLLATE NOCASE,
         channel TEXT NOT NULL,
         message TEXT NOT NULL,
         seen_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
-"];
+    ",
+    "
+    CREATE TABLE seen_last_by_channel (
+        channel TEXT NOT NULL COLLATE NOCASE,
+        nick    TEXT NOT NULL COLLATE NOCASE,
+        message TEXT NOT NULL,
+        seen_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (channel, nick)
+    );
+    INSERT INTO seen_last_by_channel (channel, nick, message, seen_at)
+        SELECT channel, nick, message, seen_at FROM seen_last;
+    DROP TABLE seen_last;
+    ALTER TABLE seen_last_by_channel RENAME TO seen_last;
+    ",
+];
 
 /// Get the `seen` namespace of `store`, with its schema applied.
 async fn seen_namespace(store: &Store) -> std::result::Result<Namespace, StoreError> {
@@ -41,7 +68,8 @@ async fn seen_namespace(store: &Store) -> std::result::Result<Namespace, StoreEr
 
 #[bot(state = Namespace, no_default)]
 impl SeenBot {
-    /// Record each channel message as the last line of its sender.
+    /// Record each channel message as the last line of its sender in this
+    /// channel.
     #[on(message = "*", scope = "channel")]
     async fn record(&self, ctx: Context) -> Result {
         let Some(sender) = &ctx.sender else {
@@ -54,8 +82,7 @@ impl SeenBot {
             .sql(move |conn| {
                 conn.execute(
                     "INSERT INTO seen_last (nick, channel, message) VALUES (?1, ?2, ?3)
-                     ON CONFLICT (nick) DO UPDATE SET
-                         channel = excluded.channel,
+                     ON CONFLICT (channel, nick) DO UPDATE SET
                          message = excluded.message,
                          seen_at = unixepoch()",
                     (&nick, &channel, &message),
@@ -65,33 +92,27 @@ impl SeenBot {
         Ok(())
     }
 
-    /// Tell when and where `nick` said their last line.
-    #[command("seen")]
+    /// Tell when `nick` last spoke in this channel, and what it said.
+    #[command("seen", scope = "channel")]
     async fn seen(&self, ctx: Context, nick: String) -> Result {
-        let lookup = nick.clone();
+        let lookup = (ctx.target.to_string(), nick.clone());
         let row = self
             .state
             .sql(move |conn| {
                 conn.query_row(
-                    "SELECT channel, message, datetime(seen_at, 'unixepoch')
-                     FROM seen_last WHERE nick = ?1",
-                    [&lookup],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    },
+                    "SELECT message, datetime(seen_at, 'unixepoch')
+                     FROM seen_last WHERE channel = ?1 AND nick = ?2",
+                    lookup,
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()
             })
             .await?;
         match row {
-            Some((channel, message, at)) => ctx.reply(format!(
-                "{nick} was in {channel} at {at} UTC, saying: {message}"
+            Some((message, at)) => ctx.reply(format!(
+                "{nick} was last here at {at} UTC, saying: {message}"
             )),
-            None => ctx.reply(format!("I have not seen {nick}.")),
+            None => ctx.reply(format!("I have not seen {nick} here.")),
         }
     }
 }
@@ -148,20 +169,21 @@ mod tests {
             .expect("insert row");
     }
 
-    /// The stored row for `nick`, without the time.
-    async fn stored_row(bot: &SeenBot, nick: &str) -> Option<(String, String)> {
+    /// The stored rows for `nick`, in each channel, without the time.
+    async fn stored_rows(bot: &SeenBot, nick: &str) -> Vec<(String, String)> {
         let nick = nick.to_string();
         bot.state
             .sql(move |conn| {
-                conn.query_row(
-                    "SELECT channel, message FROM seen_last WHERE nick = ?1",
-                    [&nick],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
+                let mut stmt = conn.prepare(
+                    "SELECT channel, message FROM seen_last WHERE nick = ?1 ORDER BY channel",
+                )?;
+                let rows = stmt
+                    .query_map([&nick], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<ircbot::store::rusqlite::Result<Vec<(String, String)>>>()?;
+                Ok(rows)
             })
             .await
-            .expect("query row")
+            .expect("query rows")
     }
 
     // ── record ───────────────────────────────────────────────────────────────
@@ -174,23 +196,41 @@ mod tests {
         bot.record(tc.take_ctx()).await.unwrap();
 
         assert_eq!(
-            stored_row(&bot, "alice").await,
-            Some(("#rust".to_string(), "hello all".to_string())),
+            stored_rows(&bot, "alice").await,
+            vec![("#rust".to_string(), "hello all".to_string())],
         );
     }
 
     #[tokio::test]
-    async fn record_replaces_the_previous_line_of_the_same_nick() {
+    async fn record_replaces_the_previous_line_of_the_same_nick_in_a_channel() {
         let bot = test_bot().await;
 
         let mut first = TestContext::channel("#rust", "alice", "first");
         bot.record(first.take_ctx()).await.unwrap();
-        let mut second = TestContext::channel("#tokio", "Alice", "second");
+        let mut second = TestContext::channel("#rust", "Alice", "second");
         bot.record(second.take_ctx()).await.unwrap();
 
         assert_eq!(
-            stored_row(&bot, "alice").await,
-            Some(("#tokio".to_string(), "second".to_string())),
+            stored_rows(&bot, "alice").await,
+            vec![("#rust".to_string(), "second".to_string())],
+        );
+    }
+
+    #[tokio::test]
+    async fn record_keeps_one_line_for_each_channel() {
+        let bot = test_bot().await;
+
+        let mut rust = TestContext::channel("#rust", "alice", "in rust");
+        bot.record(rust.take_ctx()).await.unwrap();
+        let mut secret = TestContext::channel("#secret", "alice", "in secret");
+        bot.record(secret.take_ctx()).await.unwrap();
+
+        assert_eq!(
+            stored_rows(&bot, "alice").await,
+            vec![
+                ("#rust".to_string(), "in rust".to_string()),
+                ("#secret".to_string(), "in secret".to_string()),
+            ],
         );
     }
 
@@ -218,7 +258,7 @@ mod tests {
         assert_eq!(
             tc.next_reply(),
             Some(
-                "PRIVMSG #rust :bob, alice was in #rust at 2026-10-05 10:00:00 UTC, saying: hello all\r\n"
+                "PRIVMSG #rust :bob, alice was last here at 2026-10-05 10:00:00 UTC, saying: hello all\r\n"
                     .to_string()
             ),
         );
@@ -235,7 +275,7 @@ mod tests {
         assert_eq!(
             tc.next_reply(),
             Some(
-                "PRIVMSG #rust :bob, ALICE was in #rust at 2026-10-05 10:00:00 UTC, saying: hello all\r\n"
+                "PRIVMSG #rust :bob, ALICE was last here at 2026-10-05 10:00:00 UTC, saying: hello all\r\n"
                     .to_string()
             ),
         );
@@ -250,7 +290,76 @@ mod tests {
 
         assert_eq!(
             tc.next_reply(),
-            Some("PRIVMSG #rust :bob, I have not seen carol.\r\n".to_string()),
+            Some("PRIVMSG #rust :bob, I have not seen carol here.\r\n".to_string()),
+        );
+    }
+
+    #[tokio::test]
+    async fn seen_does_not_tell_what_a_nick_said_in_another_channel() {
+        let bot = test_bot().await;
+        insert_seen(&bot, "alice", "#secret", "a secret", 1_791_194_400).await;
+
+        let mut tc = TestContext::channel("#rust", "bob", "!seen alice");
+        bot.seen(tc.take_ctx(), "alice".to_string()).await.unwrap();
+
+        assert_eq!(
+            tc.next_reply(),
+            Some("PRIVMSG #rust :bob, I have not seen alice here.\r\n".to_string()),
+        );
+    }
+
+    #[tokio::test]
+    async fn seen_does_not_answer_in_a_private_message() {
+        let bot = test_bot().await;
+        insert_seen(&bot, "alice", "#secret", "a secret", 1_791_194_400).await;
+
+        let replies = ircbot::testing::TestBot::new(bot)
+            .deliver(":bob!b@h PRIVMSG seenbot :!seen alice")
+            .await
+            .unwrap();
+
+        assert_eq!(replies, Vec::<String>::new());
+    }
+
+    /// Given a database from the first version of this example, with one row
+    /// for each nick, when the bot opens it, then the schema changes to one
+    /// row for each channel and nick, and the old rows stay.
+    #[tokio::test]
+    async fn a_database_of_the_first_version_gets_the_new_schema() {
+        let store = Store::memory().unwrap();
+        let old = store.namespace("seen").unwrap();
+        old.migrate(&["
+            CREATE TABLE seen_last (
+                nick    TEXT PRIMARY KEY COLLATE NOCASE,
+                channel TEXT NOT NULL,
+                message TEXT NOT NULL,
+                seen_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+        "])
+            .await
+            .unwrap();
+        old.sql(|conn| {
+            conn.execute(
+                "INSERT INTO seen_last (nick, channel, message, seen_at)
+                 VALUES ('alice', '#rust', 'old line', 1791194400)",
+                [],
+            )
+        })
+        .await
+        .unwrap();
+
+        let bot = SeenBot::from_state(seen_namespace(&store).await.expect("apply schema"));
+        let mut tc = TestContext::channel("#tokio", "alice", "new line");
+        bot.record(tc.take_ctx())
+            .await
+            .expect("record with the new schema");
+
+        assert_eq!(
+            stored_rows(&bot, "alice").await,
+            vec![
+                ("#rust".to_string(), "old line".to_string()),
+                ("#tokio".to_string(), "new line".to_string()),
+            ],
         );
     }
 }

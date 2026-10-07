@@ -99,6 +99,10 @@ secrets.
   `# Errors` section; functions that can panic carry a `# Panics` section. This is
   enforced by convention throughout (`connect`, `run_bot`, `take_ctx`, the `#[bot]`
   macro, etc.).
+- **Version numbers in the README snippets are not updated by release-plz.**
+  The `ircbot = "0.x"` lines in `README.md` (and its copy) and in
+  `ircbot-plugins/README.md` name the release that has the documented API. A
+  change that needs a new major release must also change these lines.
 - **Some files are duplicated and must stay identical.** CI diffs them:
   - `README.md` ↔ `ircbot/README.md`
   - `ircbot-macros/docs/command.md` ↔ `ircbot/docs/command.md`
