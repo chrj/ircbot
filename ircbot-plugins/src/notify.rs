@@ -44,7 +44,8 @@ pub const LIFETIME_DAYS: i64 = 30;
 ///
 /// IRC nicks are case-insensitive, so `recipient` and `sender` use
 /// `COLLATE NOCASE`. This ignores the RFC 1459 rule for `[]\~` and `{}|^`,
-/// which is enough here.
+/// which is enough here. The limits count the rows of one sender and of one
+/// recipient, so each of these columns has an index.
 const MIGRATIONS: &[&str] = &["
     CREATE TABLE notify_pending (
         id         INTEGER PRIMARY KEY,
@@ -54,6 +55,7 @@ const MIGRATIONS: &[&str] = &["
         created_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE INDEX notify_pending_recipient ON notify_pending (recipient);
+    CREATE INDEX notify_pending_sender ON notify_pending (sender);
 "];
 
 /// What happened to a message that a sender wants to leave.
@@ -317,6 +319,90 @@ mod tests {
             "PRIVMSG #rust :bob, You cannot leave a message for yourself.\r\n"
         );
         assert_eq!(waiting(&notify, "bob").await, 0);
+    }
+
+    #[tokio::test]
+    async fn notify_refuses_a_message_for_the_bot() {
+        let notify = plugin().await;
+
+        // `TestContext` uses the bot nick `testbot`.
+        let reply = leave(&notify, "bob", "TestBot", "hello bot").await;
+
+        assert_eq!(
+            reply,
+            "PRIVMSG #rust :bob, I cannot leave a message for myself.\r\n"
+        );
+        assert_eq!(waiting(&notify, "testbot").await, 0);
+    }
+
+    #[tokio::test]
+    async fn notify_through_the_dispatch_keeps_all_words_of_the_message() {
+        let bot = TestBot::new(plugin().await);
+
+        let stored = bot
+            .deliver(":bob!b@h PRIVMSG #rust :!notify alice the build is green again")
+            .await
+            .unwrap();
+        let given = bot.deliver(":alice!a@h PRIVMSG #rust :hi").await.unwrap();
+
+        assert_eq!(
+            stored,
+            vec!["PRIVMSG #rust :bob, I will give alice your message.\r\n".to_string()]
+        );
+        assert_eq!(given.len(), 1);
+        assert!(
+            given[0].starts_with("PRIVMSG alice :bob left a message at ")
+                && given[0].ends_with(" UTC: the build is green again\r\n"),
+            "got {given:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_works_in_a_private_message_to_the_bot() {
+        let bot = TestBot::new(plugin().await);
+
+        let stored = bot
+            .deliver(":bob!b@h PRIVMSG testbot :!notify alice a secret plan")
+            .await
+            .unwrap();
+        let given = bot.deliver(":alice!a@h JOIN #rust").await.unwrap();
+
+        assert_eq!(
+            stored,
+            vec!["PRIVMSG bob :I will give alice your message.\r\n".to_string()]
+        );
+        assert!(
+            given.len() == 1 && given[0].ends_with(" UTC: a secret plan\r\n"),
+            "got {given:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_schema_has_an_index_for_each_limit() {
+        let notify = plugin().await;
+
+        let indexes: Vec<String> = notify
+            .state
+            .sql(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT name FROM sqlite_master
+                     WHERE type = 'index' AND tbl_name = 'notify_pending' ORDER BY name",
+                )?;
+                let names = stmt
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite_result::Result<Vec<String>>>()?;
+                Ok(names)
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            indexes,
+            vec![
+                "notify_pending_recipient".to_string(),
+                "notify_pending_sender".to_string()
+            ]
+        );
     }
 
     #[tokio::test]
