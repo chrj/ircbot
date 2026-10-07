@@ -115,6 +115,7 @@ pub(crate) async fn run_session<T: Send + Sync + 'static>(
         reader,
         write_half,
         pending_lines,
+        capabilities: _,
     } = state;
     let Settings {
         keepalive_interval,

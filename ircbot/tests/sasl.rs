@@ -523,3 +523,47 @@ async fn an_unprompted_success_numeric_does_not_end_the_exchange() {
         "the exchange ended before authenticating: {sent:?}"
     );
 }
+
+// ── acknowledged capabilities ───────────────────────────────────────────────
+
+/// Given a server that grants a requested capability, when the bot connects,
+/// then `State::capabilities` names it.
+#[tokio::test]
+async fn capabilities_lists_what_the_server_acknowledged() {
+    let (addr, _rx) = scripted_server(vec![
+        ("CAP LS", vec![":srv CAP * LS :account-tag server-time"]),
+        ("CAP REQ", vec![":srv CAP * ACK :account-tag"]),
+    ])
+    .await;
+
+    let state = State::connect(
+        "bot",
+        Server::plain(&addr).with_capabilities(["account-tag"]),
+        vec![],
+    )
+    .await
+    .expect("connect failed");
+
+    assert_eq!(state.capabilities(), ["account-tag".to_string()]);
+}
+
+/// Given a server that refuses a requested capability, when the bot
+/// connects, then `State::capabilities` does not name it.
+#[tokio::test]
+async fn capabilities_leaves_out_what_the_server_refused() {
+    let (addr, _rx) = scripted_server(vec![
+        ("CAP LS", vec![":srv CAP * LS :account-tag"]),
+        ("CAP REQ", vec![":srv CAP * NAK :account-tag"]),
+    ])
+    .await;
+
+    let state = State::connect(
+        "bot",
+        Server::plain(&addr).with_capabilities(["account-tag"]),
+        vec![],
+    )
+    .await
+    .expect("connect failed");
+
+    assert_eq!(state.capabilities(), Vec::<String>::new());
+}

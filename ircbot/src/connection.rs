@@ -220,6 +220,14 @@ async fn send_sasl_response(
     Ok(())
 }
 
+/// The result of the capability exchange.
+struct Negotiated {
+    /// Lines that arrived during the exchange but were not part of it.
+    pending: Vec<String>,
+    /// The capabilities that the server acknowledged.
+    acked: Vec<String>,
+}
+
 /// Split the payload of a `CAP … LS`/`ACK`/`NAK` line into "is this batch
 /// continued?" and the capability list itself.
 ///
@@ -263,11 +271,14 @@ async fn negotiate(
     reader: &mut tokio::io::BufReader<transport::ReadHalf>,
     writer: &mut BufWriter<transport::WriteHalf>,
     auth: &Auth,
-) -> Result<Vec<String>, BoxError> {
+) -> Result<Negotiated, BoxError> {
     let mut pending: Vec<String> = Vec::new();
+    // The capabilities that the server acknowledged. A server can split an
+    // `ACK` over more than one line, so they accumulate.
+    let mut acked: Vec<String> = Vec::new();
     let wanted = auth.wanted_caps();
     if wanted.is_empty() {
-        return Ok(pending);
+        return Ok(Negotiated { pending, acked });
     }
 
     // Capabilities advertised so far, each still in `name` or `name=value`
@@ -361,7 +372,7 @@ async fn negotiate(
 
                 if requested.is_empty() {
                     send(writer, "CAP END").await?;
-                    return Ok(pending);
+                    return Ok(Negotiated { pending, acked });
                 }
                 send(writer, &format!("CAP REQ :{}", requested.join(" "))).await?;
             }
@@ -369,6 +380,7 @@ async fn negotiate(
             Command::CAP(_, CapSubCommand::ACK, arg, trailing) => {
                 let (_, caps) = cap_payload(arg.as_ref(), trailing.as_ref());
                 tracing::debug!(capabilities = caps, "capabilities acknowledged");
+                acked.extend(caps.split_whitespace().map(str::to_string));
 
                 let acked_sasl = caps.split_whitespace().any(|c| c == "sasl");
                 match (&auth.sasl, acked_sasl) {
@@ -388,7 +400,7 @@ async fn negotiate(
                     }
                     (None, _) => {
                         send(writer, "CAP END").await?;
-                        return Ok(pending);
+                        return Ok(Negotiated { pending, acked });
                     }
                 }
             }
@@ -405,7 +417,7 @@ async fn negotiate(
                 }
                 tracing::warn!(capabilities = caps, "capabilities refused by the server");
                 send(writer, "CAP END").await?;
-                return Ok(pending);
+                return Ok(Negotiated { pending, acked });
             }
 
             // The server is ready for the mechanism's response. `+` means it
@@ -428,7 +440,7 @@ async fn negotiate(
 
             Command::Response(Response::RPL_SASLSUCCESS, _) if sasl_started => {
                 send(writer, "CAP END").await?;
-                return Ok(pending);
+                return Ok(Negotiated { pending, acked });
             }
 
             Command::Response(
@@ -461,7 +473,7 @@ async fn negotiate(
                     );
                 }
                 tracing::warn!("server does not support CAP — continuing without capabilities");
-                return Ok(pending);
+                return Ok(Negotiated { pending, acked });
             }
 
             // Everything else belongs to the read loop, not to this exchange.
@@ -505,6 +517,9 @@ pub struct State {
     /// the server sent early — `ERR_NICKNAMEINUSE`, typically — is dispatched
     /// in arrival order rather than lost.
     pub(crate) pending_lines: Vec<String>,
+    /// The IRCv3 capabilities that the server acknowledged during the
+    /// registration of this connection.
+    pub(crate) capabilities: Vec<String>,
 }
 
 impl State {
@@ -583,7 +598,10 @@ impl State {
         send(&mut writer, &format!("NICK {nick}")).await?;
         send(&mut writer, &format!("USER {nick} 0 * :{nick}")).await?;
 
-        let pending_lines = negotiate(&mut reader, &mut writer, &server.auth).await?;
+        let Negotiated {
+            pending: pending_lines,
+            acked: capabilities,
+        } = negotiate(&mut reader, &mut writer, &server.auth).await?;
 
         // Recover the inner write half from the BufWriter.
         let write_half = writer.into_inner();
@@ -596,6 +614,7 @@ impl State {
             reader,
             write_half,
             pending_lines,
+            capabilities,
         })
     }
 
@@ -745,6 +764,17 @@ impl State {
             .ignore
             .extend(masks.into_iter().map(Into::into));
         self
+    }
+
+    /// The IRCv3 capabilities that the server acknowledged when this
+    /// connection registered, for example `account-tag`.
+    ///
+    /// The bot asks for the capabilities of its [`Server`] and of its roles
+    /// (an account role needs `account-tag`). A server that does not offer a
+    /// capability leaves it out.
+    #[must_use]
+    pub fn capabilities(&self) -> &[String] {
+        &self.capabilities
     }
 
     /// Returns the configured keepalive interval.
