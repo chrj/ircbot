@@ -1,0 +1,31 @@
+[package]
+name = "ircbot-plugins"
+version = "0.1.0"
+edition = "2021"
+description = "Standard plugins for the ircbot IRC bot framework"
+license = "MIT"
+repository = "https://github.com/chrj/ircbot"
+readme = "README.md"
+keywords = ["irc", "bot", "plugin", "ircbot"]
+categories = ["network-programming"]
+
+# One feature for each plugin. All are on by default; a bot that wants fewer
+# uses `default-features = false` and names the plugins it needs.
+[features]
+default = ["seen"]
+seen = []
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+# The plugins keep their data in the store of `ircbot`.
+ircbot = { version = "0.6.0", path = "../ircbot", features = ["store"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[example]]
+name = "seen_bot"
+test = true
