@@ -27,7 +27,11 @@ jobs:
       # Test without features, and with `tls` and `store`. Each build
       # compiles code that the other leaves out. `tls` also builds the
       # `tls_bot` example.
-      - run: cargo test --workspace
+      #
+      # `ircbot-plugins` turns on the `store` feature of `ircbot`, and Cargo
+      # joins the features of all packages in one build. Thus the run without
+      # features leaves it out, and the run with features covers it.
+      - run: cargo test --workspace --exclude ircbot-plugins
       - run: cargo test --workspace --features tls,store
 
   fmt:
@@ -53,8 +57,10 @@ jobs:
         with:
           components: clippy
       # Lint without and with the features, for the same reason as the tests.
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --exclude ircbot-plugins --all-targets -- -D warnings
       - run: cargo clippy --workspace --all-targets --features tls,store -- -D warnings
+      # The plugins crate also builds with no plugin feature on.
+      - run: cargo clippy -p ircbot-plugins --no-default-features --all-targets -- -D warnings
 
   integration:
     name: Integration tests
@@ -93,10 +99,13 @@ jobs:
       # Without the features, a doc link to a feature item breaks. With the
       # features, their items get docs, which docs.rs also builds. Thus build
       # both.
-      - run: cargo doc --no-deps --workspace
+      - run: cargo doc --no-deps --workspace --exclude ircbot-plugins
         env:
           RUSTDOCFLAGS: "-D warnings"
       - run: cargo doc --no-deps --workspace --features tls,store
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+      - run: cargo doc --no-deps -p ircbot-plugins --no-default-features
         env:
           RUSTDOCFLAGS: "-D warnings"
 

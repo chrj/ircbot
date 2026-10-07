@@ -60,8 +60,22 @@ jobs:
           # the rustdoc JSON format emitted by the current nightly. Treating
           # those as breaking changes blocks every PR with a misleading error, so
           # only the explicit summary line counts as a finding.
+          # A package that is new in this PR has no baseline, and
+          # cargo-semver-checks stops with an error for it. Leave out each
+          # package whose manifest is not on the base branch. It is checked
+          # from the next PR on, when the base branch has it.
+          excludes=()
+          while read -r name manifest; do
+            path=$(realpath --relative-to="$PWD" "$manifest")
+            if ! git cat-file -e "origin/$BASE_REF:$path" 2>/dev/null; then
+              echo "::notice::$name is new in this PR, so it has no baseline API to compare with."
+              excludes+=(--exclude "$name")
+            fi
+          done < <(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | "\(.name) \(.manifest_path)"')
+
           set +e
-          output=$(cargo semver-checks --workspace --baseline-rev "origin/$BASE_REF" 2>&1)
+          output=$(cargo semver-checks --workspace "${excludes[@]}" --baseline-rev "origin/$BASE_REF" 2>&1)
           status=$?
           set -e
           printf '%s\n' "$output"
