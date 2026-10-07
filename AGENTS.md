@@ -80,6 +80,14 @@ changelogs, or push tags by hand.**
   (no tag/release). `ircbot-plugins` gets its own `ircbot-plugins-v{version}` tag
   and release.
 - Lockstep is enforced by a shared `version_group` in `release-plz.toml`.
+- **Only the merge of the release PR publishes.** `release_always = false` in
+  `release-plz.toml` makes a push to `main` open or update the release PR only.
+  Without it, a crate whose version is not on crates.io yet is published at
+  once, before the release of the `ircbot` that it needs, and the publish fails.
+- After you merge the release PR, **wait for its `Tag` run to finish** before you
+  merge another PR. release-plz publishes only when the latest commit on `main`
+  is the merge of a release PR, so a second squash merge in between skips the
+  publish.
 
 The `v*` tags are protected by the `Versions` ruleset, so the workflow
 authenticates as a GitHub App (the ruleset's bypass actor) to create them. This

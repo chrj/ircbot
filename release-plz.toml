@@ -9,6 +9,15 @@
 # ircbot-plugins) and rewrites the dependency requirements between them
 # automatically.
 
+[workspace]
+# Publish only when a release PR is merged. Without this, each push to `main`
+# publishes every crate whose version is not on crates.io yet. A new crate
+# (`ircbot-plugins` 0.1.0) would then go out before the release of `ircbot`
+# that it needs, and the publish would fail. With it, a push to `main` only
+# opens or updates the release PR, and its merge publishes all crates in
+# dependency order.
+release_always = false
+
 [[package]]
 name = "ircbot"
 # Keep the existing tag style (current published tags are vX.Y.Z).
