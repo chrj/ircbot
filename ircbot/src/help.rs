@@ -136,7 +136,7 @@ impl HelpIndex {
     #[must_use]
     pub(crate) fn reply(
         &self,
-        roles: &[(String, Vec<String>)],
+        roles: &[(String, crate::Role)],
         msg: &Message,
         target: &Target,
         sender: Option<&User>,
@@ -152,7 +152,7 @@ impl HelpIndex {
                     Trigger::Command { target, .. } => target.as_deref(),
                     _ => None,
                 };
-                authorized(roles, &guard.trigger, sender)
+                authorized(roles, &guard.trigger, sender, crate::role::account_tag(msg))
                     && scope_matches(guard.scope, target)
                     && target_matches(target_param(msg), filter)
             })
@@ -206,7 +206,7 @@ pub(crate) fn help_trigger() -> Trigger {
 /// The handler entry of the built-in help command, for a bot of type `T`.
 pub(crate) fn help_entry<T: Send + Sync + 'static>(
     mut index: HelpIndex,
-    roles: Vec<(String, Vec<String>)>,
+    roles: Vec<(String, crate::Role)>,
 ) -> HandlerEntry<T> {
     index.add_help_command();
     let index = Arc::new(index);
@@ -300,8 +300,8 @@ mod tests {
         ])
     }
 
-    fn roles() -> Vec<(String, Vec<String>)> {
-        vec![("op".to_string(), vec!["*!*@ops.host".to_string()])]
+    fn roles() -> Vec<(String, crate::Role)> {
+        vec![("op".to_string(), crate::Role::hostmask(["*!*@ops.host"]))]
     }
 
     fn user(host: &str) -> User {

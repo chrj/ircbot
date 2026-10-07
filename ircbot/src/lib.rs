@@ -16,6 +16,7 @@ pub mod irc;
 pub mod logging;
 mod name;
 pub mod plugin;
+pub mod role;
 pub mod server;
 mod setup;
 #[cfg(feature = "store")]
@@ -43,6 +44,7 @@ pub use ircbot_macros::on;
 pub use ircbot_macros::plugin;
 pub use logging::PROTOCOL_LOG_TARGET;
 pub use plugin::{Plugin, DEFAULT_PLUGIN_QUEUE_CAPACITY};
+pub use role::Role;
 pub use server::Server;
 #[cfg(feature = "tls")]
 pub use server::TlsServer;

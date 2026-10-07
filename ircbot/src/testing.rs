@@ -441,13 +441,8 @@ impl<T: Bot + Send + Sync + 'static> TestBot<T> {
     /// Add an access-control role, as
     /// [`State::with_role`](crate::State::with_role) does.
     #[must_use]
-    pub fn with_role(
-        mut self,
-        name: impl Into<String>,
-        masks: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        let patterns: Vec<String> = masks.into_iter().map(Into::into).collect();
-        self.settings.roles.push((name.into(), patterns));
+    pub fn with_role(mut self, name: impl Into<String>, role: impl Into<crate::Role>) -> Self {
+        self.settings.roles.push((name.into(), role.into()));
         self
     }
 

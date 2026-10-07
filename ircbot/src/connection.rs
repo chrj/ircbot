@@ -102,7 +102,7 @@ pub(crate) struct Settings {
     /// Access-control roles, each mapping a role name to a list of `nick!user@host`
     /// hostmask glob patterns. A command with `role = Some(name)` only fires for
     /// senders matching one of that role's patterns. Set via [`State::with_role`].
-    pub(crate) roles: Vec<(String, Vec<String>)>,
+    pub(crate) roles: Vec<(String, crate::Role)>,
     /// Hostmask glob patterns of senders to ignore. The dispatch drops a
     /// message from a matching sender before it tests any trigger, and answers
     /// no CTCP. Set via [`State::with_ignore`].
@@ -715,23 +715,23 @@ impl State {
 
     /// Define an access-control role for command authorization.
     ///
-    /// `name` is the role referenced by `#[command(..., role = "name")]`; `masks`
-    /// is a set of `nick!user@host` hostmask glob patterns (`*` matches any run
-    /// of characters). A command guarded by this role only fires for senders
-    /// whose hostmask matches one of the patterns; everyone else is silently
-    /// ignored. A command guarded by a role with no configured patterns (or an
-    /// unknown role name) therefore never fires — authorization is closed by
-    /// default.
+    /// `name` is the role referenced by `#[command(..., role = "name")]`; `role`
+    /// is a [`Role`](crate::Role) that matches the hostmask of the sender, its
+    /// services account, or either. A list of `nick!user@host` glob patterns is
+    /// a hostmask role. A command guarded by this role only fires for senders
+    /// that the role matches; everyone else is silently ignored. A command
+    /// guarded by an unknown role name never fires — authorization is closed
+    /// by default.
     ///
-    /// May be called multiple times; patterns accumulate, and the same role name
-    /// may be extended across several calls. Call this before starting the bot.
-    pub fn with_role(
-        mut self,
-        name: impl Into<String>,
-        masks: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        let patterns: Vec<String> = masks.into_iter().map(Into::into).collect();
-        self.settings.roles.push((name.into(), patterns));
+    /// May be called multiple times. Two calls with the same name make a role
+    /// that matches when either matches. Call this before starting the bot.
+    ///
+    /// An account role matches the IRCv3 `account` tag of a message. On this
+    /// low-level API, ask for the capability yourself with
+    /// [`Server::with_capabilities`]`(["account-tag"])`; a `#[bot]` asks for it
+    /// on its own.
+    pub fn with_role(mut self, name: impl Into<String>, role: impl Into<crate::Role>) -> Self {
+        self.settings.roles.push((name.into(), role.into()));
         self
     }
 
@@ -982,7 +982,10 @@ mod tests {
         );
         assert_eq!(
             reconnected.settings.roles,
-            vec![("admin".to_string(), vec!["*!*@trusted.host".to_string()])]
+            vec![(
+                "admin".to_string(),
+                crate::Role::hostmask(["*!*@trusted.host"])
+            )]
         );
         assert_eq!(
             reconnected.settings.ignore,

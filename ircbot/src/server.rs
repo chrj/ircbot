@@ -200,6 +200,13 @@ impl Server {
             .extend(capabilities.into_iter().map(Into::into));
         self
     }
+
+    /// Ask for `capability` too, unless the server already asks for it.
+    pub(crate) fn request_capability(&mut self, capability: &str) {
+        if !self.auth.extra_caps.iter().any(|cap| cap == capability) {
+            self.auth.extra_caps.push(capability.to_string());
+        }
+    }
 }
 
 impl fmt::Debug for Server {

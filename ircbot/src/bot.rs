@@ -972,7 +972,7 @@ async fn dispatch<T: Send + Sync + 'static>(
     msg: &Message,
     sender: Option<User>,
     bot_nick: &Nick,
-    roles: &[(String, Vec<String>)],
+    roles: &[(String, crate::Role)],
     tx: mpsc::UnboundedSender<String>,
 ) -> Vec<BoxError> {
     // Snapshot the current handler list under a brief read-lock, then release
@@ -996,6 +996,9 @@ async fn dispatch<T: Send + Sync + 'static>(
     let raw_text = trailing_param(msg).unwrap_or("");
     let plain_text = crate::format::strip_cow(raw_text);
 
+    // The services account of the sender, for account roles.
+    let account = crate::role::account_tag(msg);
+
     let mut errors = Vec::new();
     for entry in current.iter() {
         if from_self && !entry.include_self {
@@ -1012,7 +1015,7 @@ async fn dispatch<T: Send + Sync + 'static>(
         if let Some(captures) = check_trigger_text(&entry.trigger, msg, bot_nick.as_str(), text) {
             // Enforce per-command role authorization; unauthorized senders are
             // silently ignored, exactly as if the trigger had not matched.
-            if !authorized(roles, &entry.trigger, sender.as_ref()) {
+            if !authorized(roles, &entry.trigger, sender.as_ref(), account) {
                 continue;
             }
             let ctx = Context {
@@ -1037,15 +1040,16 @@ async fn dispatch<T: Send + Sync + 'static>(
 ///
 /// Only [`Trigger::Command`] with `role = Some(_)` is restricted; every other
 /// trigger (and any command without a role) is always allowed. A restricted
-/// command requires a known `sender` whose `nick!user@host` matches one of the
-/// hostmask glob patterns configured for that role (see
-/// [`State::with_role`](crate::State::with_role)). A role with no configured
-/// patterns — including an unknown role name — authorizes no one.
+/// command needs a [`Role`](crate::Role) with that name that matches the
+/// `sender`, or `account`: the services account from the IRCv3 `account` tag
+/// of the message (see [`State::with_role`](crate::State::with_role)). An
+/// unknown role name authorizes no one.
 #[must_use]
 pub fn authorized(
-    roles: &[(String, Vec<String>)],
+    roles: &[(String, crate::Role)],
     trigger: &Trigger,
     sender: Option<&User>,
+    account: Option<&str>,
 ) -> bool {
     let Trigger::Command {
         role: Some(required),
@@ -1055,16 +1059,10 @@ pub fn authorized(
         return true;
     };
 
-    let Some(user) = sender else {
-        return false;
-    };
-    let mask = user.hostmask();
-
     roles
         .iter()
         .filter(|(name, _)| name == required)
-        .flat_map(|(_, patterns)| patterns)
-        .any(|pattern| glob_match(pattern, &mask).is_some())
+        .any(|(_, role)| role.matches(sender, account))
 }
 
 #[cfg(test)]
@@ -1184,8 +1182,11 @@ mod tests {
         }
     }
 
-    fn admin_roles() -> Vec<(String, Vec<String>)> {
-        vec![("admin".to_string(), vec!["*!*@trusted.host".to_string()])]
+    fn admin_roles() -> Vec<(String, crate::Role)> {
+        vec![(
+            "admin".to_string(),
+            crate::Role::hostmask(["*!*@trusted.host"]),
+        )]
     }
 
     #[test]
@@ -1195,8 +1196,8 @@ mod tests {
             target: None,
             role: None,
         };
-        assert!(authorized(&[], &trigger, Some(&user("a", "u", "h"))));
-        assert!(authorized(&[], &trigger, None));
+        assert!(authorized(&[], &trigger, Some(&user("a", "u", "h")), None));
+        assert!(authorized(&[], &trigger, None, None));
     }
 
     #[test]
@@ -1205,7 +1206,7 @@ mod tests {
             pattern: "x".to_string(),
             target: None,
         };
-        assert!(authorized(&[], &trigger, None));
+        assert!(authorized(&[], &trigger, None, None));
     }
 
     #[test]
@@ -1213,7 +1214,8 @@ mod tests {
         assert!(authorized(
             &admin_roles(),
             &admin_command(),
-            Some(&user("alice", "a", "trusted.host"))
+            Some(&user("alice", "a", "trusted.host")),
+            None
         ));
     }
 
@@ -1222,23 +1224,46 @@ mod tests {
         assert!(!authorized(
             &admin_roles(),
             &admin_command(),
-            Some(&user("mallory", "m", "evil.host"))
+            Some(&user("mallory", "m", "evil.host")),
+            None
         ));
     }
 
     #[test]
     fn authorized_rejects_when_sender_is_unknown() {
-        assert!(!authorized(&admin_roles(), &admin_command(), None));
+        assert!(!authorized(&admin_roles(), &admin_command(), None, None));
+    }
+
+    #[test]
+    fn authorized_accepts_the_account_of_an_account_role() {
+        let roles = vec![("admin".to_string(), crate::Role::account(["alice"]))];
+        // The hostmask does not matter: the account decides.
+        assert!(authorized(
+            &roles,
+            &admin_command(),
+            Some(&user("anyone", "x", "any.host")),
+            Some("alice")
+        ));
+        assert!(!authorized(
+            &roles,
+            &admin_command(),
+            Some(&user("alice", "a", "any.host")),
+            None
+        ));
     }
 
     #[test]
     fn authorized_rejects_unknown_role_name() {
         // The command requires "admin", but only "ops" is configured.
-        let roles = vec![("ops".to_string(), vec!["*!*@trusted.host".to_string()])];
+        let roles = vec![(
+            "ops".to_string(),
+            crate::Role::hostmask(["*!*@trusted.host"]),
+        )];
         assert!(!authorized(
             &roles,
             &admin_command(),
-            Some(&user("alice", "a", "trusted.host"))
+            Some(&user("alice", "a", "trusted.host")),
+            None
         ));
     }
 
