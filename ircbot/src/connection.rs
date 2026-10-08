@@ -379,17 +379,23 @@ async fn negotiate(
             }
 
             Command::CAP(_, CapSubCommand::ACK, arg, trailing) => {
-                let (_, caps) = cap_payload(arg.as_ref(), trailing.as_ref());
+                let (more, caps) = cap_payload(arg.as_ref(), trailing.as_ref());
                 tracing::debug!(capabilities = caps, "capabilities acknowledged");
                 acked.extend(caps.split_whitespace().map(str::to_string));
+                // A server can split an `ACK` over more than one line. Act
+                // only on the last line, when all capabilities are known.
+                if more {
+                    continue;
+                }
 
-                let acked_sasl = caps.split_whitespace().any(|c| c == "sasl");
+                let acked_sasl = acked.iter().any(|c| c == "sasl");
                 match (&auth.sasl, acked_sasl) {
                     (Some(sasl), true) => {
                         send(writer, &format!("AUTHENTICATE {}", sasl.mechanism())).await?;
                         sasl_started = true;
                     }
                     (Some(sasl), false) => {
+                        let caps = acked.join(" ");
                         return Err(format!(
                             "the server acknowledged {caps} but not sasl, so the bot cannot \
                              authenticate with SASL {}. Services are usually down when this \
@@ -770,9 +776,9 @@ impl State {
     /// The IRCv3 capabilities that the server acknowledged when this
     /// connection registered, for example `account-tag`.
     ///
-    /// The bot asks for the capabilities of its [`Server`] and of its roles
-    /// (an account role needs `account-tag`). A server that does not offer a
-    /// capability leaves it out.
+    /// [`State::connect`] asks for the capabilities of its [`Server`]. A
+    /// `#[bot]` also asks for `account-tag` when one of its roles needs it. A
+    /// server that does not offer a capability leaves it out.
     #[must_use]
     pub fn capabilities(&self) -> &[String] {
         &self.capabilities

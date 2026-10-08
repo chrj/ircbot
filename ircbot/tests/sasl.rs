@@ -567,3 +567,69 @@ async fn capabilities_leaves_out_what_the_server_refused() {
 
     assert_eq!(state.capabilities(), Vec::<String>::new());
 }
+
+/// Given a server that splits its `CAP ACK` over two lines, when the bot
+/// connects, then `State::capabilities` names the capabilities of both lines.
+#[tokio::test]
+async fn capabilities_has_each_line_of_a_split_ack() {
+    let (addr, _rx) = scripted_server(vec![
+        ("CAP LS", vec![":srv CAP * LS :server-time account-tag"]),
+        (
+            "CAP REQ",
+            vec![
+                ":srv CAP * ACK * :server-time",
+                ":srv CAP * ACK :account-tag",
+            ],
+        ),
+    ])
+    .await;
+
+    let state = State::connect(
+        "bot",
+        Server::plain(&addr).with_capabilities(["server-time", "account-tag"]),
+        vec![],
+    )
+    .await
+    .expect("connect failed");
+
+    assert_eq!(
+        state.capabilities(),
+        ["server-time".to_string(), "account-tag".to_string()]
+    );
+}
+
+/// Given a server that acknowledges `sasl` in the second line of a split
+/// `CAP ACK`, when the bot connects with SASL, then it authenticates.
+#[tokio::test]
+async fn sasl_in_the_second_line_of_a_split_ack_authenticates() {
+    let (addr, rx) = scripted_server(vec![
+        ("CAP LS", vec![":srv CAP * LS :server-time sasl=PLAIN"]),
+        (
+            "CAP REQ",
+            vec![":srv CAP * ACK * :server-time", ":srv CAP * ACK :sasl"],
+        ),
+        ("AUTHENTICATE PLAIN", vec!["AUTHENTICATE +"]),
+        (
+            "AUTHENTICATE AGJvdABodW50ZXIy",
+            vec![":srv 903 bot :SASL authentication successful"],
+        ),
+    ])
+    .await;
+
+    let _state = State::connect(
+        "bot",
+        Server::plain(&addr)
+            .with_sasl_plain("bot", "hunter2")
+            .with_capabilities(["server-time"]),
+        vec![],
+    )
+    .await
+    .expect("connect failed");
+
+    let sent = rx.await.expect("server reported nothing");
+    assert!(
+        sent.contains(&"AUTHENTICATE PLAIN".to_string())
+            && sent.last().map(String::as_str) == Some("CAP END"),
+        "got {sent:?}"
+    );
+}
