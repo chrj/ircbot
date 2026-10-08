@@ -16,6 +16,7 @@ pub mod irc;
 pub mod logging;
 mod name;
 pub mod plugin;
+pub mod role;
 pub mod server;
 mod setup;
 #[cfg(feature = "store")]
@@ -43,6 +44,7 @@ pub use ircbot_macros::on;
 pub use ircbot_macros::plugin;
 pub use logging::PROTOCOL_LOG_TARGET;
 pub use plugin::{Plugin, DEFAULT_PLUGIN_QUEUE_CAPACITY};
+pub use role::Role;
 pub use server::Server;
 #[cfg(feature = "tls")]
 pub use server::TlsServer;
@@ -191,6 +193,22 @@ pub mod internal {
             }
 
             current_state = reconnect(&blueprint, &server, &mut backoff).await;
+            // The server can give fewer capabilities after a reconnect. An
+            // account role then cannot match an account, which is safe but
+            // would be silent, so say it. Refusing the connection would also
+            // stop each command without a role.
+            if let Some(role) = crate::role::role_without_account_tag(
+                &current_state.settings.roles,
+                current_state.capabilities(),
+            ) {
+                tracing::warn!(
+                    %server,
+                    role,
+                    capability = crate::role::ACCOUNT_TAG,
+                    "the server did not give the capability after the reconnect, so roles \
+                     cannot match a services account until a reconnect gets it back"
+                );
+            }
         }
     }
 

@@ -23,21 +23,32 @@ same line is parsed into the method's parameters (see
 
 # Access control
 
-When `role = "name"` is set, the command only fires for senders whose
-`nick!user@host` matches one of the hostmask patterns configured for that
-role via `with_role` on the bot builder:
+When `role = "name"` is set, the command only fires for senders that the
+role matches. Define the role with `with_role` on the bot builder. You
+decide how it matches: the hostmask of the sender, its services account, or
+either:
 
 ```rust,ignore
+use ircbot::Role;
+
 MyBot::new("bot", "irc.example.net:6667", ["ops"])
-    .with_role("admin", ["*!*@trusted.host", "alice!*@*"])
+    // A list of hostmask patterns is a hostmask role.
+    .with_role("op", ["*!*@trusted.host", "alice!*@*"])
+    // The services account; needs the IRCv3 capability `account-tag`.
+    .with_role("admin", Role::account(["alice"]))
+    .with_role("mod", Role::any([Role::account(["carol"]), Role::hostmask(["*!*@mod.host"])]))
     .main_loop()
     .await
 ```
 
-Patterns use `*` (any run of characters) and `?` (any single character).
+Hostmask patterns use `*` (any run of characters) and `?` (any single
+character). A hostmask role works on each server. An account role is safer,
+but needs a server that offers `account-tag`: the bot asks for it, and
+`main_loop` refuses to start when the server does not give it.
+
 Unauthorised senders are **silently ignored** — the handler does not run and
-no reply is sent.  A role with no configured patterns (including an unknown
-role name) authorises no one, so authorisation is closed by default.
+no reply is sent. `main_loop` refuses to start when a command needs a role
+that no `with_role` call defines.
 
 # Typed arguments
 

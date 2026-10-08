@@ -491,21 +491,26 @@ pub fn bot(attr: TokenStream, item: TokenStream) -> TokenStream {
                 self
             }
 
-            /// Define an access-control role named `name`, authorising any
-            /// sender whose `nick!user@host` matches one of the given hostmask
-            /// glob patterns (`*` wildcard). Commands annotated with
-            /// `#[command(..., role = "name")]` only fire for matching
-            /// senders; everyone else is silently ignored.
+            /// Define an access-control role named `name`. Commands annotated
+            /// with `#[command(..., role = "name")]` only fire for senders that
+            /// `role` matches; everyone else is silently ignored.
+            ///
+            /// `role` is a [`Role`](ircbot::Role): the hostmask of the sender,
+            /// its services account, or either. A list of hostmask glob
+            /// patterns is a hostmask role, so `with_role("op",
+            /// ["*!*@trusted.host"])` works.
             ///
             /// `main_loop` refuses to start when a command needs a role that
-            /// no call defines. See [`State::with_role`](ircbot::State::with_role).
+            /// no call defines, and when an account role needs the IRCv3
+            /// capability `account-tag` but the server does not give it. See
+            /// the [`role` module](ircbot::role).
             #[must_use]
             pub fn with_role(
                 mut self,
                 name: impl Into<String>,
-                masks: impl IntoIterator<Item = impl Into<String>>,
+                role: impl Into<ircbot::Role>,
             ) -> Self {
-                self.__setup.add_role(name, masks);
+                self.__setup.add_role(name, role);
                 self
             }
 

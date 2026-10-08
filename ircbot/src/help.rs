@@ -136,7 +136,7 @@ impl HelpIndex {
     #[must_use]
     pub(crate) fn reply(
         &self,
-        roles: &[(String, Vec<String>)],
+        roles: &[(String, crate::Role)],
         msg: &Message,
         target: &Target,
         sender: Option<&User>,
@@ -152,7 +152,7 @@ impl HelpIndex {
                     Trigger::Command { target, .. } => target.as_deref(),
                     _ => None,
                 };
-                authorized(roles, &guard.trigger, sender)
+                authorized(roles, &guard.trigger, sender, crate::role::account_tag(msg))
                     && scope_matches(guard.scope, target)
                     && target_matches(target_param(msg), filter)
             })
@@ -206,7 +206,7 @@ pub(crate) fn help_trigger() -> Trigger {
 /// The handler entry of the built-in help command, for a bot of type `T`.
 pub(crate) fn help_entry<T: Send + Sync + 'static>(
     mut index: HelpIndex,
-    roles: Vec<(String, Vec<String>)>,
+    roles: Vec<(String, crate::Role)>,
 ) -> HandlerEntry<T> {
     index.add_help_command();
     let index = Arc::new(index);
@@ -300,8 +300,8 @@ mod tests {
         ])
     }
 
-    fn roles() -> Vec<(String, Vec<String>)> {
-        vec![("op".to_string(), vec!["*!*@ops.host".to_string()])]
+    fn roles() -> Vec<(String, crate::Role)> {
+        vec![("op".to_string(), crate::Role::hostmask(["*!*@ops.host"]))]
     }
 
     fn user(host: &str) -> User {
@@ -347,6 +347,41 @@ mod tests {
         assert_eq!(
             reply,
             "Commands: !echo, !help, !kick, !seen. Use !help <command> for details."
+        );
+    }
+
+    #[test]
+    fn help_lists_an_account_role_command_for_the_logged_in_account() {
+        let index = index_of(vec![entry(
+            "!restart",
+            Some("Restart the bot."),
+            Some("admin"),
+            None,
+            Scope::Any,
+        )]);
+        let roles = vec![("admin".to_string(), crate::Role::account(["alice"]))];
+        let ask = |line: &str| {
+            let msg: Message = line.parse().expect("valid message");
+            let sender = User {
+                nick: "someone".into(),
+                user: "s".to_string(),
+                host: "any.host".to_string(),
+            };
+            index.reply(&roles, &msg, &Target::from_raw("#rust"), Some(&sender), "")
+        };
+
+        let logged_in = ask("@account=alice :someone!s@any.host PRIVMSG #rust :!help");
+        let other = ask("@account=mallory :someone!s@any.host PRIVMSG #rust :!help");
+        let not_logged_in = ask(":someone!s@any.host PRIVMSG #rust :!help");
+
+        assert_eq!(
+            logged_in,
+            "Commands: !help, !restart. Use !help <command> for details."
+        );
+        assert_eq!(other, "Commands: !help. Use !help <command> for details.");
+        assert_eq!(
+            not_logged_in,
+            "Commands: !help. Use !help <command> for details."
         );
     }
 

@@ -12,6 +12,7 @@ use crate::connection::Settings;
 use crate::handler::{Bot, HandlerEntry, Trigger};
 use crate::help::{help_entry, HelpIndex, HelpSource, HELP_COMMAND};
 use crate::plugin::{Plugin, PluginTasks, Registration, DEFAULT_PLUGIN_QUEUE_CAPACITY};
+use crate::role::{role_without_account_tag, ACCOUNT_TAG};
 use crate::{BoxError, Channel, Nick, Server, State};
 
 /// Who has a command: the bot itself, a plugin, or the built-in `!help`.
@@ -38,7 +39,9 @@ impl fmt::Display for CommandOwner {
 
 /// Why a bot cannot start. `main_loop` returns this error, in a `BoxError`.
 ///
-/// Each check comes before the bot connects.
+/// The checks of the setup come before the bot connects.
+/// [`StartError::MissingCapability`] comes after the connection, because only
+/// the capability exchange tells what the server gives.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum StartError {
@@ -94,6 +97,19 @@ pub enum StartError {
         /// The name of the command, without the prefix.
         command: String,
         /// The role that no call defines.
+        role: String,
+    },
+
+    /// A role needs an IRCv3 capability that the server did not give. An
+    /// account role needs `account-tag`, and could never match without it.
+    #[error(
+        "the role {role:?} needs the IRCv3 capability {capability}, but the server did not \
+         give it: use `Role::hostmask` for this role on this network"
+    )]
+    MissingCapability {
+        /// The capability that the server did not give.
+        capability: String,
+        /// The first role that needs it.
         role: String,
     },
 
@@ -164,13 +180,8 @@ impl BotSetup {
     }
 
     /// Define a role. See [`State::with_role`].
-    pub fn add_role(
-        &mut self,
-        name: impl Into<String>,
-        masks: impl IntoIterator<Item = impl Into<String>>,
-    ) {
-        let patterns: Vec<String> = masks.into_iter().map(Into::into).collect();
-        self.settings.roles.push((name.into(), patterns));
+    pub fn add_role(&mut self, name: impl Into<String>, role: impl Into<crate::Role>) {
+        self.settings.roles.push((name.into(), role.into()));
     }
 
     /// Ignore senders. See [`State::with_ignore`].
@@ -212,10 +223,11 @@ impl BotSetup {
     ///
     /// # Errors
     ///
-    /// Returns a [`StartError`] if a check or the connection fails, and the
-    /// error of the main event loop if it stops with one.
+    /// Returns a [`StartError`] if a check or the connection fails, or if an
+    /// account role needs `account-tag` and the server does not give it.
+    /// Returns the error of the main event loop if it stops with one.
     pub async fn run<T: Bot + Send + Sync + 'static>(self, bot: T) -> Result<(), BoxError> {
-        let Some(target) = self.target else {
+        let Some(mut target) = self.target else {
             return Err(StartError::NoServer.into());
         };
         check(
@@ -225,9 +237,27 @@ impl BotSetup {
             &self.settings.roles,
         )?;
 
+        // An account role matches the `account` tag of a message, which the
+        // server only sends with the capability `account-tag`.
+        if self
+            .settings
+            .roles
+            .iter()
+            .any(|(_, role)| role.needs_account())
+        {
+            target.server.request_capability(ACCOUNT_TAG);
+        }
+
         let mut state = State::connect(target.nick, target.server, target.channels)
             .await
             .map_err(|source| StartError::Connect { source })?;
+        if let Some(role) = role_without_account_tag(&self.settings.roles, state.capabilities()) {
+            return Err(StartError::MissingCapability {
+                capability: ACCOUNT_TAG.to_string(),
+                role: role.to_string(),
+            }
+            .into());
+        }
         state.settings = self.settings;
 
         let capacity = self.queue_capacity.unwrap_or(DEFAULT_PLUGIN_QUEUE_CAPACITY);
@@ -279,7 +309,7 @@ fn check(
     own: &[(String, Option<String>)],
     plugins: &[Registration],
     help: bool,
-    roles: &[(String, Vec<String>)],
+    roles: &[(String, crate::Role)],
 ) -> Result<(), StartError> {
     let mut owners: Vec<(String, CommandOwner)> = Vec::new();
     if help {
@@ -328,7 +358,7 @@ fn check(
 /// for its own command, for example one for each channel.
 fn claim(
     owners: &mut Vec<(String, CommandOwner)>,
-    roles: &[(String, Vec<String>)],
+    roles: &[(String, crate::Role)],
     command: &str,
     role: Option<&String>,
     owner: CommandOwner,

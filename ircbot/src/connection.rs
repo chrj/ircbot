@@ -99,10 +99,11 @@ pub(crate) struct Settings {
     /// (the default) disables the feature. Set via
     /// [`State::with_keepnick_interval`].
     pub(crate) keepnick_interval: Option<Duration>,
-    /// Access-control roles, each mapping a role name to a list of `nick!user@host`
-    /// hostmask glob patterns. A command with `role = Some(name)` only fires for
-    /// senders matching one of that role's patterns. Set via [`State::with_role`].
-    pub(crate) roles: Vec<(String, Vec<String>)>,
+    /// Access-control roles, each mapping a role name to a [`Role`](crate::Role):
+    /// the hostmask of the sender, its services account, or either. A command
+    /// with `role = Some(name)` only fires for senders that a role with that
+    /// name matches. Set via [`State::with_role`].
+    pub(crate) roles: Vec<(String, crate::Role)>,
     /// Hostmask glob patterns of senders to ignore. The dispatch drops a
     /// message from a matching sender before it tests any trigger, and answers
     /// no CTCP. Set via [`State::with_ignore`].
@@ -220,6 +221,14 @@ async fn send_sasl_response(
     Ok(())
 }
 
+/// The result of the capability exchange.
+struct Negotiated {
+    /// Lines that arrived during the exchange but were not part of it.
+    pending: Vec<String>,
+    /// The capabilities that the server acknowledged.
+    acked: Vec<String>,
+}
+
 /// Split the payload of a `CAP … LS`/`ACK`/`NAK` line into "is this batch
 /// continued?" and the capability list itself.
 ///
@@ -263,11 +272,14 @@ async fn negotiate(
     reader: &mut tokio::io::BufReader<transport::ReadHalf>,
     writer: &mut BufWriter<transport::WriteHalf>,
     auth: &Auth,
-) -> Result<Vec<String>, BoxError> {
+) -> Result<Negotiated, BoxError> {
     let mut pending: Vec<String> = Vec::new();
+    // The capabilities that the server acknowledged. A server can split an
+    // `ACK` over more than one line, so they accumulate.
+    let mut acked: Vec<String> = Vec::new();
     let wanted = auth.wanted_caps();
     if wanted.is_empty() {
-        return Ok(pending);
+        return Ok(Negotiated { pending, acked });
     }
 
     // Capabilities advertised so far, each still in `name` or `name=value`
@@ -361,22 +373,29 @@ async fn negotiate(
 
                 if requested.is_empty() {
                     send(writer, "CAP END").await?;
-                    return Ok(pending);
+                    return Ok(Negotiated { pending, acked });
                 }
                 send(writer, &format!("CAP REQ :{}", requested.join(" "))).await?;
             }
 
             Command::CAP(_, CapSubCommand::ACK, arg, trailing) => {
-                let (_, caps) = cap_payload(arg.as_ref(), trailing.as_ref());
+                let (more, caps) = cap_payload(arg.as_ref(), trailing.as_ref());
                 tracing::debug!(capabilities = caps, "capabilities acknowledged");
+                acked.extend(caps.split_whitespace().map(str::to_string));
+                // A server can split an `ACK` over more than one line. Act
+                // only on the last line, when all capabilities are known.
+                if more {
+                    continue;
+                }
 
-                let acked_sasl = caps.split_whitespace().any(|c| c == "sasl");
+                let acked_sasl = acked.iter().any(|c| c == "sasl");
                 match (&auth.sasl, acked_sasl) {
                     (Some(sasl), true) => {
                         send(writer, &format!("AUTHENTICATE {}", sasl.mechanism())).await?;
                         sasl_started = true;
                     }
                     (Some(sasl), false) => {
+                        let caps = acked.join(" ");
                         return Err(format!(
                             "the server acknowledged {caps} but not sasl, so the bot cannot \
                              authenticate with SASL {}. Services are usually down when this \
@@ -388,7 +407,7 @@ async fn negotiate(
                     }
                     (None, _) => {
                         send(writer, "CAP END").await?;
-                        return Ok(pending);
+                        return Ok(Negotiated { pending, acked });
                     }
                 }
             }
@@ -405,7 +424,7 @@ async fn negotiate(
                 }
                 tracing::warn!(capabilities = caps, "capabilities refused by the server");
                 send(writer, "CAP END").await?;
-                return Ok(pending);
+                return Ok(Negotiated { pending, acked });
             }
 
             // The server is ready for the mechanism's response. `+` means it
@@ -428,7 +447,7 @@ async fn negotiate(
 
             Command::Response(Response::RPL_SASLSUCCESS, _) if sasl_started => {
                 send(writer, "CAP END").await?;
-                return Ok(pending);
+                return Ok(Negotiated { pending, acked });
             }
 
             Command::Response(
@@ -461,7 +480,7 @@ async fn negotiate(
                     );
                 }
                 tracing::warn!("server does not support CAP — continuing without capabilities");
-                return Ok(pending);
+                return Ok(Negotiated { pending, acked });
             }
 
             // Everything else belongs to the read loop, not to this exchange.
@@ -505,6 +524,9 @@ pub struct State {
     /// the server sent early — `ERR_NICKNAMEINUSE`, typically — is dispatched
     /// in arrival order rather than lost.
     pub(crate) pending_lines: Vec<String>,
+    /// The IRCv3 capabilities that the server acknowledged during the
+    /// registration of this connection.
+    pub(crate) capabilities: Vec<String>,
 }
 
 impl State {
@@ -583,7 +605,10 @@ impl State {
         send(&mut writer, &format!("NICK {nick}")).await?;
         send(&mut writer, &format!("USER {nick} 0 * :{nick}")).await?;
 
-        let pending_lines = negotiate(&mut reader, &mut writer, &server.auth).await?;
+        let Negotiated {
+            pending: pending_lines,
+            acked: capabilities,
+        } = negotiate(&mut reader, &mut writer, &server.auth).await?;
 
         // Recover the inner write half from the BufWriter.
         let write_half = writer.into_inner();
@@ -596,6 +621,7 @@ impl State {
             reader,
             write_half,
             pending_lines,
+            capabilities,
         })
     }
 
@@ -696,23 +722,23 @@ impl State {
 
     /// Define an access-control role for command authorization.
     ///
-    /// `name` is the role referenced by `#[command(..., role = "name")]`; `masks`
-    /// is a set of `nick!user@host` hostmask glob patterns (`*` matches any run
-    /// of characters). A command guarded by this role only fires for senders
-    /// whose hostmask matches one of the patterns; everyone else is silently
-    /// ignored. A command guarded by a role with no configured patterns (or an
-    /// unknown role name) therefore never fires — authorization is closed by
-    /// default.
+    /// `name` is the role referenced by `#[command(..., role = "name")]`; `role`
+    /// is a [`Role`](crate::Role) that matches the hostmask of the sender, its
+    /// services account, or either. A list of `nick!user@host` glob patterns is
+    /// a hostmask role. A command guarded by this role only fires for senders
+    /// that the role matches; everyone else is silently ignored. A command
+    /// guarded by an unknown role name never fires — authorization is closed
+    /// by default.
     ///
-    /// May be called multiple times; patterns accumulate, and the same role name
-    /// may be extended across several calls. Call this before starting the bot.
-    pub fn with_role(
-        mut self,
-        name: impl Into<String>,
-        masks: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        let patterns: Vec<String> = masks.into_iter().map(Into::into).collect();
-        self.settings.roles.push((name.into(), patterns));
+    /// May be called multiple times. Two calls with the same name make a role
+    /// that matches when either matches. Call this before starting the bot.
+    ///
+    /// An account role matches the IRCv3 `account` tag of a message. On this
+    /// low-level API, ask for the capability yourself with
+    /// [`Server::with_capabilities`]`(["account-tag"])`; a `#[bot]` asks for it
+    /// on its own.
+    pub fn with_role(mut self, name: impl Into<String>, role: impl Into<crate::Role>) -> Self {
+        self.settings.roles.push((name.into(), role.into()));
         self
     }
 
@@ -745,6 +771,17 @@ impl State {
             .ignore
             .extend(masks.into_iter().map(Into::into));
         self
+    }
+
+    /// The IRCv3 capabilities that the server acknowledged when this
+    /// connection registered, for example `account-tag`.
+    ///
+    /// [`State::connect`] asks for the capabilities of its [`Server`]. A
+    /// `#[bot]` also asks for `account-tag` when one of its roles needs it. A
+    /// server that does not offer a capability leaves it out.
+    #[must_use]
+    pub fn capabilities(&self) -> &[String] {
+        &self.capabilities
     }
 
     /// Returns the configured keepalive interval.
@@ -952,7 +989,10 @@ mod tests {
         );
         assert_eq!(
             reconnected.settings.roles,
-            vec![("admin".to_string(), vec!["*!*@trusted.host".to_string()])]
+            vec![(
+                "admin".to_string(),
+                crate::Role::hostmask(["*!*@trusted.host"])
+            )]
         );
         assert_eq!(
             reconnected.settings.ignore,
