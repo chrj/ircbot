@@ -39,7 +39,9 @@ impl fmt::Display for CommandOwner {
 
 /// Why a bot cannot start. `main_loop` returns this error, in a `BoxError`.
 ///
-/// Each check comes before the bot connects.
+/// The checks of the setup come before the bot connects.
+/// [`StartError::MissingCapability`] comes after the connection, because only
+/// the capability exchange tells what the server gives.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum StartError {

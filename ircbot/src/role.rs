@@ -91,8 +91,9 @@ impl Role {
         }
     }
 
-    /// Whether the role can only match with the IRCv3 capability
-    /// `account-tag`.
+    /// Whether the role contains account-based matching, which needs the IRCv3
+    /// capability `account-tag`. A `Role::Any` with a hostmask part can still
+    /// match by hostmask without it.
     #[must_use]
     pub(crate) fn needs_account(&self) -> bool {
         match self {
