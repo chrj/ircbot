@@ -99,9 +99,10 @@ pub(crate) struct Settings {
     /// (the default) disables the feature. Set via
     /// [`State::with_keepnick_interval`].
     pub(crate) keepnick_interval: Option<Duration>,
-    /// Access-control roles, each mapping a role name to a list of `nick!user@host`
-    /// hostmask glob patterns. A command with `role = Some(name)` only fires for
-    /// senders matching one of that role's patterns. Set via [`State::with_role`].
+    /// Access-control roles, each mapping a role name to a [`Role`](crate::Role):
+    /// the hostmask of the sender, its services account, or either. A command
+    /// with `role = Some(name)` only fires for senders that a role with that
+    /// name matches. Set via [`State::with_role`].
     pub(crate) roles: Vec<(String, crate::Role)>,
     /// Hostmask glob patterns of senders to ignore. The dispatch drops a
     /// message from a matching sender before it tests any trigger, and answers

@@ -12,7 +12,7 @@ use crate::connection::Settings;
 use crate::handler::{Bot, HandlerEntry, Trigger};
 use crate::help::{help_entry, HelpIndex, HelpSource, HELP_COMMAND};
 use crate::plugin::{Plugin, PluginTasks, Registration, DEFAULT_PLUGIN_QUEUE_CAPACITY};
-use crate::role::ACCOUNT_TAG;
+use crate::role::{role_without_account_tag, ACCOUNT_TAG};
 use crate::{BoxError, Channel, Nick, Server, State};
 
 /// Who has a command: the bot itself, a plugin, or the built-in `!help`.
@@ -237,27 +237,24 @@ impl BotSetup {
 
         // An account role matches the `account` tag of a message, which the
         // server only sends with the capability `account-tag`.
-        let account_role = self
+        if self
             .settings
             .roles
             .iter()
-            .find(|(_, role)| role.needs_account())
-            .map(|(name, _)| name.clone());
-        if account_role.is_some() {
+            .any(|(_, role)| role.needs_account())
+        {
             target.server.request_capability(ACCOUNT_TAG);
         }
 
         let mut state = State::connect(target.nick, target.server, target.channels)
             .await
             .map_err(|source| StartError::Connect { source })?;
-        if let Some(role) = account_role {
-            if !state.capabilities().iter().any(|cap| cap == ACCOUNT_TAG) {
-                return Err(StartError::MissingCapability {
-                    capability: ACCOUNT_TAG.to_string(),
-                    role,
-                }
-                .into());
+        if let Some(role) = role_without_account_tag(&self.settings.roles, state.capabilities()) {
+            return Err(StartError::MissingCapability {
+                capability: ACCOUNT_TAG.to_string(),
+                role: role.to_string(),
             }
+            .into());
         }
         state.settings = self.settings;
 

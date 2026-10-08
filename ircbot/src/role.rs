@@ -118,6 +118,22 @@ impl<T: Into<String>> From<Vec<T>> for Role {
     }
 }
 
+/// The first role in `roles` that needs `account-tag`, when `capabilities`
+/// does not have it. `None` when no role needs it, or the server gave it.
+#[must_use]
+pub(crate) fn role_without_account_tag<'a>(
+    roles: &'a [(String, Role)],
+    capabilities: &[String],
+) -> Option<&'a str> {
+    if capabilities.iter().any(|cap| cap == ACCOUNT_TAG) {
+        return None;
+    }
+    roles
+        .iter()
+        .find(|(_, role)| role.needs_account())
+        .map(|(name, _)| name.as_str())
+}
+
 /// The services account of the sender of `msg`, from its IRCv3 `account` tag.
 ///
 /// The server sends the tag only with the capability `account-tag`, and only
@@ -193,6 +209,21 @@ mod tests {
             Role::from(vec!["*!*@h".to_string()]),
             Role::hostmask(["*!*@h"])
         );
+    }
+
+    #[test]
+    fn role_without_account_tag_names_the_first_account_role() {
+        let roles = vec![
+            ("op".to_string(), Role::hostmask(["*!*@h"])),
+            ("admin".to_string(), Role::account(["alice"])),
+        ];
+
+        assert_eq!(role_without_account_tag(&roles, &[]), Some("admin"));
+        assert_eq!(
+            role_without_account_tag(&roles, &["account-tag".to_string()]),
+            None
+        );
+        assert_eq!(role_without_account_tag(&roles[..1], &[]), None);
     }
 
     #[test]

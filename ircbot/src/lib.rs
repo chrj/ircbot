@@ -193,6 +193,22 @@ pub mod internal {
             }
 
             current_state = reconnect(&blueprint, &server, &mut backoff).await;
+            // The server can give fewer capabilities after a reconnect. An
+            // account role then matches no one, which is safe but would be
+            // silent, so say it. Refusing the connection would also stop
+            // each command without a role.
+            if let Some(role) = crate::role::role_without_account_tag(
+                &current_state.settings.roles,
+                current_state.capabilities(),
+            ) {
+                tracing::warn!(
+                    %server,
+                    role,
+                    capability = crate::role::ACCOUNT_TAG,
+                    "the server did not give the capability after the reconnect, so the \
+                     account roles match no one until a reconnect gets it back"
+                );
+            }
         }
     }
 

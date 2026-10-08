@@ -351,6 +351,41 @@ mod tests {
     }
 
     #[test]
+    fn help_lists_an_account_role_command_for_the_logged_in_account() {
+        let index = index_of(vec![entry(
+            "!restart",
+            Some("Restart the bot."),
+            Some("admin"),
+            None,
+            Scope::Any,
+        )]);
+        let roles = vec![("admin".to_string(), crate::Role::account(["alice"]))];
+        let ask = |line: &str| {
+            let msg: Message = line.parse().expect("valid message");
+            let sender = User {
+                nick: "someone".into(),
+                user: "s".to_string(),
+                host: "any.host".to_string(),
+            };
+            index.reply(&roles, &msg, &Target::from_raw("#rust"), Some(&sender), "")
+        };
+
+        let logged_in = ask("@account=alice :someone!s@any.host PRIVMSG #rust :!help");
+        let other = ask("@account=mallory :someone!s@any.host PRIVMSG #rust :!help");
+        let not_logged_in = ask(":someone!s@any.host PRIVMSG #rust :!help");
+
+        assert_eq!(
+            logged_in,
+            "Commands: !help, !restart. Use !help <command> for details."
+        );
+        assert_eq!(other, "Commands: !help. Use !help <command> for details.");
+        assert_eq!(
+            not_logged_in,
+            "Commands: !help. Use !help <command> for details."
+        );
+    }
+
+    #[test]
     fn help_leaves_out_a_command_of_another_channel() {
         let reply = ask("#other", &user("home.host"), "");
 
