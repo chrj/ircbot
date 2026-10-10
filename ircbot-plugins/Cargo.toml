@@ -12,8 +12,9 @@ categories = ["network-programming"]
 # One feature for each plugin. All are on by default; a bot that wants fewer
 # uses `default-features = false` and names the plugins it needs.
 [features]
-default = ["notify", "seen"]
+default = ["notify", "ops", "seen"]
 notify = []
+ops = []
 seen = []
 
 [package.metadata.docs.rs]
