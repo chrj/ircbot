@@ -432,7 +432,9 @@ impl Context {
     /// # Errors
     ///
     /// Returns [`ModeError::InvalidPart`] (in the `BoxError`) for a part that
-    /// is not one parameter, and an error if the write channel is closed.
+    /// is not one parameter, [`ModeError::TooLong`] for a line longer than the
+    /// IRC limit, and an error if the write channel is closed. It sends nothing
+    /// when it returns an error.
     pub fn mode(
         &self,
         change: impl std::fmt::Display,
@@ -447,6 +449,9 @@ impl Context {
             }
             line.push(' ');
             line.push_str(&part);
+        }
+        if line.len() > MAX_IRC_LINE {
+            return Err(Box::new(ModeError::TooLong { bytes: line.len() }));
         }
         self.tx
             .send(format!("{line}\r\n"))
@@ -499,6 +504,16 @@ pub enum ModeError {
     InvalidPart {
         /// The part that was refused.
         part: String,
+    },
+
+    /// The line is longer than the IRC limit of 510 bytes without `\r\n`. A
+    /// server would cut or refuse it.
+    #[error(
+        "the MODE line is {bytes} bytes, but IRC allows {MAX_IRC_LINE}: use shorter arguments"
+    )]
+    TooLong {
+        /// The length of the line without `\r\n`, in bytes.
+        bytes: usize,
     },
 }
 
@@ -998,6 +1013,24 @@ mod tests {
             );
         }
         assert!(rx.try_recv().is_err(), "a line was sent");
+    }
+
+    #[test]
+    fn mode_refuses_a_line_longer_than_the_irc_limit() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+        // `MODE #chan +b ` is 14 bytes, so a mask of 497 bytes makes 511.
+        let too_long = format!("{}!*@*", "a".repeat(493));
+        let longest = format!("{}!*@*", "a".repeat(492));
+
+        let err = ctx.mode("+b", [&too_long]).unwrap_err();
+        ctx.mode("+b", [&longest]).unwrap();
+
+        assert_eq!(
+            err.downcast_ref::<ModeError>(),
+            Some(&ModeError::TooLong { bytes: 511 })
+        );
+        assert_eq!(rx.try_recv().unwrap().len(), 512);
+        assert!(rx.try_recv().is_err(), "the long line was sent");
     }
 
     // ── params ───────────────────────────────────────────────────────────────
