@@ -32,6 +32,15 @@
 //! The server refuses the command with numeric 482. The plugin then says in
 //! the channel that the bot is not a channel operator there.
 //!
+//! The plugin changes its stored bans when it sends a command, not when the
+//! server accepts it: IRC gives no answer that ties a 482 to one command. So
+//! after a 482, the stored bans can differ from the bans of the channel. A
+//! timed ban that the server refused is still lifted at its time, which does
+//! nothing unless someone set the same ban after it. A timed ban that the bot
+//! could not lift when it expired stays in the channel until an operator lifts
+//! it. When the connection is lost, the plugin does not change its stored
+//! bans, and the next run lifts the expired bans that are left.
+//!
 //! The data is in the store namespace `ops`, in the table `ops_bans`.
 
 use ircbot::store::{Namespace, Store, StoreError};
@@ -110,13 +119,14 @@ impl Ops {
             Some(Err(refusal)) => return ctx.reply(refusal),
         };
 
+        // Send first: the stored bans change only when the line went out.
+        ctx.mode("+b", [&mask])?;
         let channel = ctx.target.to_string();
         match seconds {
             Some(seconds) => self.store_ban(&channel, &mask, seconds).await?,
             // A ban without a duration replaces a timed ban of the same mask.
             None => self.forget_ban(&channel, &mask).await?,
         }
-        ctx.mode("+b", [&mask])?;
         match duration {
             Some(duration) => ctx.reply(format!("Banned {mask} for {duration}.")),
             None => ctx.reply(format!("Banned {mask}.")),
@@ -127,8 +137,10 @@ impl Ops {
     #[command("unban", role = "op", scope = "channel")]
     async fn unban(&self, ctx: Context, target: String) -> Result {
         let mask = normalize_mask(&target);
+        // Send first: the timed ban stays stored when the line cannot go out.
+        ctx.mode("-b", [&mask])?;
         self.forget_ban(&ctx.target.to_string(), &mask).await?;
-        ctx.mode("-b", [&mask])
+        Ok(())
     }
 
     /// Lift each timed ban that has expired.
@@ -137,26 +149,23 @@ impl Ops {
         let expired = self
             .state
             .sql(|conn| {
-                let tx = conn.transaction()?;
-                let expired = {
-                    let mut stmt = tx.prepare(
-                        "SELECT channel, mask FROM ops_bans WHERE expires_at <= unixepoch()
-                         ORDER BY channel, mask",
-                    )?;
-                    let rows = stmt
-                        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-                        .collect::<ircbot::store::rusqlite::Result<Vec<_>>>()?;
-                    rows
-                };
-                tx.execute("DELETE FROM ops_bans WHERE expires_at <= unixepoch()", [])?;
-                tx.commit()?;
-                Ok(expired)
+                let mut stmt = conn.prepare(
+                    "SELECT channel, mask FROM ops_bans WHERE expires_at <= unixepoch()
+                     ORDER BY channel, mask",
+                )?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<ircbot::store::rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
             })
             .await?;
         for (channel, mask) in expired {
             // The mask passed `ban_mask` before it was stored, so it is one
-            // IRC parameter, and the channel came from the server.
+            // IRC parameter, and the channel came from the server. Forget a
+            // ban only when its line went out; the others stay for the next
+            // run.
             ctx.raw(format!("MODE {channel} -b {mask}"))?;
+            self.forget_ban(&channel, &mask).await?;
         }
         Ok(())
     }
@@ -535,6 +544,71 @@ mod tests {
         assert_eq!(tc.next_reply(), None);
         assert_eq!(ops.ban_expiry("#rust", "old!*@*").await, None);
         assert!(ops.ban_expiry("#rust", "new!*@*").await.is_some());
+    }
+
+    /// A context whose connection is gone: each send fails.
+    fn closed_ctx(text: &str) -> Context {
+        let mut tc = ircbot::testing::TestContext::channel("#rust", "alice", text);
+        tc.take_ctx()
+    }
+
+    #[tokio::test]
+    async fn a_timed_ban_that_cannot_be_sent_is_not_stored() {
+        let (_bot, ops) = bot_and_store().await;
+
+        let result = ops
+            .ban(
+                closed_ctx("!ban spammer 2h"),
+                "spammer".to_string(),
+                Some("2h".to_string()),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(ops.ban_expiry("#rust", "spammer!*@*").await, None);
+    }
+
+    #[tokio::test]
+    async fn an_unban_that_cannot_be_sent_keeps_the_timed_ban() {
+        let (bot, ops) = bot_and_store().await;
+        as_op(&bot, "!ban spammer 1d").await;
+
+        let result = ops
+            .unban(closed_ctx("!unban spammer"), "spammer".to_string())
+            .await;
+
+        assert!(result.is_err());
+        assert!(ops.ban_expiry("#rust", "spammer!*@*").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn expired_bans_that_cannot_be_lifted_stay_for_the_next_run() {
+        let (_bot, ops) = bot_and_store().await;
+        ops.state
+            .sql(|conn| {
+                conn.execute(
+                    "INSERT INTO ops_bans (channel, mask, expires_at) VALUES
+                     ('#rust', 'a!*@*', unixepoch() - 10),
+                     ('#rust', 'b!*@*', unixepoch() - 10)",
+                    [],
+                )
+            })
+            .await
+            .unwrap();
+
+        let result = ops.lift_expired_bans(closed_ctx("")).await;
+
+        assert!(result.is_err());
+        assert!(ops.ban_expiry("#rust", "a!*@*").await.is_some());
+        assert!(ops.ban_expiry("#rust", "b!*@*").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn deop_without_a_nick_takes_op_from_the_sender() {
+        assert_eq!(
+            as_op(&bot().await, "!deop").await,
+            vec!["MODE #rust -o alice\r\n"]
+        );
     }
 
     // ── 482 ──────────────────────────────────────────────────────────────────
