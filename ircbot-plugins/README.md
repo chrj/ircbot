@@ -6,6 +6,7 @@ framework.
 | Plugin | Feature | Commands |
 |---|---|---|
 | `Notify` | `notify` | `!notify <nick> <message>`: give a message to a nick when it is next here, in private |
+| `Ops` | `ops` | `!op`, `!deop`, `!kick`, `!ban <nick or mask> [duration]`, `!unban`: channel operator commands for the role `op` |
 | `Seen` | `seen` | `!seen <nick>`: when a nick last spoke in this channel, and what it said |
 
 The plugins need the plugin support of `ircbot` 0.7 or later. Each plugin has a
@@ -23,7 +24,7 @@ with its own name, and applies its own schema when it opens:
 
 ```rust,ignore
 use ircbot::{bot, store::Store};
-use ircbot_plugins::{Notify, Seen};
+use ircbot_plugins::{Notify, Ops, Seen};
 
 #[bot]
 impl MyBot {}
@@ -31,8 +32,10 @@ impl MyBot {}
 let store = Store::open("bot.db")?;
 MyBot::new("mybot", "irc.example.net:6667", ["rust"])
     .with_help()
+    .with_role("op", ["*!*@trusted.host"])
     .plugin(Seen::open(&store).await?)
     .plugin(Notify::open(&store).await?)
+    .plugin(Ops::open(&store).await?)
     .main_loop()
     .await
 ```

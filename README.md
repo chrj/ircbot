@@ -203,7 +203,7 @@ plugins with the same name, a command that two of them have (the bot itself
 included), and a command whose role no `with_role` defines.
 
 The [`ircbot-plugins`](https://crates.io/crates/ircbot-plugins) crate has
-standard plugins: `seen` and `notify`.
+standard plugins: `seen`, `notify` and `ops`.
 
 The handlers of the bot itself run in the dispatch loop. Each plugin runs in
 its own task, with a queue. A slow plugin does not delay the others, a panic
