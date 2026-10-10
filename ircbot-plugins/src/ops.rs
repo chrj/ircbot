@@ -144,7 +144,13 @@ impl Ops {
     /// Lift the ban of a nick or a mask in this channel.
     #[command("unban", role = "op", scope = "channel")]
     async fn unban(&self, ctx: Context, target: String) -> Result {
-        let mask = normalize_mask(&target);
+        // The last `String` argument takes the rest of the line, which can be
+        // empty.
+        let target = target.trim();
+        if target.is_empty() {
+            return ctx.reply("usage: !unban <target>");
+        }
+        let mask = normalize_mask(target);
         // Send first: the timed ban stays stored when the line is not queued.
         if !send_mode(&ctx, "-b", &mask)? {
             return Ok(());
@@ -552,6 +558,24 @@ mod tests {
                 "PRIVMSG #rust :alice, forever is not a duration. Use a number and s, m, h, d or w, \
                  for example 2h, up to 365d.\r\n"
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bare_unban_ban_or_kick_gives_the_usage() {
+        let bot = bot().await;
+
+        assert_eq!(
+            as_op(&bot, "!unban").await,
+            vec!["PRIVMSG #rust :alice, usage: !unban <target>\r\n"]
+        );
+        assert_eq!(
+            as_op(&bot, "!ban").await,
+            vec!["PRIVMSG #rust :alice, usage: !ban <target> [duration]\r\n"]
+        );
+        assert_eq!(
+            as_op(&bot, "!kick").await,
+            vec!["PRIVMSG #rust :alice, usage: !kick <nick> [reason]\r\n"]
         );
     }
 
