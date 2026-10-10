@@ -55,7 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 - **Typed command arguments** — declare `async fn add(&self, ctx: Context, a: i64, b: i64)` and the words after `!add` are parsed into the parameters (`FromStr` types, a trailing `String`/`Vec`, `Option<T>`); on bad input the bot replies with a generated usage string.
 - **Reply helpers** — `ctx.reply()`, `ctx.say()`, `ctx.action()`, `ctx.notice()`, `ctx.whisper()`.
 - **Channel control** — `ctx.join()` and `ctx.part()` to make the bot enter or leave channels from a handler.
-- **Raw escape hatch** — `ctx.raw()` sends any IRC line the helpers don't wrap (`MODE`, `INVITE`, …), still sanitized.
+- **Channel modes** — `ctx.mode("+o", ["alice"])` changes the modes of the channel, and refuses an argument that would change the meaning of the line.
+- **Raw escape hatch** — `ctx.raw()` sends any IRC line the helpers don't wrap (`INVITE`, `WHOIS`, …), still sanitized. `ctx.params()` reads the parameters of any message, for example a numeric.
 - **Moderation** — `ctx.set_topic()` and `ctx.kick()` act on the channel the message arrived in.
 - **Access control** — define roles with `.with_role("admin", ["*!*@trusted.host"])` (hostmask) or `.with_role("admin", Role::account(["alice"]))` (services account, with IRCv3 `account-tag`), and gate commands with `#[command("op", role = "admin")]`; unauthorized senders are silently ignored.
 - **Ignore list** — `.with_ignore(["*!*@spam.example", "otherbot!*@*"])` drops a message from a matching sender before any trigger, and answers no CTCP for it.
@@ -203,7 +204,7 @@ plugins with the same name, a command that two of them have (the bot itself
 included), and a command whose role no `with_role` defines.
 
 The [`ircbot-plugins`](https://crates.io/crates/ircbot-plugins) crate has
-standard plugins: `seen` and `notify`.
+standard plugins: `seen`, `notify` and `ops`.
 
 The handlers of the bot itself run in the dispatch loop. Each plugin runs in
 its own task, with a queue. A slow plugin does not delay the others, a panic

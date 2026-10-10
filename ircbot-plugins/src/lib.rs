@@ -8,6 +8,7 @@
 //! | Plugin | Feature | Commands |
 //! |---|---|---|
 //! | `Notify` | `notify` | `!notify <nick> <message>` |
+//! | `Ops` | `ops` | `!op [nick]`, `!deop [nick]`, `!kick <nick> [reason]`, `!ban <nick or mask> [duration]`, `!unban <nick or mask>` |
 //! | `Seen` | `seen` | `!seen <nick>` |
 //!
 //! A plugin that keeps data takes an [`ircbot::Store`]. It uses the namespace
@@ -15,7 +16,7 @@
 //!
 //! ```rust,ignore
 //! use ircbot::{bot, store::Store};
-//! use ircbot_plugins::{Notify, Seen};
+//! use ircbot_plugins::{Notify, Ops, Seen};
 //!
 //! #[bot]
 //! impl MyBot {}
@@ -23,8 +24,10 @@
 //! let store = Store::open("bot.db")?;
 //! MyBot::new("mybot", "irc.example.net:6667", ["rust"])
 //!     .with_help()
+//!     .with_role("op", ["*!*@trusted.host"])
 //!     .plugin(Seen::open(&store).await?)
 //!     .plugin(Notify::open(&store).await?)
+//!     .plugin(Ops::open(&store).await?)
 //!     .main_loop()
 //!     .await
 //! ```
@@ -33,10 +36,14 @@
 
 #[cfg(feature = "notify")]
 pub mod notify;
+#[cfg(feature = "ops")]
+pub mod ops;
 #[cfg(feature = "seen")]
 pub mod seen;
 
 #[cfg(feature = "notify")]
 pub use notify::Notify;
+#[cfg(feature = "ops")]
+pub use ops::Ops;
 #[cfg(feature = "seen")]
 pub use seen::Seen;
