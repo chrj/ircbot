@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/chrj/ircbot/compare/v0.6.0...v0.7.0) - 2026-10-10
+
+### Added
+
+- add the ops plugin ([#201](https://github.com/chrj/ircbot/pull/201))
+- [**breaking**] let a role match the hostmask, the services account, or either ([#196](https://github.com/chrj/ircbot/pull/196))
+
+  `with_role` takes `impl Into<Role>` instead of a list of patterns, so a call with an iterator that is not an array or a `Vec` must use `Role::hostmask`, and the public `authorized` function has a new `account` argument.
+
+- add the notify plugin ([#194](https://github.com/chrj/ircbot/pull/194))
+- add the ircbot-plugins crate with the seen plugin ([#192](https://github.com/chrj/ircbot/pull/192))
+- [**breaking**] add a built-in !help command ([#190](https://github.com/chrj/ircbot/pull/190))
+
+  `CommandOwner` is now `#[non_exhaustive]` and has a new variant `Help`, so a `match` on it needs a wildcard arm.
+
+- [**breaking**] run plugins on #[bot], and connect in main_loop ([#189](https://github.com/chrj/ircbot/pull/189))
+
+  The `new` and `new_with_state` constructors of a `#[bot]` no longer connect and are no longer async, so remove the `.await?` after them; `main_loop` now connects and returns the connection error, and it refuses to start, with a `StartError`, when a command needs a role that no `with_role` defines.
+
+- add typed key/value data to the store ([#186](https://github.com/chrj/ircbot/pull/186))
+- add a SQLite store for bot data ([#185](https://github.com/chrj/ircbot/pull/185))
+- add no_default flag for bot state without Default ([#181](https://github.com/chrj/ircbot/pull/181))
+- add new_with_state constructor for bots with state ([#179](https://github.com/chrj/ircbot/pull/179))
+
+### Fixed
+
+- keep !seen of the sqlite_bot example inside the channel that asks ([#193](https://github.com/chrj/ircbot/pull/193))
+- let an Option<String> argument come before other arguments ([#191](https://github.com/chrj/ircbot/pull/191))
+
+### Other
+
+- use the store in the SQLite example ([#187](https://github.com/chrj/ircbot/pull/187))
+- run the unit tests of the examples ([#183](https://github.com/chrj/ircbot/pull/183))
+- add a SQLite example with no_default state ([#182](https://github.com/chrj/ircbot/pull/182))
+
 ## [0.6.0](https://github.com/chrj/ircbot/compare/v0.5.0...v0.6.0) - 2026-09-22
 
 ### Added

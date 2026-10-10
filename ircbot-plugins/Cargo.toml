@@ -1,6 +1,6 @@
 [package]
 name = "ircbot-plugins"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "Standard plugins for the ircbot IRC bot framework"
 license = "MIT"
@@ -22,7 +22,7 @@ all-features = true
 
 [dependencies]
 # The plugins keep their data in the store of `ircbot`.
-ircbot = { version = "0.6.0", path = "../ircbot", features = ["store"] }
+ircbot = { version = "0.7.0", path = "../ircbot", features = ["store"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
