@@ -1,10 +1,10 @@
 # release-plz drives versioning, changelogs, crates.io publishing, git tags, and
 # GitHub releases for this workspace. See AGENTS.md ("Releasing") for the flow.
 #
-# `ircbot` and `ircbot-macros` are kept in lockstep via a shared
-# `version_group`, and `ircbot` is the headline crate: it owns the `v*` git tag
-# and GitHub release. `ircbot-macros` is published to crates.io but gets no
-# tag/release of its own. `ircbot-plugins` has its own version, tag and release.
+# All three crates are kept in lockstep via a shared `version_group`, and
+# `ircbot` is the headline crate: it owns the `v*` git tag and GitHub release.
+# `ircbot-macros` and `ircbot-plugins` are published to crates.io but get no
+# tag/release of their own.
 # release-plz publishes the crates in dependency order (ircbot-macros, ircbot,
 # ircbot-plugins) and rewrites the dependency requirements between them
 # automatically.
@@ -12,7 +12,7 @@
 [workspace]
 # Publish only when a release PR is merged. Without this, each push to `main`
 # publishes every crate whose version is not on crates.io yet. A new crate
-# (`ircbot-plugins` 0.1.0) would then go out before the release of `ircbot`
+# (`ircbot-plugins`) would then go out before the release of `ircbot`
 # that it needs, and the publish would fail. With it, a push to `main` only
 # opens or updates the release PR, and its merge publishes all crates in
 # dependency order.
@@ -31,12 +31,14 @@ git_tag_enable = false
 git_release_enable = false
 version_group = "ircbot"
 
-# The standard plugins have their own version, so a breaking change in one
-# plugin does not make a major release of `ircbot`. The tag has the crate name,
-# so it cannot clash with the `v*` tags of `ircbot`.
+# The standard plugins have the same version as `ircbot`. Like
+# `ircbot-macros`, they are published to crates.io, but get no tag/release of
+# their own.
 [[package]]
 name = "ircbot-plugins"
-git_tag_name = "ircbot-plugins-v{{ version }}"
+git_tag_enable = false
+git_release_enable = false
+version_group = "ircbot"
 
 # The changelog line that release-plz writes is the commit subject, which stays
 # short. A breaking change needs its reason there too, so this template adds the

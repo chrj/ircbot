@@ -21,8 +21,8 @@ This is a Cargo workspace (`resolver = "2"`) with three published crates:
   add it to `ircbot` instead of a workaround. The crate must also build with
   no plugin feature on: CI runs Clippy and the docs with `--no-default-features`.
 
-`ircbot` and `ircbot-macros` are kept **in lockstep**. `ircbot-plugins` has its
-own version. You do not bump versions by hand — see [Releasing](#releasing).
+The three crate versions are kept **in lockstep**. You do not bump versions by
+hand — see [Releasing](#releasing).
 
 ## Before you finish: CI must pass
 
@@ -70,15 +70,14 @@ Releases are automated with [release-plz](https://release-plz.dev) (see
 changelogs, or push tags by hand.**
 
 - Every push to `main` runs release-plz, which opens (or updates) a **release PR**
-  that bumps the versions of `ircbot` and `ircbot-macros` in lockstep, bumps
-  `ircbot-plugins` on its own, updates the `CHANGELOG.md` files, and rewrites the
+  that bumps the versions of all three crates in lockstep, updates the
+  `CHANGELOG.md` files, and rewrites the
   dependency requirements between the crates.
 - Merge the release PR with a **squash merge** (the `main` ruleset requires linear
   history). That publishes the crates to crates.io in dependency order
   (`ircbot-macros`, `ircbot`, then `ircbot-plugins`) and creates the `v{version}`
-  git tag and GitHub release for `ircbot`. `ircbot-macros` is published silently
-  (no tag/release). `ircbot-plugins` gets its own `ircbot-plugins-v{version}` tag
-  and release.
+  git tag and GitHub release for `ircbot`. `ircbot-macros` and `ircbot-plugins`
+  are published silently (no tag/release).
 - Lockstep is enforced by a shared `version_group` in `release-plz.toml`.
 - **Only the merge of the release PR publishes.** `release_always = false` in
   `release-plz.toml` makes a push to `main` open or update the release PR only.
