@@ -6,7 +6,7 @@ framework.
 | Plugin | Feature | Commands |
 |---|---|---|
 | `Notify` | `notify` | `!notify <nick> <message>`: give a message to a nick when it is next here, in private |
-| `Ops` | `ops` | `!op`, `!deop`, `!kick`, `!ban <nick or mask> [duration]`, `!unban`: channel operator commands for the role `op` |
+| `Ops` | `ops` | `!op [nick]`, `!deop [nick]`, `!kick <nick> [reason]`, `!ban <nick or mask> [duration]`, `!unban <nick or mask>`: channel operator commands for the role `op` |
 | `Seen` | `seen` | `!seen <nick>`: when a nick last spoke in this channel, and what it said |
 
 The plugins need the plugin support of `ircbot` 0.7 or later. Each plugin has a
