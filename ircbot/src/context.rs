@@ -418,6 +418,52 @@ impl Context {
         Ok(())
     }
 
+    /// Change the modes of the current channel ([`Context::target`]).
+    ///
+    /// Sends `MODE <target> <change> <args>…`, for example
+    /// `ctx.mode("+o", ["alice"])` or `ctx.mode("-b", ["*!*@spam.host"])`.
+    /// Each part must be one IRC parameter: not empty, without spaces, and not
+    /// starting with `:`. Thus a nick or a mask from a user cannot add other
+    /// mode changes to the line.
+    ///
+    /// The server answers numeric 482 (`ERR_CHANOPRIVSNEEDED`) when the bot
+    /// is not a channel operator. A `#[on(event = "482")]` handler gets it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModeError::InvalidPart`] (in the `BoxError`) for a part that
+    /// is not one parameter, and an error if the write channel is closed.
+    pub fn mode(
+        &self,
+        change: impl std::fmt::Display,
+        args: impl IntoIterator<Item = impl std::fmt::Display>,
+    ) -> crate::Result {
+        let mut line = format!("MODE {}", self.target);
+        let parts =
+            std::iter::once(change.to_string()).chain(args.into_iter().map(|a| a.to_string()));
+        for part in parts {
+            if !is_single_param(&part) || part != sanitize(&part) {
+                return Err(Box::new(ModeError::InvalidPart { part }));
+            }
+            line.push(' ');
+            line.push_str(&part);
+        }
+        self.tx
+            .send(format!("{line}\r\n"))
+            .map_err(|e| Box::new(e) as crate::BoxError)?;
+        Ok(())
+    }
+
+    /// The parameters of the message, without the command, for example
+    /// `["bot", "#chan", "You're not channel operator"]` for a numeric 482.
+    ///
+    /// A handler of an `event` trigger uses this to read a message that has no
+    /// dedicated helper. The last parameter has no `:` prefix.
+    #[must_use]
+    pub fn params(&self) -> Vec<String> {
+        split_params(&String::from(&self.raw.command))
+    }
+
     /// Kick `nick` from the current channel ([`Context::target`]) with `reason`.
     ///
     /// Sends a `KICK` command for the channel this message arrived in.  Both
@@ -438,6 +484,48 @@ impl Context {
             .send(format!("KICK {} {nick} :{reason}\r\n", self.target))
             .map_err(|e| Box::new(e) as crate::BoxError)?;
         Ok(())
+    }
+}
+
+/// Why [`Context::mode`] did not send a `MODE` line.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ModeError {
+    /// The mode change or an argument is empty, has a space, or starts with
+    /// `:`. Such a part would change the meaning of the line.
+    #[error(
+        "invalid MODE part {part:?}: use one word without spaces that does not start with ':'"
+    )]
+    InvalidPart {
+        /// The part that was refused.
+        part: String,
+    },
+}
+
+/// Whether `part` is one parameter of an IRC line: not empty, no whitespace,
+/// and no `:` at the start, which would make it the trailing parameter.
+fn is_single_param(part: &str) -> bool {
+    !part.is_empty() && !part.starts_with(':') && !part.chars().any(char::is_whitespace)
+}
+
+/// The parameters of `line`, an IRC command without prefix and tags, for
+/// example `482 bot #chan :You're not channel operator`. The first word is the
+/// command, and a parameter that starts with `:` takes the rest of the line.
+fn split_params(line: &str) -> Vec<String> {
+    let mut rest = line.split_once(' ').map_or("", |(_, rest)| rest);
+    let mut params = Vec::new();
+    loop {
+        rest = rest.trim_start_matches(' ');
+        if rest.is_empty() {
+            return params;
+        }
+        if let Some(trailing) = rest.strip_prefix(':') {
+            params.push(trailing.to_string());
+            return params;
+        }
+        let (param, after) = rest.split_once(' ').unwrap_or((rest, ""));
+        params.push(param.to_string());
+        rest = after;
     }
 }
 
@@ -880,5 +968,61 @@ mod tests {
         let (ctx, _rx) = make_ctx("#chan", true);
         // message_text is "hello", bot_nick is "bot"
         assert!(!ctx.mentions_me());
+    }
+
+    // ── mode ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn mode_sends_the_change_and_its_arguments_to_the_channel() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+
+        ctx.mode("+o", ["alice"]).unwrap();
+        ctx.mode("-b", ["*!*@spam.host"]).unwrap();
+
+        assert_eq!(rx.try_recv().unwrap(), "MODE #chan +o alice\r\n");
+        assert_eq!(rx.try_recv().unwrap(), "MODE #chan -b *!*@spam.host\r\n");
+    }
+
+    #[test]
+    fn mode_refuses_a_part_that_is_not_one_parameter() {
+        let (ctx, mut rx) = make_ctx("#chan", true);
+
+        for bad in ["alice +o mallory", "", ":trailing", "a\r\nQUIT"] {
+            let err = ctx.mode("+o", [bad]).unwrap_err();
+            assert_eq!(
+                err.downcast_ref::<ModeError>(),
+                Some(&ModeError::InvalidPart {
+                    part: bad.to_string()
+                }),
+                "part {bad:?}"
+            );
+        }
+        assert!(rx.try_recv().is_err(), "a line was sent");
+    }
+
+    // ── params ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn split_params_reads_middle_and_trailing_parameters() {
+        assert_eq!(
+            split_params("482 bot #chan :You're not channel operator"),
+            vec!["bot", "#chan", "You're not channel operator"]
+        );
+        assert_eq!(split_params("PING server"), vec!["server"]);
+        assert_eq!(split_params("QUIT"), Vec::<String>::new());
+        assert_eq!(split_params("TOPIC #c :"), vec!["#c", ""]);
+    }
+
+    #[test]
+    fn params_reads_the_parameters_of_a_numeric() {
+        let (mut ctx, _rx) = make_ctx("#chan", true);
+        ctx.raw = ":srv 482 bot #chan :You're not channel operator"
+            .parse()
+            .unwrap();
+
+        assert_eq!(
+            ctx.params(),
+            vec!["bot", "#chan", "You're not channel operator"]
+        );
     }
 }

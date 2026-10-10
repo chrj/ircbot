@@ -33,7 +33,7 @@ pub use connection::{
     DEFAULT_KEEPALIVE_TIMEOUT, DEFAULT_KEEPNICK_INTERVAL, DEFAULT_MAX_RECONNECT_DELAY,
     DEFAULT_RECONNECT_DELAY, REGISTRATION_TIMEOUT,
 };
-pub use context::{make_messages, Context, User};
+pub use context::{make_messages, Context, ModeError, User};
 pub use handler::{Bot, BoxFuture, CommandHelp, HandlerEntry, HandlerFn, Scope, Trigger};
 pub use irc::CtcpMessage;
 pub use ircbot_macros::bot;
