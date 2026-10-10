@@ -264,8 +264,10 @@ fn normalize_mask(target: &str) -> String {
 fn ban_mask(target: &str, bot_nick: &str) -> std::result::Result<String, String> {
     let mask = normalize_mask(target);
     let wildcards_only = |part: &str| part.chars().all(|c| c == '*' || c == '?');
-    let (nick, rest) = mask.split_once('!').unwrap_or((&mask, ""));
-    let (user, host) = rest.split_once('@').unwrap_or((rest, ""));
+    // Read the mask as `nick!user@host`. A missing part matches anything, as
+    // the server reads it, so `*@*` is `*!*@*`.
+    let (left, host) = mask.rsplit_once('@').unwrap_or((&mask, ""));
+    let (nick, user) = left.split_once('!').unwrap_or((left, ""));
     if wildcards_only(nick) && wildcards_only(user) && wildcards_only(host) {
         return Err(format!(
             "{mask} matches everyone. Use a nick, or a mask with a host."
@@ -624,6 +626,35 @@ mod tests {
         assert_eq!(
             lines,
             vec!["PRIVMSG #rust :I am not a channel operator in #rust, so I cannot do that.\r\n"]
+        );
+    }
+
+    #[test]
+    fn ban_mask_refuses_each_form_that_matches_everyone() {
+        for mask in ["*!*@*", "*@*", "*!*", "*", "?*!*@*", "*!?*@*?"] {
+            assert!(
+                ban_mask(mask, "testbot").is_err(),
+                "mask {mask:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn ban_mask_refuses_a_question_mark_that_matches_the_bot() {
+        assert!(ban_mask("testbo?", "testbot").is_err());
+        assert!(ban_mask("test???", "testbot").is_err());
+        assert_eq!(ban_mask("test?", "testbot"), Ok("test?!*@*".to_string()));
+    }
+
+    #[test]
+    fn ban_mask_keeps_a_mask_with_a_host_or_a_nick() {
+        assert_eq!(
+            ban_mask("*@spam.host", "testbot"),
+            Ok("*@spam.host".to_string())
+        );
+        assert_eq!(
+            ban_mask("spammer", "testbot"),
+            Ok("spammer!*@*".to_string())
         );
     }
 

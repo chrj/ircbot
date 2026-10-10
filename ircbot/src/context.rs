@@ -379,7 +379,7 @@ impl Context {
     /// Send a raw IRC protocol line.
     ///
     /// This is a low-level escape hatch for commands the framework does not
-    /// wrap with a dedicated helper (`KICK`, `MODE`, `INVITE`, `WHOIS`, …).
+    /// wrap with a dedicated helper (`INVITE`, `WHOIS`, …).
     /// `line` is sanitized to strip the `\r`, `\n`, and `\0` characters — so a
     /// caller cannot smuggle additional lines — and a single trailing `\r\n` is
     /// appended.
