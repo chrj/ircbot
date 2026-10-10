@@ -32,19 +32,25 @@
 //! The server refuses the command with numeric 482. The plugin then says in
 //! the channel that the bot is not a channel operator there.
 //!
-//! The plugin changes its stored bans when it sends a command, not when the
-//! server accepts it: IRC gives no answer that ties a 482 to one command. So
-//! after a 482, the stored bans can differ from the bans of the channel. A
-//! timed ban that the server refused is still lifted at its time, which does
-//! nothing unless someone set the same ban after it. A timed ban that the bot
-//! could not lift when it expired stays in the channel until an operator lifts
-//! it. When the connection is lost, the plugin does not change its stored
-//! bans, and the next run lifts the expired bans that are left.
+//! The plugin changes its stored bans when it queues a command for the
+//! server, not when the server accepts it. IRC gives no answer that ties a 482
+//! to one command, so after a 482 the stored bans can differ from the bans of
+//! the channel:
+//!
+//! * A timed ban that the server refused is still lifted at its time. This
+//!   does nothing, unless someone set the same ban after it.
+//! * A timed ban that the bot could not lift when it expired stays in the
+//!   channel until an operator lifts it.
+//!
+//! When the connection is lost before the plugin queues a command, the plugin
+//! does not change its stored bans, and the next run lifts the expired bans
+//! that are left. A command that is queued but lost with the connection is
+//! handled as a refused one.
 //!
 //! The data is in the store namespace `ops`, in the table `ops_bans`.
 
 use ircbot::store::{Namespace, Store, StoreError};
-use ircbot::{plugin, Context, Plugin, Result};
+use ircbot::{plugin, Context, ModeError, Plugin, Result};
 
 /// The role that each command of the plugin needs.
 pub const ROLE: &str = "op";
@@ -79,7 +85,7 @@ impl Ops {
         let Some(nick) = nick else {
             return Ok(());
         };
-        ctx.mode("+o", [nick])
+        send_mode(&ctx, "+o", &nick).map(|_| ())
     }
 
     /// Take channel operator status from a nick, or from yourself.
@@ -92,7 +98,7 @@ impl Ops {
         if nick.eq_ignore_ascii_case(ctx.bot_nick.as_str()) {
             return ctx.reply("I will not take my own channel operator status.");
         }
-        ctx.mode("-o", [nick])
+        send_mode(&ctx, "-o", &nick).map(|_| ())
     }
 
     /// Kick a nick from this channel.
@@ -119,8 +125,10 @@ impl Ops {
             Some(Err(refusal)) => return ctx.reply(refusal),
         };
 
-        // Send first: the stored bans change only when the line went out.
-        ctx.mode("+b", [&mask])?;
+        // Send first: the stored bans change only when the line is queued.
+        if !send_mode(&ctx, "+b", &mask)? {
+            return Ok(());
+        }
         let channel = ctx.target.to_string();
         match seconds {
             Some(seconds) => self.store_ban(&channel, &mask, seconds).await?,
@@ -137,8 +145,10 @@ impl Ops {
     #[command("unban", role = "op", scope = "channel")]
     async fn unban(&self, ctx: Context, target: String) -> Result {
         let mask = normalize_mask(&target);
-        // Send first: the timed ban stays stored when the line cannot go out.
-        ctx.mode("-b", [&mask])?;
+        // Send first: the timed ban stays stored when the line is not queued.
+        if !send_mode(&ctx, "-b", &mask)? {
+            return Ok(());
+        }
         self.forget_ban(&ctx.target.to_string(), &mask).await?;
         Ok(())
     }
@@ -249,6 +259,24 @@ impl Ops {
             .await
             .expect("read ban")
     }
+}
+
+/// Send the mode change `change` with `arg` to the channel of `ctx`. When
+/// `ircbot` refuses the line, for example because it is too long, tell the
+/// sender why, and return `false`.
+fn send_mode(
+    ctx: &Context,
+    change: &str,
+    arg: &str,
+) -> std::result::Result<bool, ircbot::BoxError> {
+    let Err(error) = ctx.mode(change, [arg]) else {
+        return Ok(true);
+    };
+    let Some(refusal) = error.downcast_ref::<ModeError>() else {
+        return Err(error);
+    };
+    ctx.reply(refusal)?;
+    Ok(false)
 }
 
 /// `target` as a ban mask: a nick without `!` or `@` becomes `nick!*@*`.
@@ -497,6 +525,23 @@ mod tests {
             as_op(&bot, "!ban test*").await,
             vec!["PRIVMSG #rust :alice, test*!*@* matches me. Use a mask that does not match testbot.\r\n"]
         );
+    }
+
+    #[tokio::test]
+    async fn ban_of_a_mask_too_long_for_irc_says_so_and_stores_nothing() {
+        let (bot, view) = bot_and_store().await;
+        let nick = "a".repeat(600);
+
+        let lines = as_op(&bot, &format!("!ban {nick} 1d")).await;
+
+        assert_eq!(
+            lines,
+            vec![
+                "PRIVMSG #rust :alice, the MODE line is 618 bytes, but IRC allows 510: use \
+                 shorter arguments\r\n"
+            ]
+        );
+        assert_eq!(view.ban_expiry("#rust", &format!("{nick}!*@*")).await, None);
     }
 
     #[tokio::test]
