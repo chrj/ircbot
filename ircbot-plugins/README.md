@@ -10,14 +10,17 @@ framework.
 | `Seen` | `seen` | `!seen <nick>`: when a nick last spoke in this channel, and what it said |
 
 The plugins need the plugin support of `ircbot` 0.7 or later. Each plugin has a
-feature, and all features are on by default. A bot that wants
-fewer plugins turns the default features off and names the plugins it needs:
+feature, and all features are on by default:
 
 ```toml
 [dependencies]
 ircbot = { version = "0.7", features = ["store"] }
-ircbot-plugins = { version = "0.1", default-features = false, features = ["seen"] }
+ircbot-plugins = "0.1"
 ```
+
+A bot that wants fewer plugins turns the default features off and names the
+plugins it needs, for example
+`ircbot-plugins = { version = "0.1", default-features = false, features = ["seen"] }`.
 
 A plugin that keeps data takes an `ircbot::store::Store`, uses the namespace
 with its own name, and applies its own schema when it opens:
