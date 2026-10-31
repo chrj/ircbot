@@ -1062,6 +1062,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migrate_permits_transaction_control_after_a_refused_step() {
+        let store = Store::memory().unwrap();
+        let ns = store.namespace("quotes").unwrap();
+        ns.migrate(&["COMMIT"]).await.unwrap_err();
+
+        let conn = store.conn.try_lock().expect("no call holds the connection");
+        conn.execute_batch("BEGIN; CREATE TABLE quotes_a (id INTEGER); COMMIT;")
+            .expect("transaction control after the migration");
+        drop(conn);
+
+        assert!(table_exists(&store, "quotes_a"));
+    }
+
+    #[tokio::test]
     async fn migrate_allows_a_savepoint_in_a_step() {
         let store = Store::memory().unwrap();
         let ns = store.namespace("quotes").unwrap();
