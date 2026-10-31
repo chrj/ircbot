@@ -48,7 +48,7 @@ rustls-native-certs = { version = "0.8", optional = true }
 # gives `rusqlite` types to the caller, so a major `rusqlite` update is a
 # breaking change of this crate. `hooks` gives the SQLite authorizer, which
 # `migrate` uses to refuse transaction control in a step.
-rusqlite = { version = "0.40", features = ["bundled", "hooks"], optional = true }
+rusqlite = { version = "0.41", features = ["bundled", "hooks"], optional = true }
 # The typed key/value data of the store is JSON text. The store uses only the
 # `Serialize` and `Deserialize` traits, so it needs no `serde` features.
 serde = { version = "1", optional = true }

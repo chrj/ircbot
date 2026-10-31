@@ -106,6 +106,7 @@
 //! Do not change these tables.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -604,6 +605,50 @@ fn apply_migrations(
     namespace: &str,
     steps: &[impl AsRef<str>],
 ) -> Result<(), StoreError> {
+    // The authorizer makes SQLite refuse a statement that ends the
+    // transaction, so a step cannot apply part of the run. Setting an
+    // authorizer needs `&mut Connection`, which an open `Transaction` does not
+    // give. Thus the authorizer is set before the transaction starts and is
+    // removed after it ends. It refuses statements only while `armed` is set:
+    // `BEGIN`, `commit` and the rollback on drop are also such statements.
+    let armed = Arc::new(AtomicBool::new(false));
+    let hook_armed = Arc::clone(&armed);
+    conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+        if hook_armed.load(Ordering::Relaxed) {
+            refuse_transaction_control(ctx)
+        } else {
+            Authorization::Allow
+        }
+    }))
+    .map_err(|source| StoreError::Sql {
+        namespace: namespace.to_string(),
+        source,
+    })?;
+    let result = apply_migrations_in_transaction(conn, namespace, steps, &armed);
+    let removed = conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    if let (Err(_), Err(remove_error)) = (&result, &removed) {
+        tracing::warn!(
+            namespace,
+            error = %remove_error,
+            "cannot remove the migration authorizer after a failed migration"
+        );
+    }
+    result?;
+    removed.map_err(|source| StoreError::Sql {
+        namespace: namespace.to_string(),
+        source,
+    })
+}
+
+/// The transaction of [`apply_migrations`]. `armed` must turn on an
+/// authorizer that refuses transaction control, which is already set on
+/// `conn`.
+fn apply_migrations_in_transaction(
+    conn: &mut Connection,
+    namespace: &str,
+    steps: &[impl AsRef<str>],
+    armed: &AtomicBool,
+) -> Result<(), StoreError> {
     let sql_error = |source| StoreError::Sql {
         namespace: namespace.to_string(),
         source,
@@ -640,12 +685,9 @@ fn apply_migrations(
         return Ok(());
     }
 
-    // The authorizer makes SQLite refuse a statement that ends the
-    // transaction, so a step cannot apply part of the run. Remove it before
-    // each return: `commit`, and the rollback on drop, are also such
-    // statements.
-    tx.authorizer(Some(refuse_transaction_control))
-        .map_err(sql_error)?;
+    // Disarm before each return: `commit`, and the rollback on drop, are
+    // transaction control too.
+    armed.store(true, Ordering::Relaxed);
     let result = steps
         .iter()
         .enumerate()
@@ -658,8 +700,7 @@ fn apply_migrations(
                     source,
                 })
         });
-    tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
-        .map_err(sql_error)?;
+    armed.store(false, Ordering::Relaxed);
     result?;
 
     let version = i64::try_from(steps.len())
@@ -1018,6 +1059,20 @@ mod tests {
         assert!(!table_exists(&store, "quotes_a"));
         assert!(!table_exists(&store, "quotes_b"));
         assert_eq!(recorded_version(&store, "quotes"), None);
+    }
+
+    #[tokio::test]
+    async fn migrate_permits_transaction_control_after_a_refused_step() {
+        let store = Store::memory().unwrap();
+        let ns = store.namespace("quotes").unwrap();
+        ns.migrate(&["COMMIT"]).await.unwrap_err();
+
+        let conn = store.conn.try_lock().expect("no call holds the connection");
+        conn.execute_batch("BEGIN; CREATE TABLE quotes_a (id INTEGER); COMMIT;")
+            .expect("transaction control after the migration");
+        drop(conn);
+
+        assert!(table_exists(&store, "quotes_a"));
     }
 
     #[tokio::test]
