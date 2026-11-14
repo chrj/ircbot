@@ -16,10 +16,12 @@ This is a Cargo workspace (`resolver = "2"`) with three published crates:
   time.
 - **`ircbot-plugins`** — the standard plugins (`seen`, …), one feature for each,
   all on by default. It depends on `ircbot` with the `store` feature, and uses
-  only the public API of `ircbot`, as a third-party plugin would. A plugin that
-  needs something that `ircbot` does not offer shows a gap in the public API:
-  add it to `ircbot` instead of a workaround. The crate must also build with
-  no plugin feature on: CI runs Clippy and the docs with `--no-default-features`.
+  only the public API of `ircbot`, as a third-party plugin would. The `ircbot`
+  dependency is optional: each plugin feature enables it with `dep:ircbot`. A
+  new plugin feature must also enable it. A plugin that needs something that
+  `ircbot` does not offer shows a gap in the public API: add it to `ircbot`
+  instead of a workaround. The crate must also build with no plugin feature
+  on: CI runs Clippy and the docs with `--no-default-features`.
 
 The three crate versions are kept **in lockstep**. You do not bump versions by
 hand — see [Releasing](#releasing).
