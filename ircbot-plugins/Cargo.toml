@@ -13,16 +13,18 @@ categories = ["network-programming"]
 # uses `default-features = false` and names the plugins it needs.
 [features]
 default = ["notify", "ops", "seen"]
-notify = []
-ops = []
-seen = []
+notify = ["dep:ircbot"]
+ops = ["dep:ircbot"]
+seen = ["dep:ircbot"]
 
 [package.metadata.docs.rs]
 all-features = true
 
 [dependencies]
-# The plugins keep their data in the store of `ircbot`.
-ircbot = { version = "0.7.0", path = "../ircbot", features = ["store"] }
+# The plugins keep their data in the store of `ircbot`. Each plugin feature
+# enables this dependency. If no plugin feature is on, the crate is empty and
+# does not need it.
+ircbot = { version = "0.7.0", path = "../ircbot", features = ["store"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

@@ -11,7 +11,7 @@
 //! | `Ops` | `ops` | `!op [nick]`, `!deop [nick]`, `!kick <nick> [reason]`, `!ban <nick or mask> [duration]`, `!unban <nick or mask>` |
 //! | `Seen` | `seen` | `!seen <nick>` |
 //!
-//! A plugin that keeps data takes an [`ircbot::Store`]. It uses the namespace
+//! A plugin that keeps data takes an `ircbot::Store`. It uses the namespace
 //! with its own name, and applies its own schema when it opens:
 //!
 //! ```rust,ignore
